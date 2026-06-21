@@ -1,12 +1,17 @@
 """
 Bravo6 Security Scanner
-Module: test_email_security.py
+Module: test_08_email_security.py
 
 Checks DNS-based email authentication mechanisms (SPF, DMARC, DKIM) to
 assess a domain's exposure to spoofing/phishing via forged "From" headers.
 
 All DNS work happens in dnspython's synchronous resolver, pushed onto the
 asyncio default executor so it doesn't block the event loop.
+
+Fix v2: 
+  - Renamed "overall_severity" key to "severity" for consistency with
+    all other scanner modules (main_scanner.py reads "severity" key).
+  - Added "or 'info'" fallback everywhere severity could be None.
 """
 
 import asyncio
@@ -17,7 +22,7 @@ import dns.resolver
 import dns.exception
 
 USER_AGENT = "Bravo6-Scanner/1.0"
-DNS_TIMEOUT = 10  # seconds, per query
+DNS_TIMEOUT = 10
 DKIM_SELECTORS = ["default", "google", "mail", "dkim", "k1", "selector1", "selector2"]
 
 
@@ -26,7 +31,6 @@ DKIM_SELECTORS = ["default", "google", "mail", "dkim", "k1", "selector1", "selec
 # --------------------------------------------------------------------------
 
 def _normalize_url(url: str) -> str:
-    """Ensure the input has a scheme so urlparse behaves correctly."""
     url = url.strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", url):
         url = "https://" + url
@@ -34,24 +38,10 @@ def _normalize_url(url: str) -> str:
 
 
 def _extract_root_domain(url: str) -> str:
-    """
-    Extract the root (registrable-ish) domain from a URL.
-
-    Example: "https://blog.example.com/page" -> "example.com"
-
-    Note: this uses a simple "last two labels" heuristic, except for a small
-    set of known multi-part public suffixes (co.uk, com.eg, etc.) where the
-    last three labels are kept. It is not a full Public Suffix List
-    implementation, but covers the overwhelming majority of real-world
-    domains correctly.
-    """
     normalized = _normalize_url(url)
     hostname = urlparse(normalized).hostname or ""
     hostname = hostname.lower().strip(".")
-
-    # Strip port if present (defensive, hostname from urlparse shouldn't have it)
     hostname = hostname.split(":")[0]
-
     labels = hostname.split(".")
     if len(labels) <= 2:
         return hostname
@@ -81,11 +71,6 @@ def _build_resolver() -> dns.resolver.Resolver:
 
 
 def _query_txt_sync(name: str):
-    """
-    Synchronous TXT lookup, run in executor. Returns a list of decoded
-    TXT strings, or an empty list if the name has no records / doesn't
-    exist / times out.
-    """
     resolver = _build_resolver()
     try:
         answer = resolver.resolve(name, "TXT", lifetime=DNS_TIMEOUT)
@@ -102,8 +87,6 @@ def _query_txt_sync(name: str):
     records = []
     for rdata in answer:
         try:
-            # TXT records can be split into multiple quoted strings;
-            # dnspython exposes them as a list of bytes in rdata.strings
             joined = b"".join(rdata.strings).decode("utf-8", errors="replace")
             records.append(joined)
         except Exception:
@@ -144,13 +127,10 @@ async def _check_spf(domain: str) -> dict:
             "issue": "No SPF record found — anyone can send email as this domain.",
         }
 
-    # If multiple SPF records exist, that is itself a misconfiguration
-    # (RFC 7208 says exactly one should be present), but for severity
-    # grading we evaluate the first and note the issue.
     record = spf_records[0]
     multiple_warning = ""
     if len(spf_records) > 1:
-        multiple_warning = " Multiple SPF records detected, which is invalid per RFC 7208 and may cause mail validation failures."
+        multiple_warning = " Multiple SPF records detected, which is invalid per RFC 7208."
 
     record_lower = record.lower()
 
@@ -180,7 +160,7 @@ async def _check_spf(domain: str) -> dict:
             "status": "pass",
             "record": record,
             "severity": "info",
-            "issue": "SPF correctly uses '-all' (hardfail)." + multiple_warning if multiple_warning else "",
+            "issue": multiple_warning.strip() if multiple_warning else "",
         }
     else:
         return {
@@ -196,7 +176,6 @@ async def _check_spf(domain: str) -> dict:
 # --------------------------------------------------------------------------
 
 def _parse_dmarc_tag(record: str, tag: str):
-    """Extract a tag value (e.g. 'p', 'rua') from a DMARC TXT record."""
     match = re.search(rf"(?:^|;)\s*{re.escape(tag)}\s*=\s*([^;]+)", record, re.IGNORECASE)
     if match:
         return match.group(1).strip()
@@ -265,7 +244,7 @@ async def _check_dmarc(domain: str) -> dict:
             "record": record,
             "severity": "medium",
             "policy": policy,
-            "issue": "DMARC policy is 'none' — monitoring only, no enforcement against spoofed mail." + rua_note,
+            "issue": "DMARC policy is 'none' — monitoring only, no enforcement." + rua_note,
         }
     else:
         return {
@@ -332,17 +311,11 @@ async def _check_dkim(domain: str) -> dict:
 # Aggregation
 # --------------------------------------------------------------------------
 
-_SEVERITY_RANK = {
-    "info": 0,
-    "low": 1,
-    "medium": 2,
-    "high": 3,
-    "critical": 4,
-}
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def _worst_severity(*severities: str) -> str:
-    valid = [s for s in severities if s in _SEVERITY_RANK]
+    valid = [s for s in severities if s and s in _SEVERITY_RANK]
     if not valid:
         return "info"
     return max(valid, key=lambda s: _SEVERITY_RANK[s])
@@ -354,8 +327,6 @@ def _overall_status(spf: dict, dmarc: dict, dkim: dict) -> str:
         return "fail"
     if "warning" in statuses:
         return "warning"
-    # dkim "not_found" alone (with spf/dmarc passing) shouldn't fail the run,
-    # since DKIM may exist under an unchecked selector.
     if statuses == {"pass"}:
         return "pass"
     return "warning"
@@ -377,10 +348,6 @@ def _build_description(domain: str, spf: dict, dmarc: dict, dkim: dict) -> str:
 # --------------------------------------------------------------------------
 
 async def run(url: str) -> dict:
-    """
-    Check SPF, DMARC, and DKIM DNS records for the domain extracted from
-    `url`, to assess exposure to email spoofing.
-    """
     try:
         normalized = _normalize_url(url)
         domain = _extract_root_domain(normalized)
@@ -389,14 +356,13 @@ async def run(url: str) -> dict:
             return {
                 "test_name": "email_security",
                 "status": "error",
-                "overall_severity": "info",
+                "severity": "info",          # ← "severity" not "overall_severity"
                 "findings": {},
                 "title": "Email Security (SPF/DMARC/DKIM) Check",
                 "description": f"Could not extract a valid domain from input: '{url}'.",
                 "remediation": "Provide a valid domain or URL and re-run the scan.",
             }
 
-        # Run all three checks concurrently — they're independent DNS lookups.
         spf_result, dmarc_result, dkim_result = await asyncio.gather(
             _check_spf(domain),
             _check_dmarc(domain),
@@ -404,14 +370,18 @@ async def run(url: str) -> dict:
         )
 
         overall_status = _overall_status(spf_result, dmarc_result, dkim_result)
+
+        # ── FIX: use "severity" key (not "overall_severity") + fallback to "info" ──
         overall_severity = _worst_severity(
-            spf_result["severity"], dmarc_result["severity"], dkim_result["severity"]
-        )
+            spf_result.get("severity"),
+            dmarc_result.get("severity"),
+            dkim_result.get("severity"),
+        ) or "info"
 
         return {
             "test_name": "email_security",
             "status": overall_status,
-            "overall_severity": overall_severity,
+            "severity": overall_severity,     # ← consistent key name
             "findings": {
                 "spf": spf_result,
                 "dmarc": dmarc_result,
@@ -433,11 +403,11 @@ async def run(url: str) -> dict:
         return {
             "test_name": "email_security",
             "status": "error",
-            "overall_severity": "info",
+            "severity": "info",               # ← fallback always "info"
             "findings": {},
             "title": "Email Security (SPF/DMARC/DKIM) Check",
             "description": f"Unexpected error while scanning '{url}': {exc}",
-            "remediation": "Re-run the scan; if the error persists, check DNS connectivity and the target domain.",
+            "remediation": "Re-run the scan; if the error persists, check DNS connectivity.",
         }
 
 
@@ -453,7 +423,7 @@ if __name__ == "__main__":
             "https://google.com",
             "https://github.com",
             "example.com",
-            "https://blog.cloudflare.com/some-post",
+            "https://www.ucl.ac.uk/scholarships/sparck-ai-scholarship",
         ]
         for target in test_targets:
             print(f"\n=== {target} ===")
