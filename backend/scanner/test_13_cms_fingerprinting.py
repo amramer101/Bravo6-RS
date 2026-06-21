@@ -1,19 +1,32 @@
 """
-test_cms_vibecheck.py
+test_13_cms_fingerprinting.py
 
-Bravo6 security scanning module.
+Bravo6 Scout security scanning module — CMS / modern-framework
+fingerprinting and security posture analysis.
 
-Detects the CMS/framework powering a target site from its HTML and response
-headers, checks a small set of well-known, publicly documented paths for
-that CMS to flag common exposures/misconfigurations (e.g. /wp-login.php,
-/.env, /administrator/), and runs a heuristic "vibe score" pass over the
-page/script content to flag signs of AI-generated ("vibe-coded") front-end
-code (debug leftovers, placeholder content, AI-builder fingerprints, etc).
+What it does
+------------
+1. Fetches the target's homepage and fingerprints the CMS or frontend
+   framework powering it using multiple independent signal classes
+   (HTML markup / JS globals, response headers, and known public routes).
+2. Attempts to extract a version string from generator meta tags, exposed
+   changelog/readme files, or framework-specific markers, and flags it as
+   "outdated" against a small reference table of recent major versions.
+3. Probes a curated set of platform-specific and generic paths (admin
+   panels, build output directories, debug endpoints, common
+   backup/config/VCS leaks) to flag exposure and misconfiguration.
+4. Checks standard security response headers (HSTS, CSP, X-Frame-Options,
+   etc.) and looks for directory-listing and known security-plugin
+   fingerprints.
+5. Rolls all of the above into a single 0-100 "security vibe score" with
+   supporting evidence and platform-specific remediation advice.
 
-This module only performs passive, read-only HTTP requests to paths that
-are part of each framework's normal, public routing. It never attempts to
-authenticate, exploit, brute-force, or bypass any access control — it just
-checks whether a path is reachable and reports what it finds.
+This module only performs passive, read-only GET requests against paths
+that are part of a platform's normal public routing or extremely common,
+publicly-documented misconfiguration patterns (e.g. /.env, /.git/HEAD).
+It never authenticates, brute-forces, exploits, or attempts to bypass any
+access control — it just checks whether something is reachable and reports
+what it finds.
 
 Usage:
     result = await run("example.com")
@@ -29,121 +42,211 @@ import aiohttp
 USER_AGENT = "Bravo6-Scanner/1.0"
 TIMEOUT_SECONDS = 10
 
-# ---------------------------------------------------------------------------
-# Signature data
-# ---------------------------------------------------------------------------
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_STATUS_RANK = {"pass": 0, "info": 1, "warning": 2, "fail": 3}
 
-CMS_SIGNATURES = {
+
+def severity_rank(sev: str) -> int:
+    return _SEVERITY_RANK.get(sev, 0)
+
+
+# ---------------------------------------------------------------------------
+# Platform signature data
+# ---------------------------------------------------------------------------
+# Each entry:
+#   html              -> regexes tested against page HTML/inline JS
+#   headers           -> regexes tested against "Header: value" blob
+#   version_patterns  -> regexes with one capture group = version string,
+#                        tested against the same HTML/header blob
+#   check_paths       -> {path: (issue_description, severity)}
+#   plugin_signals    -> regexes indicating a security hardening tool/plugin
+#   latest_major      -> rough reference major.minor used only to flag a
+#                        clearly stale version; not a live version feed
+PLATFORM_SIGNATURES = {
     "WordPress": {
-        "patterns": [r"/wp-content/", r"/wp-includes/", r'name="generator" content="WordPress'],
-        "check_paths": ["/wp-login.php", "/xmlrpc.php", "/wp-json/"],
-        "risks": {
-            "/wp-login.php": ("Login page exposed", "info"),
-            "/xmlrpc.php": ("XML-RPC enabled — brute force and DDoS risk", "high"),
-            "/wp-json/": ("REST API exposed — user enumeration possible", "medium"),
+        "html": [r"wp-content/", r"wp-includes/", r'name=["\']generator["\'][^>]*content=["\']WordPress\s*([\d.]+)?'],
+        "headers": [r"x-powered-by:\s*wordpress", r"link:.*wp-json"],
+        "version_patterns": [r"WordPress\s+([\d]+\.[\d]+(?:\.[\d]+)?)", r"wp-embed\.min\.js\?ver=([\d.]+)"],
+        "check_paths": {
+            "/wp-login.php": ("Login page reachable", "info"),
+            "/wp-admin/": ("Admin dashboard route reachable", "medium"),
+            "/xmlrpc.php": ("XML-RPC endpoint enabled — brute-force / pingback amplification risk", "high"),
+            "/wp-json/": ("REST API exposed — can enable user enumeration", "medium"),
+            "/wp-content/debug.log": ("Debug log potentially exposed (leaks paths/secrets)", "high"),
+            "/readme.html": ("readme.html exposes the exact core version", "low"),
         },
-    },
-    "Joomla": {
-        "patterns": [r"/components/com_", r"/media/jui/", r"Joomla!"],
-        "check_paths": ["/administrator/", "/configuration.php"],
-        "risks": {
-            "/administrator/": ("Admin panel exposed", "medium"),
-        },
+        "plugin_signals": [r"wordfence", r"sucuri", r"ithemes.security", r"wp-rocket", r"all.in.one.wp.security"],
+        "latest_major": "6.7",
     },
     "Drupal": {
-        "patterns": [r"Drupal\.settings", r"/sites/default/files/", r'name="Generator" content="Drupal'],
-        "check_paths": ["/user/login", "/admin/"],
-        "risks": {
-            "/user/login": ("Default login page exposed", "info"),
+        "html": [r"Drupal\.settings", r"/sites/default/files/", r'name=["\']Generator["\']\s+content=["\']Drupal\s*([\d.]+)?'],
+        "headers": [r"x-generator:\s*drupal\s*([\d.]+)?", r"x-drupal-cache"],
+        "version_patterns": [r"Drupal\s+([\d]+\.[\d]+)"],
+        "check_paths": {
+            "/user/login": ("Default login page reachable", "info"),
+            "/CHANGELOG.txt": ("Core changelog exposes exact version", "low"),
+            "/core/CHANGELOG.txt": ("Core changelog exposes exact version", "low"),
         },
+        "plugin_signals": [r"seckit", r"security.kit"],
+        "latest_major": "10.3",
     },
-    "Laravel": {
-        "patterns": [r"laravel_session", r"XSRF-TOKEN", r"Laravel"],
-        "check_paths": ["/.env", "/telescope", "/horizon"],
-        "risks": {
-            "/.env": ("Environment file may be exposed", "critical"),
-            "/telescope": ("Laravel Telescope debugger may be exposed", "high"),
+    "Joomla": {
+        "html": [r"/components/com_", r"/media/jui/", r"Joomla!\s*([\d.]+)?"],
+        "headers": [r"x-content-encoded-by:\s*joomla"],
+        "version_patterns": [r"Joomla!\s*([\d]+\.[\d]+)"],
+        "check_paths": {
+            "/administrator/": ("Admin login panel reachable", "medium"),
+            "/configuration.php.bak": ("Backup config file potentially exposed (DB credentials)", "high"),
+            "/htaccess.txt": ("Default htaccess template still present", "low"),
         },
+        "plugin_signals": [r"admintools", r"rsfirewall"],
+        "latest_major": "5.1",
     },
-    "Django": {
-        "patterns": [r"csrfmiddlewaretoken", r"django", r"__django"],
-        "check_paths": ["/admin/", "/static/admin/"],
-        "risks": {
-            "/admin/": ("Django admin panel exposed", "medium"),
+    "Shopify": {
+        "html": [r"cdn\.shopify\.com", r"Shopify\.theme", r"/checkouts/"],
+        "headers": [r"x-shopid", r"x-sorting-hat-podid", r"x-shopify-stage"],
+        "version_patterns": [],
+        "check_paths": {
+            "/admin": ("Merchant admin login route reachable (expected, hosted by Shopify)", "info"),
         },
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "Wix": {
+        "html": [r"wixstatic\.com", r"wix\.com/", r"wixCode"],
+        "headers": [r"x-wix-request-id"],
+        "version_patterns": [],
+        "check_paths": {},
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "Squarespace": {
+        "html": [r"squarespace\.com", r"static1\.squarespace\.com"],
+        "headers": [r"server:\s*squarespace"],
+        "version_patterns": [],
+        "check_paths": {},
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "HubSpot": {
+        "html": [r"hs-scripts\.com", r"hsforms\.net", r"_hsenc"],
+        "headers": [r"x-hs-", r"x-hubspot"],
+        "version_patterns": [],
+        "check_paths": {},
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "Magento": {
+        "html": [r"Mage\.Cookies", r"/skin/frontend/", r"Magento", r"/static/version\d+/frontend/"],
+        "headers": [r"x-magento"],
+        "version_patterns": [r"Magento[/ ]ver([\d.]+)"],
+        "check_paths": {
+            "/admin": ("Default admin path reachable — consider renaming via env config", "medium"),
+            "/app/etc/local.xml": ("Legacy config file potentially exposed (DB credentials)", "critical"),
+            "/downloader/": ("Magento Connect downloader exposed", "high"),
+        },
+        "plugin_signals": [],
+        "latest_major": "2.4",
+    },
+    "TYPO3": {
+        "html": [r"typo3conf", r"TYPO3", r"typo3temp"],
+        "headers": [r"x-typo3"],
+        "version_patterns": [r"TYPO3\s*([\d]+\.[\d]+)"],
+        "check_paths": {
+            "/typo3/": ("Backend login reachable", "medium"),
+        },
+        "plugin_signals": [],
+        "latest_major": "13.4",
     },
     "Next.js": {
-        "patterns": [r"__NEXT_DATA__", r"_next/static", r"next/dist"],
-        "check_paths": ["/_next/", "/api/"],
-        "risks": {},
+        "html": [r"__NEXT_DATA__", r"_next/static", r"next/dist"],
+        "headers": [r"x-nextjs", r"x-middleware"],
+        "version_patterns": [r'"next"\s*:\s*"([\d.]+)"'],
+        "check_paths": {
+            "/_next/static/": ("Build output directory reachable (expected; confirms framework only)", "info"),
+            "/api/": ("API routes base path reachable — verify auth on every handler", "info"),
+        },
+        "plugin_signals": [],
+        "latest_major": None,
     },
-    "React (Vite/CRA)": {
-        "patterns": [r"react-dom", r"__react", r"data-reactroot", r"/assets/index-"],
-        "check_paths": [],
-        "risks": {},
+    "Nuxt.js": {
+        "html": [r"__NUXT__", r"/_nuxt/", r"data-n-head"],
+        "headers": [r"x-nuxt"],
+        "version_patterns": [r'"nuxt"\s*:\s*"([\d.]+)"'],
+        "check_paths": {
+            "/_nuxt/": ("Build output directory reachable (expected; confirms framework only)", "info"),
+        },
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "Remix": {
+        "html": [r"__remixContext", r"/build/_assets/", r"remix-run"],
+        "headers": [],
+        "version_patterns": [],
+        "check_paths": {},
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "Gatsby": {
+        "html": [r"___gatsby", r"gatsby-image", r"/page-data/"],
+        "headers": [],
+        "version_patterns": [],
+        "check_paths": {
+            "/page-data/app-data.json": ("Page-data JSON exposed (normal for Gatsby; verify no sensitive props)", "info"),
+        },
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "VuePress": {
+        "html": [r"vuepress", r"__VUEPRESS__"],
+        "headers": [],
+        "version_patterns": [],
+        "check_paths": {},
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "VitePress": {
+        "html": [r"vitepress"],
+        "headers": [],
+        "version_patterns": [],
+        "check_paths": {},
+        "plugin_signals": [],
+        "latest_major": None,
+    },
+    "Astro": {
+        "html": [r"astro-island", r"data-astro-cid", r"/_astro/"],
+        "headers": [],
+        "version_patterns": [],
+        "check_paths": {
+            "/_astro/": ("Build output directory reachable (expected; confirms framework only)", "info"),
+        },
+        "plugin_signals": [],
+        "latest_major": None,
     },
 }
 
-VIBE_SIGNALS = [
-    {
-        "name": "AI Generator Meta Tag",
-        "patterns": [r'content="(v0|lovable|bolt\.new|cursor|replit)'],
-        "points": 30,
-        "severity": "info",
-    },
-    {
-        "name": "Generic Tailwind Class Structure",
-        "patterns": [r'className="(?:flex|grid) (?:flex-col|items-center) (?:justify-center|gap-\d)'],
-        "points": 10,
-        "severity": "info",
-    },
-    {
-        "name": "Console.log in Production",
-        "patterns": [r'console\.log\(["\']'],
-        "points": 15,
-        "severity": "low",
-    },
-    {
-        "name": "Empty Catch Blocks",
-        "patterns": [r'catch\s*\(\s*\w+\s*\)\s*\{\s*\}'],
-        "points": 15,
-        "severity": "low",
-    },
-    {
-        "name": "TODO/FIXME in Production",
-        "patterns": [r'//\s*(?:TODO|FIXME|HACK|XXX)'],
-        "points": 10,
-        "severity": "info",
-    },
-    {
-        "name": "Placeholder Text",
-        "patterns": [r'Lorem ipsum|placeholder text|Your Name Here|email@example'],
-        "points": 20,
-        "severity": "info",
-    },
-    {
-        "name": "Generic CSS Variable Names",
-        "patterns": [r'--primary-color|--secondary-color|--accent-color'],
-        "points": 10,
-        "severity": "info",
-    },
-    {
-        "name": "AI Comment Patterns",
-        "patterns": [r'//\s*(?:Add your|Insert your|Replace with|Update this)'],
-        "points": 20,
-        "severity": "info",
-    },
+# Generic leak/misconfiguration paths checked regardless of detected platform.
+GENERIC_EXPOSURE_PATHS = {
+    "/.git/HEAD": ("Git repository metadata exposed — can lead to full source disclosure", "critical"),
+    "/.env": ("Environment file potentially exposing secrets/credentials", "critical"),
+    "/.env.example": ("Example env file exposed — reveals config structure", "low"),
+    "/.DS_Store": ("macOS directory metadata file exposed", "low"),
+    "/backup.zip": ("Generic backup archive reachable", "high"),
+    "/config.php.bak": ("Backup config file reachable", "high"),
+    "/.well-known/security.txt": ("security.txt published — good disclosure practice", "info"),
+}
+_POSITIVE_GENERIC_PATHS = {"/.well-known/security.txt"}
+
+SECURITY_HEADERS = [
+    "Strict-Transport-Security",
+    "Content-Security-Policy",
+    "X-Frame-Options",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Permissions-Policy",
 ]
 
-VIBE_LABEL_BANDS = [
-    (0, 20, "Likely Human-Written"),
-    (21, 40, "Some AI Assistance Detected"),
-    (41, 60, "Significant AI Assistance"),
-    (61, 80, "Likely AI-Generated"),
-    (81, 100, "Almost Certainly Vibe Coded"),
-]
-
-_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+DIRECTORY_LISTING_PATTERNS = [r"Index of /", r"<title>Directory Listing", r"Parent Directory</a>"]
 
 
 # ---------------------------------------------------------------------------
@@ -156,17 +259,6 @@ def normalize_url(url: str) -> str:
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", url):
         url = "https://" + url
     return url
-
-
-def vibe_label(score: int) -> str:
-    for low, high, label in VIBE_LABEL_BANDS:
-        if low <= score <= high:
-            return label
-    return "Unknown"
-
-
-def severity_rank(sev: str) -> int:
-    return _SEVERITY_RANK.get(sev, 0)
 
 
 async def _fetch(session: aiohttp.ClientSession, url: str, allow_redirects: bool = True):
@@ -188,96 +280,162 @@ async def _fetch(session: aiohttp.ClientSession, url: str, allow_redirects: bool
         return None, None, None
 
 
-def detect_cms(html: str, headers: dict):
-    """Match HTML body + headers against CMS_SIGNATURES. Returns CMS name or None."""
-    html = html or ""
-    header_blob = " ".join(f"{k}: {v}" for k, v in (headers or {}).items())
-    haystack = html + " " + header_blob
+def _safe_search(pattern: str, haystack: str):
+    try:
+        return re.search(pattern, haystack, re.IGNORECASE)
+    except re.error:
+        return None
 
-    for cms_name, cfg in CMS_SIGNATURES.items():
-        for pattern in cfg["patterns"]:
-            try:
-                if re.search(pattern, haystack, re.IGNORECASE):
-                    return cms_name
-            except re.error:
-                continue
+
+def detect_platform(html: str, headers: dict):
+    """
+    Score every known platform against HTML + header signals.
+
+    Returns (best_name_or_None, confidence, matched_signal_evidence_list).
+    Confidence is "high" (2+ independent signal classes matched), "medium"
+    (exactly one signal class matched, possibly multiple patterns within it),
+    or "low" (a single weak match) — None if nothing matched at all.
+    """
+    html = html or ""
+    header_blob = "\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+
+    best_name = None
+    best_score = 0
+    best_evidence = []
+
+    for name, cfg in PLATFORM_SIGNATURES.items():
+        html_hits = [p for p in cfg["html"] if _safe_search(p, html)]
+        header_hits = [p for p in cfg["headers"] if _safe_search(p, header_blob)]
+        if not html_hits and not header_hits:
+            continue
+
+        score = len(html_hits) * 2 + len(header_hits) * 2
+        evidence = []
+        if html_hits:
+            evidence.append(f"HTML/JS signature matched for {name} ({len(html_hits)} pattern(s))")
+        if header_hits:
+            evidence.append(f"Response header signature matched for {name} ({len(header_hits)} pattern(s))")
+
+        if score > best_score:
+            best_name, best_score, best_evidence = name, score, evidence
+
+    if best_name is None:
+        return None, None, []
+
+    html_classes = 1 if any(_safe_search(p, html) for p in PLATFORM_SIGNATURES[best_name]["html"]) else 0
+    header_classes = 1 if any(_safe_search(p, header_blob) for p in PLATFORM_SIGNATURES[best_name]["headers"]) else 0
+    classes_matched = html_classes + header_classes
+
+    if classes_matched >= 2:
+        confidence = "high"
+    elif best_score >= 2:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return best_name, confidence, best_evidence
+
+
+def extract_version(cms_name: str, html: str, headers: dict):
+    """Try to pull a version string out of HTML/header content for a detected platform."""
+    if not cms_name:
+        return None
+    cfg = PLATFORM_SIGNATURES.get(cms_name, {})
+    blob = (html or "") + "\n" + "\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+    for pattern in cfg.get("version_patterns", []):
+        match = _safe_search(pattern, blob)
+        if match and match.groups() and match.group(1):
+            return match.group(1)
     return None
 
 
-async def check_cms_risks(session: aiohttp.ClientSession, base_url: str, cms_name: str):
-    """Probe a CMS's known check_paths and report any that are reachable."""
+def _version_tuple(v: str):
+    try:
+        return tuple(int(p) for p in re.findall(r"\d+", v)[:2])
+    except Exception:
+        return None
+
+
+def is_outdated(cms_name: str, version: str):
+    """Very rough staleness check against a static reference major.minor — not a live feed."""
+    if not cms_name or not version:
+        return None
+    latest = PLATFORM_SIGNATURES.get(cms_name, {}).get("latest_major")
+    if not latest:
+        return None
+    v_tuple, latest_tuple = _version_tuple(version), _version_tuple(latest)
+    if not v_tuple or not latest_tuple:
+        return None
+    return v_tuple < latest_tuple
+
+
+async def probe_paths(session: aiohttp.ClientSession, base_url: str, paths: dict):
+    """
+    Probe a {path: (issue, severity)} map concurrently.
+    Returns (findings_list, directory_listing_detected_bool).
+    """
     findings = []
-    cfg = CMS_SIGNATURES.get(cms_name)
-    if not cfg:
-        return findings
+    listing_detected = False
 
-    risk_map = cfg.get("risks", {})
-
-    async def probe(path):
+    async def probe(path, issue, severity):
+        nonlocal listing_detected
         target = urljoin(base_url, path)
-        status, _text, _headers = await _fetch(session, target, allow_redirects=False)
+        status, text, _headers = await _fetch(session, target, allow_redirects=False)
         if status is None or status >= 400:
             return None
-        if path in risk_map:
-            issue, severity = risk_map[path]
-        else:
-            issue, severity = (f"{path} reachable", "info")
+        if text and any(_safe_search(p, text) for p in DIRECTORY_LISTING_PATTERNS):
+            listing_detected = True
         return {"path": path, "status_code": status, "issue": issue, "severity": severity}
 
-    results = await asyncio.gather(*(probe(p) for p in cfg.get("check_paths", [])))
+    tasks = [probe(p, issue, sev) for p, (issue, sev) in paths.items()]
+    results = await asyncio.gather(*tasks) if tasks else []
     findings = [r for r in results if r is not None]
-    return findings
+    return findings, listing_detected
 
 
-def compute_vibe_score(content: str):
-    """Scan page/script content for vibe-coding signals. Returns (score, signal_list)."""
-    if not content:
-        return 0, []
-
-    score = 0
-    signals = []
-
-    for signal in VIBE_SIGNALS:
-        occurrences = 0
-        matched_value = None
-        for pattern in signal["patterns"]:
-            try:
-                matches = re.findall(pattern, content, re.IGNORECASE)
-            except re.error:
-                continue
-            occurrences += len(matches)
-            if matches and matched_value is None:
-                first = matches[0]
-                if isinstance(first, str) and first:
-                    matched_value = first
-
-        if occurrences > 0:
-            score += signal["points"]
-            entry = {
-                "signal": signal["name"],
-                "occurrences": occurrences,
-                "severity": signal["severity"],
-            }
-            if matched_value:
-                entry["value"] = matched_value
-            signals.append(entry)
-
-    return min(score, 100), signals
+def check_security_headers(headers: dict):
+    """Returns (present_list, missing_list) of the standard hardening headers."""
+    headers = headers or {}
+    lower_keys = {k.lower() for k in headers.keys()}
+    present = [h for h in SECURITY_HEADERS if h.lower() in lower_keys]
+    missing = [h for h in SECURITY_HEADERS if h.lower() not in lower_keys]
+    return present, missing
 
 
-def _gather_js_asset_urls(html: str, base_url: str, limit: int = 5):
-    """Pull a handful of same-context <script src="..."> URLs to also scan for vibe signals."""
-    if not html:
+def detect_security_plugins(cms_name: str, html: str, headers: dict):
+    if not cms_name:
         return []
-    srcs = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
-    urls = []
-    for src in srcs:
-        if src.startswith("data:"):
-            continue
-        urls.append(urljoin(base_url, src))
-        if len(urls) >= limit:
-            break
-    return urls
+    cfg = PLATFORM_SIGNATURES.get(cms_name, {})
+    blob = (html or "") + "\n" + "\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+    return [p for p in cfg.get("plugin_signals", []) if _safe_search(p, blob)]
+
+
+def compute_vibe_score(exposure_findings, present_headers, missing_headers, listing_detected, plugins_found, security_txt_present):
+    """
+    0-100 security posture score.
+      base 60
+      + 5 per present standard security header (max +30)
+      + 10 once if a known security-hardening plugin/tool fingerprint matched
+      + 5 if security.txt is published
+      - severity-weighted penalty per exposure finding (critical/high/medium/low)
+      - 15 if directory listing is enabled anywhere probed
+    Clamped to [0, 100].
+    """
+    score = 60
+    score += min(len(present_headers), 6) * 5
+    if plugins_found:
+        score += 10
+    if security_txt_present:
+        score += 5
+
+    penalty_weights = {"critical": 25, "high": 15, "medium": 8, "low": 3, "info": 0}
+    for f in exposure_findings:
+        score -= penalty_weights.get(f["severity"], 0)
+
+    if listing_detected:
+        score -= 15
+
+    return max(0, min(100, score))
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +456,7 @@ async def run(url: str) -> dict:
                 "severity": "info",
                 "title": "Invalid URL",
                 "description": f"Could not parse a valid host from input: {url!r}.",
-                "evidence": "",
+                "evidence": [],
                 "remediation": "Provide a valid domain or URL, e.g. example.com",
             }
 
@@ -315,95 +473,143 @@ async def run(url: str) -> dict:
                     "severity": "info",
                     "title": "Site Unreachable",
                     "description": f"Could not connect to {base_url} within {TIMEOUT_SECONDS}s.",
-                    "evidence": f"GET {base_url} timed out or failed to connect.",
+                    "evidence": [f"GET {base_url} timed out or failed to connect."],
                     "remediation": "Verify the target is online and accessible, then re-run the scan.",
                 }
 
-            # --- Part A: CMS detection + risk path checks ---
-            cms = detect_cms(html, resp_headers)
-            cms_findings = []
-            if cms:
-                cms_findings = await check_cms_risks(session, base_url, cms)
+            # --- 1. Platform fingerprinting ---
+            cms_name, confidence, fingerprint_evidence = detect_platform(html, resp_headers)
+            version = extract_version(cms_name, html, resp_headers)
+            outdated = is_outdated(cms_name, version)
 
-            # --- Part B: Vibe score, including a sample of linked JS assets ---
-            combined_content = html or ""
-            js_urls = _gather_js_asset_urls(html, base_url)
-            if js_urls:
-                js_texts = await asyncio.gather(
-                    *(_fetch(session, js_url) for js_url in js_urls)
-                )
-                for _status, text, _headers in js_texts:
-                    if text:
-                        combined_content += "\n" + text
+            # --- 2. Path exposure probing (platform-specific + generic) ---
+            platform_paths = PLATFORM_SIGNATURES.get(cms_name, {}).get("check_paths", {}) if cms_name else {}
+            combined_paths = dict(platform_paths)
+            combined_paths.update(GENERIC_EXPOSURE_PATHS)
 
-            vibe_score, vibe_signals = compute_vibe_score(combined_content)
-            label = vibe_label(vibe_score)
+            all_findings, listing_detected = await probe_paths(session, base_url, combined_paths)
 
-            # --- Aggregate severity/status ---
-            finding_severities = [f["severity"] for f in cms_findings]
+            positive_findings = [f for f in all_findings if f["path"] in _POSITIVE_GENERIC_PATHS]
+            exposure_findings = [f for f in all_findings if f["path"] not in _POSITIVE_GENERIC_PATHS]
+            security_txt_present = any(f["path"] == "/.well-known/security.txt" for f in positive_findings)
+
+            # --- 3. Security headers + plugin/hardening signals ---
+            present_headers, missing_headers = check_security_headers(resp_headers)
+            plugins_found = detect_security_plugins(cms_name, html, resp_headers)
+
+            # --- 4. Vibe score ---
+            vibe_score = compute_vibe_score(
+                exposure_findings, present_headers, missing_headers, listing_detected, plugins_found, security_txt_present
+            )
+
+            # --- Aggregate status/severity ---
+            finding_severities = [f["severity"] for f in exposure_findings]
             overall_severity = max(finding_severities, key=severity_rank) if finding_severities else "info"
 
-            if any(s in ("critical", "high") for s in finding_severities):
+            if any(s in ("critical", "high") for s in finding_severities) or vibe_score < 40:
                 status_result = "fail"
-            elif cms_findings or vibe_score >= 41:
+            elif exposure_findings or missing_headers or vibe_score < 70:
                 status_result = "warning"
             else:
                 status_result = "pass"
 
-            cms_part = f"{cms} Detected" if cms else "No Known CMS Detected"
+            cms_part = f"CMS Detection: {cms_name}" if cms_name else "CMS Detection: Unknown/Custom"
             title = f"{cms_part} — Vibe Score: {vibe_score}%"
 
-            description_parts = []
-            if cms:
-                description_parts.append(
-                    f"The site was fingerprinted as {cms} based on HTML and response header signatures."
+            # --- Description ---
+            desc_parts = []
+            if cms_name:
+                ver_str = f" version {version}" if version else " (version not publicly exposed)"
+                desc_parts.append(
+                    f"The site was fingerprinted as {cms_name}{ver_str} with {confidence} confidence, "
+                    f"based on HTML/JS markers and response headers."
                 )
-                if cms_findings:
-                    description_parts.append(
-                        f"{len(cms_findings)} known {cms} path(s) were reachable and may indicate a "
-                        f"misconfiguration or unnecessary exposure."
-                    )
-                else:
-                    description_parts.append(
-                        f"None of the checked {cms} exposure paths were reachable."
+                if outdated:
+                    desc_parts.append(
+                        f"The detected version appears older than the current {cms_name} release line — "
+                        f"treat as a priority to verify and patch."
                     )
             else:
-                description_parts.append(
-                    "No known CMS/framework signature was matched in the page content or response headers."
+                desc_parts.append(
+                    "No known CMS or framework signature was matched — this looks like a custom-built "
+                    "site or the platform actively obscures its fingerprints."
                 )
-            description_parts.append(
-                f"Vibe analysis score is {vibe_score}/100 ({label}), based on {len(vibe_signals)} "
-                f"matched code-quality / AI-tooling signal(s) across the page and {len(js_urls)} linked script(s)."
-            )
-            description = " ".join(description_parts)
+            if exposure_findings:
+                desc_parts.append(
+                    f"{len(exposure_findings)} reachable path(s) indicate possible exposure or "
+                    f"misconfiguration, including {sum(1 for f in exposure_findings if f['severity'] in ('critical','high'))} "
+                    f"high/critical finding(s)."
+                )
+            else:
+                desc_parts.append("No sensitive or known-risk paths were found reachable.")
+            if missing_headers:
+                desc_parts.append(
+                    f"{len(missing_headers)} of {len(SECURITY_HEADERS)} recommended security headers are missing."
+                )
+            if listing_detected:
+                desc_parts.append("Directory listing appears to be enabled on at least one probed path.")
+            if plugins_found:
+                desc_parts.append(f"Evidence of a security-hardening tool/plugin was found ({len(plugins_found)} signal(s)).")
+            description = " ".join(desc_parts)
 
-            evidence_lines = []
-            if cms:
-                evidence_lines.append(f"CMS fingerprint matched: {cms}")
-            for f in cms_findings:
-                evidence_lines.append(
-                    f"  - {f['path']} -> HTTP {f['status_code']}: {f['issue']} [{f['severity']}]"
-                )
-            for s in vibe_signals:
-                val = f" (e.g. '{s['value']}')" if s.get("value") else ""
-                evidence_lines.append(
-                    f"  - Vibe signal '{s['signal']}': {s['occurrences']} occurrence(s){val}"
-                )
-            evidence = "\n".join(evidence_lines) if evidence_lines else "No CMS or vibe-coding signals detected."
+            # --- Evidence (list of strings, per spec) ---
+            evidence = []
+            evidence.extend(fingerprint_evidence)
+            if version:
+                evidence.append(f"Version string extracted: {version}" + (" (outdated)" if outdated else ""))
+            for f in exposure_findings:
+                evidence.append(f"Exposed path: {f['path']} -> HTTP {f['status_code']} ({f['issue']}) [{f['severity']}]")
+            if security_txt_present:
+                evidence.append("security.txt found at /.well-known/security.txt")
+            if listing_detected:
+                evidence.append("Directory listing output detected in at least one probed response")
+            if present_headers:
+                evidence.append(f"Security headers present: {', '.join(present_headers)}")
+            if missing_headers:
+                evidence.append(f"Security headers missing: {', '.join(missing_headers)}")
+            for p in plugins_found:
+                evidence.append(f"Security plugin/tool signal matched: {p}")
+            if not evidence:
+                evidence.append("No fingerprint, exposure, or header signals were collected.")
 
-            remediation_parts = []
-            if cms_findings:
-                paths = ", ".join(f["path"] for f in cms_findings)
-                remediation_parts.append(f"Restrict, disable, or firewall public access to: {paths}.")
-            if vibe_score >= 41:
-                remediation_parts.append(
-                    "Manually review the AI-generated/assisted code for security issues — vibe-coded "
-                    "sites statistically show higher rates of missing input validation, leftover debug "
-                    "output, and placeholder content shipped to production."
+            # --- Remediation ---
+            rem_parts = []
+            if exposure_findings:
+                crit_high = [f["path"] for f in exposure_findings if f["severity"] in ("critical", "high")]
+                if crit_high:
+                    rem_parts.append(
+                        f"Immediately restrict or remove public access to: {', '.join(crit_high)} — "
+                        f"these can expose credentials or source code."
+                    )
+                other_paths = [f["path"] for f in exposure_findings if f["severity"] not in ("critical", "high")]
+                if other_paths:
+                    rem_parts.append(f"Review and, where unnecessary, restrict access to: {', '.join(other_paths)}.")
+            if missing_headers:
+                rem_parts.append(
+                    f"Add the missing security headers ({', '.join(missing_headers)}) at the web "
+                    f"server, CDN, or framework middleware layer."
                 )
-            if not remediation_parts:
-                remediation_parts.append("No immediate action required; continue periodic monitoring.")
-            remediation = " ".join(remediation_parts)
+            if listing_detected:
+                rem_parts.append("Disable directory listing/autoindex on the web server.")
+            if outdated and cms_name:
+                rem_parts.append(f"Upgrade {cms_name} to the latest stable release to close known CVEs.")
+            if cms_name == "WordPress":
+                rem_parts.append(
+                    "Disable XML-RPC if unused, hide or restrict /wp-json/ user endpoints, and install a "
+                    "reputable security plugin (e.g. Wordfence) if not already present."
+                )
+            elif cms_name == "Magento":
+                rem_parts.append("Rename the default admin path and remove the legacy /downloader/ tool if unused.")
+            elif cms_name in ("Next.js", "Nuxt.js", "Remix", "Gatsby", "Astro"):
+                rem_parts.append(
+                    "Keep secrets in environment variables (never bundled client-side), and add auth "
+                    "middleware to every API route rather than relying on routing obscurity."
+                )
+            if not rem_parts:
+                rem_parts.append("No immediate action required; continue periodic monitoring.")
+            remediation = " ".join(rem_parts)
+
+            exposed_paths = [f["path"] for f in exposure_findings]
 
             return {
                 "test_name": test_name,
@@ -414,11 +620,14 @@ async def run(url: str) -> dict:
                 "evidence": evidence,
                 "remediation": remediation,
                 # Extended, task-specific detail (in addition to the required schema fields):
-                "cms_detected": cms,
-                "cms_findings": cms_findings,
+                "cms_type": cms_name or "Unknown",
                 "vibe_score": vibe_score,
-                "vibe_label": label,
-                "vibe_signals": vibe_signals,
+                "version": (f"{version} (outdated)" if outdated else version) if version else "not detected",
+                "exposed_paths": exposed_paths,
+                "confidence": confidence or "low",
+                "security_headers_present": present_headers,
+                "security_headers_missing": missing_headers,
+                "directory_listing_detected": listing_detected,
                 "scan_duration_seconds": round(time.time() - start_time, 2),
             }
 
@@ -429,7 +638,7 @@ async def run(url: str) -> dict:
             "severity": "info",
             "title": "Scan Error",
             "description": f"An unexpected error occurred while scanning {url}.",
-            "evidence": f"{type(exc).__name__}: {exc}",
+            "evidence": [f"{type(exc).__name__}: {exc}"],
             "remediation": "Check the target URL and network connectivity, then retry the scan.",
         }
 
