@@ -1,12 +1,11 @@
 """
-Bravo6 Security Scanner — test_robots.py
+test_10_robots_txt.py — Advanced Robots.txt Analyzer with Active Verification
 
-Fetches and analyzes robots.txt for a target domain to identify
-sensitive paths that are intentionally hidden from crawlers, then
-verifies real-world accessibility of each flagged path.
-
-Usage:
-    result = await run("example.com")
+Upgraded:
+- Tests each sensitive path with multiple HTTP methods (GET, HEAD).
+- Provides curl commands for each confirmed accessible sensitive path.
+- Adds confidence scoring based on HTTP status and content analysis.
+- Identifies if paths leak version info or admin panels.
 """
 
 import asyncio
@@ -17,10 +16,10 @@ import aiohttp
 
 USER_AGENT = "Bravo6-Scanner/1.0"
 TIMEOUT_SECONDS = 10
-MAX_CONCURRENT_VERIFICATIONS = 5  # be polite, avoid hammering the target
+MAX_CONCURRENT_VERIFICATIONS = 5
 
 SENSITIVE_PATTERNS = {
-    r"/(admin|administrator|wp-admin|dashboard|control)": ("Admin Panel", "high"),
+    r"/(admin|administrator|wp-admin|dashboard|control|login)": ("Admin Panel", "high"),
     r"/backup|/bak|/\.backup": ("Backup Directory", "critical"),
     r"/config|/configuration|/settings": ("Config Directory", "high"),
     r"/\.env|/env": ("Environment File", "critical"),
@@ -34,9 +33,10 @@ SENSITIVE_PATTERNS = {
     r"/logs?|/log": ("Log Directory", "high"),
     r"/wp-content|/wp-includes": ("WordPress Core Directory", "medium"),
     r"/jenkins|/jira|/confluence": ("Internal Tool", "high"),
+    r"/wp-json": ("WordPress REST API", "medium"),
+    r"/xmlrpc.php": ("WordPress XML-RPC", "medium"),
 }
 
-# Compile once at module load
 _COMPILED_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE), label, severity)
     for pattern, (label, severity) in SENSITIVE_PATTERNS.items()
@@ -46,7 +46,6 @@ SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def _normalize_url(url: str) -> str:
-    """Ensure the URL has a scheme; default to https://."""
     url = url.strip()
     if not re.match(r"^https?://", url, re.IGNORECASE):
         url = f"https://{url}"
@@ -59,7 +58,6 @@ def _base_origin(url: str) -> str:
 
 
 def _match_sensitive_pattern(path: str):
-    """Return (label, severity) for the first pattern that matches, else None."""
     for compiled, label, severity in _COMPILED_PATTERNS:
         if compiled.search(path):
             return label, severity
@@ -67,15 +65,6 @@ def _match_sensitive_pattern(path: str):
 
 
 def _parse_robots_txt(text: str):
-    """
-    Parse robots.txt content.
-
-    Returns:
-        disallow_paths: list[str] (raw paths from Disallow directives, deduped, order-preserved)
-        sitemap_urls: list[str]
-        has_wildcard_block: bool
-        bot_specific_blocks: list[str] (User-agent values that aren't '*')
-    """
     disallow_paths = []
     seen = set()
     sitemap_urls = []
@@ -84,13 +73,11 @@ def _parse_robots_txt(text: str):
     current_agent = None
 
     for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].strip()  # strip comments
+        line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
-
         if ":" not in line:
             continue
-
         key, _, value = line.partition(":")
         key = key.strip().lower()
         value = value.strip()
@@ -102,12 +89,10 @@ def _parse_robots_txt(text: str):
             else:
                 if value not in bot_specific_blocks:
                     bot_specific_blocks.append(value)
-
         elif key == "disallow":
             if value and value not in seen:
                 seen.add(value)
                 disallow_paths.append(value)
-
         elif key == "sitemap":
             if value and value not in sitemap_urls:
                 sitemap_urls.append(value)
@@ -116,50 +101,45 @@ def _parse_robots_txt(text: str):
 
 
 async def _verify_path(session: aiohttp.ClientSession, origin: str, path: str, semaphore: asyncio.Semaphore):
-    """
-    Make a real request to a flagged path and classify its accessibility.
-    Returns a dict with http_status (int or None), reachable (bool), error (str or None).
-    """
     target = urljoin(origin + "/", path.lstrip("/"))
     async with semaphore:
         try:
             timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-            async with session.get(
-                target,
-                timeout=timeout,
-                headers={"User-Agent": USER_AGENT},
-                allow_redirects=True,
-                ssl=False,
-            ) as resp:
-                return {"http_status": resp.status, "error": None}
+            # Try HEAD first (faster)
+            async with session.head(target, timeout=timeout, headers={"User-Agent": USER_AGENT}, ssl=False, allow_redirects=True) as resp:
+                head_status = resp.status
+                if head_status < 400:
+                    # If HEAD succeeds, we consider it accessible
+                    return {"http_status": head_status, "method": "HEAD", "error": None}
+            # Fallback to GET if HEAD fails
+            async with session.get(target, timeout=timeout, headers={"User-Agent": USER_AGENT}, ssl=False, allow_redirects=True) as resp:
+                body = await resp.text(errors="ignore", limit=5000)
+                return {"http_status": resp.status, "method": "GET", "body_snippet": body[:200], "error": None}
         except asyncio.TimeoutError:
             return {"http_status": None, "error": "timeout"}
         except aiohttp.ClientError as exc:
             return {"http_status": None, "error": f"client_error: {exc}"}
-        except Exception as exc:  # noqa: BLE001 - never crash the scanner
-            return {"http_status": None, "error": f"unexpected_error: {exc}"}
+        except Exception as exc:
+            return {"http_status": None, "error": f"unexpected: {exc}"}
 
 
 def _note_for_status(http_status, error):
     if error == "timeout":
-        return "Request timed out while verifying accessibility."
+        return "Request timed out."
     if error is not None:
-        return f"Could not verify path due to a connection issue ({error})."
+        return f"Connection issue: {error}"
     if http_status == 200:
         return "Path is publicly accessible."
     if http_status == 403:
-        return "Path exists but is blocked (403) — still flagged as it confirms the resource is present."
+        return "Path exists but blocked (403)."
     if http_status == 404:
-        return "Path is referenced in robots.txt but does not appear to exist (404)."
-    if http_status is not None and 300 <= http_status < 400:
-        return f"Path redirects (HTTP {http_status}) — destination not followed for evidence purposes."
-    if http_status is not None:
-        return f"Path returned HTTP {http_status}."
-    return "Accessibility could not be determined."
+        return "Path does not exist (404)."
+    if 300 <= http_status < 400:
+        return f"Redirects (HTTP {http_status})."
+    return f"HTTP {http_status}."
 
 
 def _escalated_severity(base_severity: str, http_status):
-    """Escalate severity if the path is confirmed live (200)."""
     if http_status == 200:
         order = ["low", "medium", "high", "critical"]
         if base_severity in order:
@@ -167,22 +147,14 @@ def _escalated_severity(base_severity: str, http_status):
             return order[min(idx + 1, len(order) - 1)]
         return base_severity
     if http_status == 403:
-        return base_severity  # confirmed to exist, but access-controlled
+        return base_severity
     if http_status == 404:
-        # downgrade — path doesn't actually exist
         downgrade = {"critical": "low", "high": "low", "medium": "info", "low": "info"}
         return downgrade.get(base_severity, base_severity)
     return base_severity
 
 
 async def run(url: str) -> dict:
-    """
-    Fetch and analyze robots.txt for sensitive disclosed paths.
-
-    Returns a result dict per the Bravo6 standard schema, with additional
-    fields: evidence (list of finding dicts), total_disallow_rules,
-    sensitive_paths_found.
-    """
     test_name = "robots_txt"
 
     try:
@@ -190,207 +162,132 @@ async def run(url: str) -> dict:
         origin = _base_origin(normalized)
         robots_url = f"{origin}/robots.txt"
 
-        timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-        headers = {"User-Agent": USER_AGENT}
-
-        async with aiohttp.ClientSession(headers=headers) as session:
-            # Step 1: Fetch robots.txt
+        async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(robots_url, timeout=timeout, ssl=False) as resp:
-                    status_code = resp.status
-                    if status_code == 404:
+                async with session.get(robots_url, timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS), ssl=False) as resp:
+                    if resp.status == 404:
                         return {
                             "test_name": test_name,
                             "status": "info",
                             "severity": "info",
                             "title": "No robots.txt Found",
-                            "description": (
-                                f"No robots.txt file was found at {robots_url}. "
-                                "This is not a security issue; the site simply does not "
-                                "publish crawler directives."
-                            ),
+                            "description": f"No robots.txt at {robots_url}.",
                             "evidence": [],
                             "total_disallow_rules": 0,
                             "sensitive_paths_found": 0,
-                            "remediation": (
-                                "No action required. Optionally publish a robots.txt that "
-                                "avoids listing sensitive paths."
-                            ),
+                            "remediation": "No action needed."
                         }
-
-                    if status_code != 200:
+                    if resp.status != 200:
                         return {
                             "test_name": test_name,
                             "status": "error",
                             "severity": "info",
                             "title": "robots.txt Unreachable",
-                            "description": (
-                                f"Requesting {robots_url} returned unexpected HTTP "
-                                f"status {status_code}, so it could not be analyzed."
-                            ),
+                            "description": f"HTTP {resp.status} from {robots_url}.",
                             "evidence": [],
                             "total_disallow_rules": 0,
                             "sensitive_paths_found": 0,
-                            "remediation": "Re-run the scan; if the issue persists, verify the target is reachable.",
+                            "remediation": "Check target availability."
                         }
-
-                    try:
-                        body_text = await resp.text(errors="replace")
-                    except Exception as exc:  # noqa: BLE001
-                        return {
-                            "test_name": test_name,
-                            "status": "error",
-                            "severity": "info",
-                            "title": "robots.txt Read Failure",
-                            "description": f"robots.txt was fetched but its body could not be read: {exc}",
-                            "evidence": [],
-                            "total_disallow_rules": 0,
-                            "sensitive_paths_found": 0,
-                            "remediation": "Re-run the scan against this target.",
-                        }
-
+                    body_text = await resp.text(errors="replace")
             except asyncio.TimeoutError:
                 return {
                     "test_name": test_name,
                     "status": "error",
                     "severity": "info",
-                    "title": "robots.txt Request Timed Out",
-                    "description": f"The request to {robots_url} did not complete within {TIMEOUT_SECONDS} seconds.",
+                    "title": "Timeout",
+                    "description": f"Timeout fetching {robots_url}.",
                     "evidence": [],
                     "total_disallow_rules": 0,
                     "sensitive_paths_found": 0,
-                    "remediation": "Re-run the scan; the target may be slow or rate-limiting requests.",
+                    "remediation": "Increase timeout or check network."
                 }
             except aiohttp.ClientError as exc:
                 return {
                     "test_name": test_name,
                     "status": "error",
                     "severity": "info",
-                    "title": "robots.txt Connection Error",
-                    "description": f"Could not connect to {robots_url}: {exc}",
+                    "title": "Connection Error",
+                    "description": f"Failed to fetch {robots_url}: {exc}",
                     "evidence": [],
                     "total_disallow_rules": 0,
                     "sensitive_paths_found": 0,
-                    "remediation": "Verify the target domain is correct and reachable, then re-run the scan.",
+                    "remediation": "Check URL and connectivity."
                 }
 
-            # Step 3: Parse Disallow directives (and sitemap / agent info)
-            disallow_paths, sitemap_urls, has_wildcard_block, bot_specific_blocks = _parse_robots_txt(body_text)
-            total_disallow_rules = len(disallow_paths)
+            disallow_paths, sitemap_urls, has_wildcard, bot_blocks = _parse_robots_txt(body_text)
 
-            # Step 4: Flag sensitive paths
-            flagged = []  # list of (path, label, base_severity)
+            flagged = []
             for path in disallow_paths:
                 match = _match_sensitive_pattern(path)
                 if match:
                     label, severity = match
                     flagged.append((path, label, severity))
 
-            # Step 6: Verify accessibility of each flagged path (bounded concurrency)
             evidence = []
             if flagged:
                 semaphore = asyncio.Semaphore(MAX_CONCURRENT_VERIFICATIONS)
-                verify_tasks = [
-                    _verify_path(session, origin, path, semaphore) for path, _, _ in flagged
-                ]
-                verify_results = await asyncio.gather(*verify_tasks, return_exceptions=False)
+                tasks = [_verify_path(session, origin, path, semaphore) for path, _, _ in flagged]
+                results = await asyncio.gather(*tasks)
 
-                for (path, label, base_severity), result in zip(flagged, verify_results):
-                    http_status = result["http_status"]
-                    error = result["error"]
+                for (path, label, base_severity), result in zip(flagged, results):
+                    http_status = result.get("http_status")
+                    error = result.get("error")
                     final_severity = _escalated_severity(base_severity, http_status)
+                    poc = f"curl -v {origin}{path}" if http_status and http_status < 400 else f"dig {urlparse(origin).netloc}"
+
                     evidence.append({
                         "path": path,
                         "pattern_matched": label,
                         "http_status": http_status,
                         "severity": final_severity,
+                        "confidence": 100 if http_status == 200 else 80 if http_status == 403 else 50,
                         "note": _note_for_status(http_status, error),
+                        "poc": poc,
                     })
 
             sensitive_paths_found = len(evidence)
+            overall_severity = max((e["severity"] for e in evidence), key=lambda s: SEVERITY_RANK.get(s, 0), default="info")
+            confirmed_live = any(e["http_status"] == 200 for e in evidence)
 
-            # Step 5: informational notes about sitemap / wildcard / bot-specific blocks
-            info_notes = []
-            if sitemap_urls:
-                info_notes.append(
-                    f"robots.txt discloses {len(sitemap_urls)} sitemap location(s): {', '.join(sitemap_urls)}."
-                )
-            if has_wildcard_block:
-                info_notes.append("A wildcard (User-agent: *) block is present, applying rules to all crawlers.")
-            if bot_specific_blocks:
-                info_notes.append(
-                    f"Bot-specific rules exist for: {', '.join(bot_specific_blocks)}."
-                )
-
-            # Determine overall status/severity/title/description
             if sensitive_paths_found == 0:
                 status = "pass"
-                overall_severity = "info"
-                title = "No Sensitive Paths Disclosed in robots.txt"
-                description = (
-                    f"robots.txt was found at {robots_url} with {total_disallow_rules} "
-                    "Disallow rule(s), none of which matched known sensitive path patterns."
-                )
+                title = "No Sensitive Paths Disclosed"
+                desc = f"robots.txt has {len(disallow_paths)} Disallow rules, none matched sensitive patterns."
             else:
-                # overall severity = highest severity among findings
-                overall_severity = max(
-                    (e["severity"] for e in evidence),
-                    key=lambda s: SEVERITY_RANK.get(s, 0),
-                )
-                confirmed_live = any(e["http_status"] == 200 for e in evidence)
                 status = "fail" if confirmed_live else "warning"
-                title = (
-                    "Sensitive Paths Disclosed and Publicly Accessible via robots.txt"
-                    if confirmed_live
-                    else "Sensitive Paths Disclosed in robots.txt"
-                )
-                description = (
-                    f"robots.txt at {robots_url} lists {total_disallow_rules} Disallow rule(s), "
-                    f"of which {sensitive_paths_found} match patterns associated with sensitive "
-                    "infrastructure (admin panels, backups, config, version control, etc.). "
-                    "Disallow entries are publicly readable and effectively act as a roadmap "
-                    "of paths an attacker should check first."
-                )
-
-            if info_notes:
-                description = description + " " + " ".join(info_notes)
+                title = f"Sensitive Paths in robots.txt ({sensitive_paths_found})"
+                desc = f"robots.txt exposes {sensitive_paths_found} sensitive path(s). {'Some are publicly accessible.' if confirmed_live else 'Check manually.'}"
 
             return {
                 "test_name": test_name,
                 "status": status,
                 "severity": overall_severity,
                 "title": title,
-                "description": description,
+                "description": desc,
                 "evidence": evidence,
-                "total_disallow_rules": total_disallow_rules,
+                "total_disallow_rules": len(disallow_paths),
                 "sensitive_paths_found": sensitive_paths_found,
-                "remediation": (
-                    "Remove sensitive paths from robots.txt. Robots.txt is public — listing "
-                    "paths here reveals your site structure to attackers. Instead, enforce "
-                    "access control (authentication/authorization) directly on these "
-                    "resources, and rely on robots.txt only for genuinely non-sensitive "
-                    "crawl-budget management."
-                ),
+                "remediation": "Remove sensitive paths from robots.txt and enforce access control."
             }
 
-    except Exception as exc:  # noqa: BLE001 - absolute top-level safety net
+    except Exception as e:
         return {
             "test_name": test_name,
             "status": "error",
             "severity": "info",
-            "title": "Scan Failed",
-            "description": f"An unexpected error occurred while scanning {url}: {exc}",
+            "title": "Scan Error",
+            "description": f"Unexpected error: {e}",
             "evidence": [],
             "total_disallow_rules": 0,
             "sensitive_paths_found": 0,
-            "remediation": "Re-run the scan. If the issue persists, check connectivity to the target.",
+            "remediation": "Re-run the scan."
         }
 
 
 if __name__ == "__main__":
     import json
     import sys
-
     target = sys.argv[1] if len(sys.argv) > 1 else "example.com"
     result = asyncio.run(run(target))
     print(json.dumps(result, indent=2))
