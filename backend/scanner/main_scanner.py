@@ -1,8 +1,8 @@
 """
 main_scanner.py — Bravo6 Scout Worker
 ======================================
-Orchestrates the 13 passive security tests against a target URL,
-runs them in parallel (3 groups via asyncio.gather), aggregates
+Orchestrates the 16 passive security tests against a target URL,
+runs them in parallel (4 groups via asyncio.gather), aggregates
 the results, and returns a single structured scan report.
 
 Usage:
@@ -29,6 +29,9 @@ from scanner import (
     test_11_cors,
     test_12_http_methods,
     test_13_cms_fingerprinting,
+    test_14_subresource_integrity_sri,
+    test_15_hallucinated_deps,
+    test_16_ai_exposure,
 )
 
 # --------------------------------------------------------------------------
@@ -248,14 +251,15 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
 
 async def run_scout(url: str) -> dict:
     """
-    Run all 13 passive security tests against the target URL in parallel.
+    Run all 16 passive security tests against the target URL in parallel.
 
     Groups:
-        A — HTTP layer  (headers, CORS, methods, cookies, info disclosure)
-        B — Content     (secrets, JS libs, mixed content, CMS/vibe)
-        C — DNS/Network (SSL, email security, subdomain takeover, robots.txt)
+        A — HTTP layer        (headers, CORS, methods, cookies, info disclosure)
+        B — Content           (secrets, JS libs, mixed content, CMS/vibe)
+        C — DNS/Network       (SSL, email security, subdomain takeover, robots.txt)
+        D — AI & Supply Chain (SRI, hallucinated deps, AI exposure)
 
-    All 3 groups run concurrently via asyncio.gather, alongside a
+    All 4 groups run concurrently via asyncio.gather, alongside a
     lightweight WAF/CDN header check used only for report context.
     Within each group, tests also run concurrently.
     return_exceptions=True ensures one failing test never kills the others.
@@ -285,12 +289,12 @@ async def run_scout(url: str) -> dict:
     start = time.time()
 
     # One lightweight GET to fingerprint a WAF/CDN from response headers.
-    # This runs concurrently with the 13 tests rather than blocking them.
+    # This runs concurrently with the 16 tests rather than blocking them.
     async def _waf_lookup() -> str | None:
         async with aiohttp.ClientSession() as session:
             return await _detect_waf(target, session)
 
-    # Run all 13 tests + WAF detection concurrently
+    # Run all 16 tests + WAF detection concurrently
     # return_exceptions=True: if one test crashes, others keep running
     *raw_results, waf_name = await asyncio.gather(
         # ── Group A: HTTP layer ──────────────────────────────────────────
@@ -309,6 +313,10 @@ async def run_scout(url: str) -> dict:
         test_08_email_security.run(target),
         test_09_subdomain_takeover.run(target),
         test_10_robots_txt.run(target),
+        # ── Group D: AI & Supply Chain ────────────────────────────────────
+        test_14_subresource_integrity_sri.run(target),
+        test_15_hallucinated_deps.run(target),
+        test_16_ai_exposure.run(target),
         # ── WAF/CDN context (not a finding, not scored) ──────────────────
         _waf_lookup(),
         return_exceptions=True,
