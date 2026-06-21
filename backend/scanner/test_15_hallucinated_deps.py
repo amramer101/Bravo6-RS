@@ -1,6 +1,6 @@
 """
 Bravo6 Security Scanner
-Module: test_15_hallucinated_deps.py - Advanced
+Module: test_15_hallucinated_deps.py - Advanced (v2)
 
 Enhanced with:
 - Multi-resolver DNS check (Cloudflare, Google, Quad9) to confirm NXDOMAIN.
@@ -8,6 +8,7 @@ Enhanced with:
 - PoC exploitation commands: dig, curl, nslookup.
 - Confidence scoring based on DNS + HTTP results.
 - Attack scenario: domain registration risk and supply-chain attack.
+- Fixed false positives: known safe domains are whitelisted (e.g., google.com).
 """
 
 import asyncio
@@ -24,6 +25,63 @@ USER_AGENT = "Bravo6-Scanner/1.0"
 REQUEST_TIMEOUT_SECONDS = 8
 DNS_RETRY_ATTEMPTS = 3
 DNS_LOOKUP_TIMEOUT_SECONDS = 5
+
+# Known safe domains that are publicly trusted, commonly used, and should NOT
+# be flagged as hallucinated even if HTTP checks fail (e.g., due to WAF or rate limiting).
+KNOWN_SAFE_DOMAINS = {
+    "google.com",
+    "googleapis.com",
+    "gstatic.com",
+    "cloudflare.com",
+    "cloudflare.net",
+    "akamai.net",
+    "akamaiedge.net",
+    "fastly.net",
+    "amazonaws.com",
+    "s3.amazonaws.com",
+    "github.com",
+    "github.io",
+    "cdnjs.cloudflare.com",
+    "jsdelivr.net",
+    "unpkg.com",
+    "bootstrapcdn.com",
+    "maxcdn.com",
+    "netlify.com",
+    "netlify.app",
+    "herokuapp.com",
+    "azure.com",
+    "azurewebsites.net",
+    "windows.net",
+    "microsoft.com",
+    "facebook.com",
+    "fbcdn.net",
+    "twitter.com",
+    "twimg.com",
+    "linkedin.com",
+    "youtube.com",
+    "ytimg.com",
+    "vimeo.com",
+    "wordpress.org",
+    "wp.com",
+    "jetpack.com",
+    "woocommerce.com",
+    "stripe.com",
+    "paypal.com",
+    "paypalobjects.com",
+    "recaptcha.net",
+    "gstatic.com",
+    "googlesyndication.com",
+    "doubleclick.net",
+    "googleadservices.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "googleapis.com",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "ajax.googleapis.com",
+    "maps.googleapis.com",
+    "code.jquery.com",
+}
 
 REMEDIATION = (
     "Remove all references to non-existent or unresponsive domains immediately. "
@@ -117,20 +175,17 @@ async def _check_domain_dns(domain: str) -> dict:
             if res["status"] in ("RESOLVED", "NOERROR"):
                 return {"domain": domain, "dns_status": res["status"], "ips": res.get("ips", [])}
             if res["status"] == "NXDOMAIN":
-                # If multiple resolvers agree on NXDOMAIN, it's 100% confirmed
                 results.append("NXDOMAIN")
                 break
             if res["status"] in ("TIMEOUT", "ERROR"):
                 await asyncio.sleep(0.5)
                 continue
-        # If all resolvers gave NXDOMAIN, confirm
         if results.count("NXDOMAIN") >= 2:
             return {"domain": domain, "dns_status": "NXDOMAIN"}
-    # If all failed with timeout/error, return UNVERIFIABLE
     return {"domain": domain, "dns_status": "UNVERIFIABLE", "error": "All resolvers failed"}
 
 
-async def _check_http(session: aiohttp.ClientSession, full_url: str) -> dict:
+async def _check_http(session: aiohttp.ClientSession, full_url: str, domain: str) -> dict:
     """Check if the resource URL actually loads (GET)."""
     try:
         async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=5), ssl=False, allow_redirects=True) as resp:
@@ -142,10 +197,17 @@ async def _check_http(session: aiohttp.ClientSession, full_url: str) -> dict:
                 "content_type": resp.headers.get("Content-Type", ""),
             }
     except asyncio.TimeoutError:
+        # If domain is known safe, do not treat as error
+        if _normalize_domain(domain) in KNOWN_SAFE_DOMAINS:
+            return {"status_code": None, "error": "Timeout (safe domain whitelisted)"}
         return {"status_code": None, "error": "Timeout"}
     except aiohttp.ClientError as e:
+        if _normalize_domain(domain) in KNOWN_SAFE_DOMAINS:
+            return {"status_code": None, "error": f"ClientError (safe domain whitelisted): {e}"}
         return {"status_code": None, "error": str(e)}
     except Exception as e:
+        if _normalize_domain(domain) in KNOWN_SAFE_DOMAINS:
+            return {"status_code": None, "error": f"Exception (safe domain whitelisted): {e}"}
         return {"status_code": None, "error": str(e)}
 
 
@@ -196,8 +258,12 @@ async def run(url: str) -> dict:
         for domain, dns_res in zip(external_domains.keys(), dns_results):
             if dns_res.get("dns_status") in ("RESOLVED", "NOERROR"):
                 full_url = external_domains[domain]["full_url"]
-                http_tasks[domain] = _check_http(session, full_url)
-        http_results = await asyncio.gather(*http_tasks.values(), return_exceptions=False)
+                http_tasks[domain] = _check_http(session, full_url, domain)
+        http_results = {}
+        if http_tasks:
+            http_res_list = await asyncio.gather(*http_tasks.values(), return_exceptions=False)
+            for domain, res in zip(http_tasks.keys(), http_res_list):
+                http_results[domain] = res
 
     # Build evidence
     evidence = []
@@ -233,9 +299,32 @@ async def run(url: str) -> dict:
                 "poc": f"dig {domain} A +short ; nslookup {domain} ; curl -v {meta['full_url']}",
             })
             evidence.append(entry)
-        elif dns_status == "RESOLVED":
-            # Check HTTP response
-            http_res = http_results[domain] if domain in http_results else None
+            continue
+
+        # For resolved domains, check HTTP
+        http_res = http_results.get(domain)
+        is_safe_domain = _normalize_domain(domain) in KNOWN_SAFE_DOMAINS
+
+        if is_safe_domain:
+            # Safe domains: ignore HTTP errors; consider safe
+            # Only flag if HTTP returns a 404 or something obviously wrong
+            if http_res and http_res.get("status_code") is not None and http_res["status_code"] == 404:
+                entry.update({
+                    "severity": "low",
+                    "confidence": 40,
+                    "attack_scenario": (
+                        f"Domain '{domain}' is known safe but the specific resource returned 404. "
+                        f"May be a broken link or misconfiguration."
+                    ),
+                    "poc": f"curl -v {meta['full_url']}",
+                })
+                evidence.append(entry)
+            else:
+                # Safe domain and resource appears fine -> skip
+                continue
+
+        else:
+            # Unknown domain: evaluate HTTP response
             if http_res and http_res.get("status_code") is not None:
                 if http_res["status_code"] >= 400:
                     entry.update({
@@ -263,6 +352,7 @@ async def run(url: str) -> dict:
                     evidence.append(entry)
             else:
                 # Resolved but HTTP check failed (timeout, error)
+                # If not a safe domain, flag as medium risk
                 entry.update({
                     "severity": "medium",
                     "confidence": 60,
@@ -273,29 +363,6 @@ async def run(url: str) -> dict:
                     "poc": f"curl -v {meta['full_url']} ; traceroute {domain}",
                 })
                 evidence.append(entry)
-        elif dns_status == "NOERROR":
-            # Domain exists but no A record
-            entry.update({
-                "severity": "low",
-                "confidence": 80,
-                "attack_scenario": (
-                    f"Domain '{domain}' exists (NOERROR) but has no A record. "
-                    f"Could be a misconfiguration or a domain used only for MX/other records."
-                ),
-                "poc": f"dig {domain} A ; dig {domain} MX",
-            })
-            evidence.append(entry)
-        else:  # UNVERIFIABLE
-            entry.update({
-                "severity": "info",
-                "confidence": 40,
-                "attack_scenario": (
-                    f"DNS lookup for '{domain}' was inconclusive (timeout/error). "
-                    f"Manual verification recommended."
-                ),
-                "poc": f"dig {domain} A +trace",
-            })
-            evidence.append(entry)
 
     if not evidence:
         return {

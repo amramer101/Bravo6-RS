@@ -7,9 +7,14 @@ the results, and returns a single structured scan report.
 
 Usage:
     result = asyncio.run(run_scout("example.com"))
+
+    # With HTML report generation:
+    python -m scanner.main_scanner https://example.com --html report.html
 """
 
 import asyncio
+import json
+import sys
 import time
 from urllib.parse import urlparse
 
@@ -34,6 +39,15 @@ from scanner import (
     test_16_ai_exposure,
 )
 
+# Try to import the HTML report generator (optional)
+try:
+    from scanner.report_generator import generate_html_report
+except ImportError:
+    try:
+        from report_generator import generate_html_report
+    except ImportError:
+        generate_html_report = None
+
 # --------------------------------------------------------------------------
 # Severity config
 # --------------------------------------------------------------------------
@@ -49,18 +63,13 @@ SCORE_DEDUCTIONS = {
     "info": 0,
 }
 
-
 # --------------------------------------------------------------------------
-# WAF / CDN detection (context only — informs report consumers that some
-# findings, e.g. HTTP methods or rate-limit checks, may be false positives
-# due to WAF interception. Not used to bypass or evade anything.)
+# WAF / CDN detection (context only)
 # --------------------------------------------------------------------------
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
 USER_AGENT = "Bravo6-Scanner/1.0"
 
-# Each signature is either a bare header name (presence check) or a
-# "header: value-substring" pair when the value itself is the tell.
 WAF_SIGNATURES = {
     "Cloudflare": ["cf-ray", "cf-cache-status"],
     "AWS CloudFront": ["x-amz-cf-id", "x-amz-request-id"],
@@ -74,17 +83,6 @@ WAF_SIGNATURES = {
 
 
 async def _detect_waf(url: str, session: "aiohttp.ClientSession") -> str | None:
-    """
-    Detect a WAF/CDN from the response headers of a single GET request.
-
-    This is purely informational/context-gathering for the report (so
-    consumers understand why a finding like HTTP methods or rate-limiting
-    might look like a false positive). It does not attempt to bypass,
-    fingerprint version numbers, or probe for WAF weaknesses.
-
-    Returns the WAF/CDN name on first match, or None if nothing matched
-    or the request failed for any reason.
-    """
     try:
         async with session.get(
             url,
@@ -94,7 +92,6 @@ async def _detect_waf(url: str, session: "aiohttp.ClientSession") -> str | None:
             allow_redirects=True,
         ) as resp:
             headers_lower = {k.lower(): str(v).lower() for k, v in resp.headers.items()}
-
             for waf_name, signatures in WAF_SIGNATURES.items():
                 for sig in signatures:
                     sig = sig.lower()
@@ -109,7 +106,6 @@ async def _detect_waf(url: str, session: "aiohttp.ClientSession") -> str | None:
                         return waf_name
             return None
     except Exception:
-        # Detection is best-effort context — never let it break the scan.
         return None
 
 
@@ -139,18 +135,9 @@ def _is_valid_url(url: str) -> bool:
 # --------------------------------------------------------------------------
 
 def _calculate_score(findings: list) -> int:
-    """
-    Start at 100 and deduct points for each failed/warning finding
-    based on its severity. Floor is 0.
-
-    Only deducts once per test_name to avoid double-counting tests
-    that return multiple findings (e.g. security_headers returns one
-    finding per header).
-    """
     score = 100
     seen_tests = set()
 
-    # Sort by severity descending so the worst finding per test drives the deduction
     sorted_findings = sorted(
         findings,
         key=lambda f: SEVERITY_RANK.get(f.get("severity", "info"), 0),
@@ -189,11 +176,6 @@ def _severity_label(score: int) -> str:
 
 
 def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict | None = None) -> dict:
-    """
-    Takes the raw list of results from asyncio.gather (may include
-    Exception objects if return_exceptions=True) and builds the final
-    scan report dict.
-    """
     findings = []
     scan_errors = []
 
@@ -218,7 +200,6 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
         "errors":   sum(1 for f in findings if f.get("status") == "error") + len(scan_errors),
     }
 
-    # Overall status: fail if any critical/high, warning if only medium/low, pass otherwise
     if summary["critical"] > 0 or summary["high"] > 0:
         overall_status = "fail"
     elif summary["medium"] > 0 or summary["low"] > 0:
@@ -250,27 +231,6 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
 # --------------------------------------------------------------------------
 
 async def run_scout(url: str) -> dict:
-    """
-    Run all 16 passive security tests against the target URL in parallel.
-
-    Groups:
-        A — HTTP layer        (headers, CORS, methods, cookies, info disclosure)
-        B — Content           (secrets, JS libs, mixed content, CMS/vibe)
-        C — DNS/Network       (SSL, email security, subdomain takeover, robots.txt)
-        D — AI & Supply Chain (SRI, hallucinated deps, AI exposure)
-
-    All 4 groups run concurrently via asyncio.gather, alongside a
-    lightweight WAF/CDN header check used only for report context.
-    Within each group, tests also run concurrently.
-    return_exceptions=True ensures one failing test never kills the others.
-
-    Args:
-        url: Target URL or domain, e.g. "example.com" or "https://example.com"
-
-    Returns:
-        Structured scan report dict with score, grade, summary, findings,
-        and a non-scored "waf_context" field noting any detected WAF/CDN.
-    """
     target = _normalize_url(url)
 
     if not target or not _is_valid_url(target):
@@ -288,14 +248,10 @@ async def run_scout(url: str) -> dict:
 
     start = time.time()
 
-    # One lightweight GET to fingerprint a WAF/CDN from response headers.
-    # This runs concurrently with the 16 tests rather than blocking them.
     async def _waf_lookup() -> str | None:
         async with aiohttp.ClientSession() as session:
             return await _detect_waf(target, session)
 
-    # Run all 16 tests + WAF detection concurrently
-    # return_exceptions=True: if one test crashes, others keep running
     *raw_results, waf_name = await asyncio.gather(
         # ── Group A: HTTP layer ──────────────────────────────────────────
         test_05_security_headers.run(target),
@@ -317,13 +273,11 @@ async def run_scout(url: str) -> dict:
         test_14_subresource_integrity_sri.run(target),
         test_15_hallucinated_deps.run(target),
         test_16_ai_exposure.run(target),
-        # ── WAF/CDN context (not a finding, not scored) ──────────────────
+        # ── WAF/CDN context ──────────────────────────────────────────────
         _waf_lookup(),
         return_exceptions=True,
     )
 
-    # If WAF detection itself raised, treat it the same as "not detected"
-    # rather than letting it surface as a scan error.
     if isinstance(waf_name, Exception):
         waf_name = None
 
@@ -340,21 +294,77 @@ async def run_scout(url: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Manual test harness
+# HTML Report Generation Helper
+# --------------------------------------------------------------------------
+
+def generate_report(result: dict, output_file: str = None) -> str:
+    """Generate an HTML report from scan results."""
+    if generate_html_report is None:
+        print("[WARN] report_generator module not found. Install it to generate HTML reports.")
+        return None
+
+    html_content = generate_html_report(result)
+
+    if output_file is None:
+        # Default filename based on target domain
+        import re
+        target = result.get("url", "scan")
+        safe_name = re.sub(r'[^a-zA-Z0-9]', '_', target)
+        output_file = f"scan_report_{safe_name}.html"
+
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+
+    return output_file
+
+
+# --------------------------------------------------------------------------
+# Command-line entry point
 # --------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import json
     import sys
+    import argparse
 
-    target = sys.argv[1] if len(sys.argv) > 1 else "example.com"
+    # Simple argument parsing
+    args = sys.argv[1:]
+    target = None
+    html_output = None
+
+    # Parse --html flag
+    if '--html' in args:
+        idx = args.index('--html')
+        if idx + 1 < len(args) and not args[idx+1].startswith('--'):
+            html_output = args[idx+1]
+            args.pop(idx)
+            args.pop(idx)
+        else:
+            # --html without filename -> use default
+            args.remove('--html')
+            html_output = True  # will generate default name
+
+    if args:
+        target = args[0]
+    else:
+        target = "example.com"
 
     print(f"[Bravo6] Scanning: {target}")
     result = asyncio.run(run_scout(target))
 
-    # Pretty-print without findings detail for a quick overview
+    # Print overview to console
     overview = {k: v for k, v in result.items() if k != "findings"}
     print(json.dumps(overview, indent=2))
     print(f"\n[Bravo6] Total findings: {len(result['findings'])}")
     print(f"[Bravo6] Score: {result['score']}/100 (Grade {result['grade']})")
     print(f"[Bravo6] Duration: {result['meta']['duration_seconds']}s")
+
+    # Generate HTML report if requested or if no specific output specified (optional)
+    # Let's generate it by default unless --no-html is passed (we didn't add that, but we can)
+    # For convenience, we'll generate if --html is present.
+    if html_output is not None or '--html' in sys.argv:
+        out = generate_report(result, html_output if isinstance(html_output, str) else None)
+        if out:
+            print(f"[Bravo6] HTML report saved to: {out}")
+    else:
+        # Optionally, user can enable by default; we'll keep it optional to avoid file clutter.
+        print("[Bravo6] Use --html <filename> to generate HTML report.")

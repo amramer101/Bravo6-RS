@@ -164,7 +164,7 @@ def _analyze_openapi(text: str, path: str, base: str) -> list:
             "severity": "high",
             "summary": f"Internal hostname/IP disclosed in {label}",
             "evidence": f"Found: {', '.join(sorted(set(matches))[:5])}",
-            "poc": f"grep -E '(10\.|172\.|192\.168|localhost)' {path}",
+            "poc": rf"grep -E '(10\.|172\.|192\.168|localhost)' {path}",
             "confidence": 90,
         })
 
@@ -227,7 +227,7 @@ def _analyze_ai_plugin(text: str) -> list:
             "severity": "high",
             "summary": "Internal hostname/IP in ai-plugin.json",
             "evidence": f"Found: {', '.join(internal_hosts[:5])}",
-            "poc": "curl -s /.well-known/ai-plugin.json | grep -E '(10\.|172\.|192\.168|localhost)'",
+            "poc": r"curl -s /.well-known/ai-plugin.json | grep -E '(10\.|172\.|192\.168|localhost)'",
             "confidence": 90,
         })
 
@@ -285,7 +285,7 @@ def _analyze_llms_txt(text: str) -> list:
             "severity": "high",
             "summary": "Internal hostname/IP in llms.txt",
             "evidence": f"Found: {', '.join(internal_hosts[:5])}",
-            "poc": "curl -s /llms.txt | grep -E '(10\.|172\.|192\.168|localhost)'",
+            "poc": r"curl -s /llms.txt | grep -E '(10\.|172\.|192\.168|localhost)'",
             "confidence": 90,
         })
 
