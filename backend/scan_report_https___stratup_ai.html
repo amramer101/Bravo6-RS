@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="ar" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bravo6 Security Scan Report - https://stratup.ai</title>
+    <style>
+        /* ── Base / Matrix Theme ──────────────────────── */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            font-size: 18px;
+            background: #0a0a0a;
+            color: #00ff41;
+            padding: 30px;
+            line-height: 1.7;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1440px;
+            margin: 0 auto;
+            background: rgba(10, 10, 10, 0.95);
+            border: 2px solid #00ff41;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 0 60px rgba(0, 255, 65, 0.08);
+        }
+
+        /* ── Scrollbar ────────────────────────────────── */
+        ::-webkit-scrollbar { width: 8px; background: #0a0a0a; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #00ff41; border-radius: 4px; }
+
+        /* ── Typography ───────────────────────────────── */
+        h1, h2, h3, h4 {
+            font-family: 'Times New Roman', Times, serif;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+        h1 { font-size: 36px; }
+        h2 { font-size: 30px; margin: 28px 0 16px 0; }
+        h3 { font-size: 24px; margin: 16px 0 8px 0; }
+        p { font-size: 18px; margin-bottom: 12px; }
+
+        /* ── Links ────────────────────────────────────── */
+        a { color: #00ff41; text-decoration: none; border-bottom: 1px dashed #00ff41; }
+        a:hover { color: #ffffff; border-bottom: 1px solid #00ff41; }
+
+        /* ── Header ───────────────────────────────────── */
+        .header {
+            border-bottom: 2px solid #00ff41;
+            padding-bottom: 24px;
+            margin-bottom: 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .header h1 {
+            font-size: 40px;
+            color: #00ff41;
+            text-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
+            letter-spacing: 4px;
+        }
+        .header .badge {
+            font-family: 'Times New Roman', Times, serif;
+            background: #ff0040;
+            color: #0a0a0a;
+            padding: 10px 32px;
+            border-radius: 0px;
+            font-weight: 700;
+            font-size: 22px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            border: 1px solid #ff0040;
+            box-shadow: 0 0 30px rgba(#ff0040, 0.15);
+        }
+        .meta-info {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+            font-size: 17px;
+            color: #66ff99;
+        }
+        .meta-info span {
+            background: rgba(0, 255, 65, 0.06);
+            padding: 4px 16px;
+            border: 1px solid rgba(0, 255, 65, 0.15);
+            border-radius: 0px;
+        }
+        .meta-info strong { color: #00ff41; }
+
+        /* ── Score Card ───────────────────────────────── */
+        .score-card {
+            background: rgba(0, 255, 65, 0.03);
+            border: 1px solid rgba(0, 255, 65, 0.15);
+            padding: 32px;
+            margin-bottom: 32px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 40px;
+            align-items: center;
+        }
+        .score-circle {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: conic-gradient(#ff0040 8%, #1a1a1a 8%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 40px;
+            font-weight: 700;
+            color: #0a0a0a;
+            border: 2px solid #ff0040;
+            box-shadow: 0 0 40px rgba(#ff0040, 0.10);
+        }
+        .score-details { flex: 1; }
+        .score-details .grade {
+            font-size: 56px;
+            font-weight: 700;
+            color: #ff0040;
+            text-shadow: 0 0 30px rgba(#ff0040, 0.15);
+        }
+        .score-details .sub { font-size: 19px; color: #66ff99; }
+        .summary-bars {
+            display: flex;
+            gap: 18px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+        .summary-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0, 255, 65, 0.04);
+            padding: 8px 20px;
+            border: 1px solid rgba(0, 255, 65, 0.08);
+            font-size: 16px;
+            color: #66ff99;
+        }
+        .summary-item .dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 0px;
+            display: inline-block;
+        }
+
+        /* ── Heatmap ──────────────────────────────────── */
+        .heatmap {
+            background: rgba(0, 255, 65, 0.03);
+            border: 1px solid rgba(0, 255, 65, 0.10);
+            padding: 24px 28px;
+            margin-bottom: 32px;
+        }
+        .heatmap-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .heatmap-cell {
+            padding: 16px 18px;
+            border: 1px solid rgba(0, 255, 65, 0.15);
+            font-size: 15px;
+            font-weight: 600;
+            text-align: center;
+            color: #0a0a0a;
+            transition: all 0.2s;
+            background: #1a1a1a;
+        }
+        .heatmap-cell:hover { transform: scale(1.03); box-shadow: 0 0 30px rgba(0, 255, 65, 0.05); }
+        .heatmap-cell .cell-score {
+            font-size: 22px;
+            font-weight: 700;
+            display: block;
+            margin-bottom: 2px;
+        }
+        .heatmap-cell .cell-label { font-size: 13px; opacity: 0.8; }
+
+        /* ── Priority Section ─────────────────────────── */
+        .priority-section {
+            background: rgba(0, 255, 65, 0.03);
+            border: 1px solid rgba(0, 255, 65, 0.10);
+            padding: 24px 28px;
+            margin-bottom: 32px;
+        }
+        .priority-list { list-style: none; padding: 0; margin-top: 12px; }
+        .priority-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 18px;
+            padding: 14px 18px;
+            border-bottom: 1px solid rgba(0, 255, 65, 0.06);
+        }
+        .priority-list li:last-child { border-bottom: none; }
+        .priority-badge {
+            font-family: 'Times New Roman', Times, serif;
+            font-weight: 700;
+            font-size: 13px;
+            padding: 4px 16px;
+            border-radius: 0px;
+            color: #0a0a0a;
+            white-space: nowrap;
+            background: #666;
+            border: 1px solid #666;
+        }
+        .priority-badge.Critical { background: #ff0040; border-color: #ff0040; }
+        .priority-badge.High { background: #ff6a00; border-color: #ff6a00; }
+        .priority-badge.Medium { background: #ffd700; border-color: #ffd700; color: #0a0a0a; }
+        .priority-badge.Low { background: #00ccff; border-color: #00ccff; }
+        .priority-badge.Info { background: #666666; border-color: #666666; }
+
+        /* ── Finding Cards ────────────────────────────── */
+        .finding-card {
+            background: rgba(0, 255, 65, 0.02);
+            border: 1px solid rgba(0, 255, 65, 0.08);
+            margin-bottom: 18px;
+            overflow: hidden;
+            border-left: 6px solid #333;
+        }
+        .finding-card.pass { border-left-color: #00ff41; }
+        .finding-card.warning { border-left-color: #ffd700; }
+        .finding-card.fail { border-left-color: #ff0040; }
+        .finding-card.error { border-left-color: #666666; }
+
+        .finding-header {
+            padding: 20px 26px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 255, 65, 0.02);
+            border-bottom: 1px solid rgba(0, 255, 65, 0.05);
+            transition: background 0.2s;
+        }
+        .finding-header:hover { background: rgba(0, 255, 65, 0.05); }
+        .finding-header .title {
+            font-weight: 700;
+            font-size: 20px;
+            color: #00ff41;
+        }
+        .finding-header .status-badge {
+            padding: 4px 20px;
+            border: 1px solid;
+            font-size: 15px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-badge.pass { background: rgba(0, 255, 65, 0.10); border-color: #00ff41; color: #00ff41; }
+        .status-badge.warning { background: rgba(255, 215, 0, 0.10); border-color: #ffd700; color: #ffd700; }
+        .status-badge.fail { background: rgba(255, 0, 64, 0.10); border-color: #ff0040; color: #ff0040; }
+        .status-badge.error { background: rgba(102, 102, 102, 0.10); border-color: #666666; color: #666666; }
+
+        .severity-tag {
+            padding: 2px 16px;
+            border: 1px solid;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .severity-tag.critical { background: rgba(255, 0, 64, 0.15); border-color: #ff0040; color: #ff0040; }
+        .severity-tag.high { background: rgba(255, 106, 0, 0.15); border-color: #ff6a00; color: #ff6a00; }
+        .severity-tag.medium { background: rgba(255, 215, 0, 0.15); border-color: #ffd700; color: #ffd700; }
+        .severity-tag.low { background: rgba(0, 204, 255, 0.15); border-color: #00ccff; color: #00ccff; }
+        .severity-tag.info { background: rgba(102, 102, 102, 0.15); border-color: #666666; color: #666666; }
+
+        .finding-body {
+            padding: 24px 28px;
+            display: none;
+            background: rgba(0, 0, 0, 0.4);
+        }
+        .finding-body.open { display: block; }
+        .finding-body .section { margin-bottom: 20px; }
+        .finding-body .section-title {
+            font-weight: 700;
+            font-size: 17px;
+            color: #66ff99;
+            margin-bottom: 6px;
+            letter-spacing: 1px;
+        }
+        .finding-body .section-content {
+            font-size: 17px;
+            color: #b3ffcc;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 14px 18px;
+            border-left: 2px solid rgba(0, 255, 65, 0.15);
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'Times New Roman', Times, serif;
+        }
+        .finding-body .poc {
+            background: #0a0a0a;
+            color: #00ff41;
+            padding: 14px 18px;
+            border: 1px solid rgba(0, 255, 65, 0.15);
+            font-family: 'Courier New', monospace;
+            font-size: 15px;
+            overflow-x: auto;
+        }
+        .finding-body .verification-response {
+            background: rgba(0, 0, 0, 0.6);
+            color: #66ff99;
+            padding: 14px 18px;
+            border: 1px solid rgba(0, 255, 65, 0.10);
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .finding-body .timestamp {
+            font-size: 15px;
+            color: #66ff99;
+            text-align: right;
+            border-top: 1px solid rgba(0, 255, 65, 0.06);
+            padding-top: 12px;
+            margin-top: 12px;
+        }
+        .arrow {
+            transition: transform 0.2s;
+            font-size: 22px;
+            color: #00ff41;
+        }
+        .arrow.open { transform: rotate(90deg); }
+        .exploit-score {
+            font-weight: 700;
+            padding: 4px 14px;
+            border: 1px solid;
+            font-size: 15px;
+            border-radius: 0px;
+        }
+        .exploit-score.high { background: rgba(255, 0, 64, 0.15); border-color: #ff0040; color: #ff0040; }
+        .exploit-score.medium { background: rgba(255, 215, 0, 0.15); border-color: #ffd700; color: #ffd700; }
+        .exploit-score.low { background: rgba(0, 204, 255, 0.15); border-color: #00ccff; color: #00ccff; }
+
+        /* ── robots.txt display ───────────────────────── */
+        .robots-content {
+            background: #0a0a0a;
+            padding: 16px 20px;
+            border: 1px solid rgba(0, 255, 65, 0.08);
+            font-family: 'Courier New', monospace;
+            font-size: 15px;
+            color: #66ff99;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        /* ── Signature / Footer ───────────────────────── */
+        .signature-section {
+            margin-top: 40px;
+            padding-top: 24px;
+            border-top: 2px solid rgba(0, 255, 65, 0.10);
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 20px;
+            font-size: 15px;
+            color: #66ff99;
+        }
+        .signature-section .hash {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #00ff41;
+            word-break: break-all;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 8px 12px;
+            border: 1px solid rgba(0, 255, 65, 0.05);
+        }
+        .footer {
+            margin-top: 32px;
+            text-align: center;
+            font-size: 15px;
+            color: #66ff99;
+            border-top: 1px solid rgba(0, 255, 65, 0.06);
+            padding-top: 20px;
+        }
+
+        /* ── Responsive ────────────────────────────────── */
+        @media (max-width: 768px) {
+            body { padding: 16px; font-size: 16px; }
+            .container { padding: 20px; }
+            .header { flex-direction: column; align-items: flex-start; gap: 12px; }
+            .header h1 { font-size: 30px; }
+            .score-card { flex-direction: column; align-items: flex-start; gap: 20px; }
+            .finding-header { flex-wrap: wrap; gap: 10px; }
+            .heatmap-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+            .signature-section { flex-direction: column; }
+        }
+        @media print {
+            body { background: #ffffff; color: #000000; }
+            .container { border: 1px solid #000; box-shadow: none; }
+            .finding-card { border: 1px solid #ccc; }
+            .header .badge { background: #000; color: #fff; }
+            .score-circle { border: 1px solid #000; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <!-- ═══ HEADER ═══ -->
+    <div class="header">
+        <div>
+            <h1>◈ BRAVO6 SECURITY SCAN</h1>
+            <div class="meta-info">
+                <span>Target: <strong>https://stratup.ai</strong></span>
+                <span>Duration: 5.92s</span>
+                <span>Tests: 15</span>
+                <span>Errors: 1</span>
+            </div>
+        </div>
+        <div class="badge">FAIL</div>
+    </div>
+
+    <!-- ═══ SCORE CARD ═══ -->
+    <div class="score-card">
+        <div class="score-circle">8</div>
+        <div class="score-details">
+            <div class="grade">Grade F</div>
+            <div class="sub">Security posture based on detected issues</div>
+            <div class="summary-bars">
+                <div class="summary-item"><span class="dot" style="background:#ff0040;"></span> Critical: 2</div>
+                <div class="summary-item"><span class="dot" style="background:#ff6a00;"></span> High: 1</div>
+                <div class="summary-item"><span class="dot" style="background:#ffd700;"></span> Medium: 3</div>
+                <div class="summary-item"><span class="dot" style="background:#00ccff;"></span> Low: 2</div>
+                <div class="summary-item"><span class="dot" style="background:#00ff41;"></span> Passed: 6</div>
+                <div class="summary-item"><span class="dot" style="background:#666666;"></span> Errors: 1</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ WAF CONTEXT ═══ -->
+    
+    <div style="background:rgba(0,255,65,0.04);border:1px solid rgba(0,255,65,0.08);padding:14px 20px;margin-bottom:32px;font-size:17px;">
+        <strong style="color:#00ff41;">🛡️ WAF/CDN detected:</strong> 
+        <span style="color:#66ff99;">Cloudflare</span>
+        <span style="color:#66ff99;font-size:15px;display:block;margin-top:4px;">Cloudflare detected — some findings (HTTP methods, rate limiting) may show false positives due to WAF interception.</span>
+    </div>
+    
+
+    <!-- ═══ HEATMAP ═══ -->
+    
+    <div class="heatmap">
+        <h3 style="color:#00ff41;">🔥 Risk Heatmap</h3>
+        <p style="color:#66ff99;font-size:17px;margin-bottom:12px;">Each cell shows a finding — darker = higher risk. Score = Exploitability (1–10).</p>
+        <div class="heatmap-grid">
+            
+            <div class="heatmap-cell" style="background:#ff0040;color:#0a0a0a;border-color:#ff0040;">
+                <span class="cell-score">9</span>
+                <span class="cell-label">Http Methods</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#ff0040;color:#0a0a0a;border-color:#ff0040;">
+                <span class="cell-score">7</span>
+                <span class="cell-label">Cms Vibe Detection</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#ffd700;color:#0a0a0a;border-color:#ffd700;">
+                <span class="cell-score">5</span>
+                <span class="cell-label">Ssl Tls</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#ffd700;color:#0a0a0a;border-color:#ffd700;">
+                <span class="cell-score">6</span>
+                <span class="cell-label">Email Security</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#00ccff;color:#ffffff;border-color:#00ccff;">
+                <span class="cell-score">8</span>
+                <span class="cell-label">Information Disclosure</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#ff6a00;color:#0a0a0a;border-color:#ff6a00;">
+                <span class="cell-score">3</span>
+                <span class="cell-label">Sri Check</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#ffd700;color:#0a0a0a;border-color:#ffd700;">
+                <span class="cell-score">4</span>
+                <span class="cell-label">Hallucinated Deps</span>
+            </div>
+        
+            <div class="heatmap-cell" style="background:#00ccff;color:#ffffff;border-color:#00ccff;">
+                <span class="cell-score">5</span>
+                <span class="cell-label">Ai Configuration Exposure</span>
+            </div>
+        
+        </div>
+    </div>
+    
+
+    <!-- ═══ PRIORITY RECOMMENDATIONS ═══ -->
+    
+    <div class="priority-section">
+        <h3 style="color:#00ff41;">🎯 Prioritized Recommendations</h3>
+        <p style="color:#66ff99;font-size:17px;margin-bottom:12px;">Fix these in order: Critical → High → Medium → Low</p>
+        <ul class="priority-list">
+            
+                <li>
+                    <span class="priority-badge Critical">Critical</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Http Methods</strong> — Your server accepts dangerous commands (like DELETE) that can delete files or upload malicious content. An attacker can easily exploit this.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Critical • Exploit: 9/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Critical">Critical</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Cms Vibe Detection</strong> — Your CMS or framework is outdated or misconfigured, which may allow hackers to take over your site.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Critical • Exploit: 7/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge High">High</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Ssl Tls</strong> — Your HTTPS encryption is weak or misconfigured, so attackers could intercept data your users send to you.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Medium • Exploit: 5/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge High">High</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Email Security</strong> — Your email setup allows spammers to send fake emails that appear to come from your domain, damaging your reputation.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Medium • Exploit: 6/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Medium">Medium</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Information Disclosure</strong> — Your site leaks internal details (e.g., file paths, server versions) that help attackers plan sophisticated attacks.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Low • Exploit: 8/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Medium">Medium</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Sri Check</strong> — Your site loads external JavaScript libraries without verifying their integrity. A hacked CDN could inject malicious code.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: High • Exploit: 3/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Medium">Medium</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Hallucinated Deps</strong> — Your site references domains that don't exist. An attacker could register them and control your site.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Medium • Exploit: 4/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Medium">Medium</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Ai Configuration Exposure</strong> — Your AI-related configuration files are publicly accessible, which may reveal sensitive prompts or internal logic.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Low • Exploit: 5/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Security Headers</strong> — Missing security headers weaken your browser's protection against common attacks like XSS or clickjacking.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 4/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Cors</strong> — Your server allows other websites to make requests on behalf of your users, potentially stealing their data.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 6/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Secrets Detection</strong> — Your website has exposed secret keys (like passwords) that anyone can see. An attacker could use them to steal data or hijack your services.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 10/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Js Library Audit</strong> — Your site uses outdated JavaScript libraries with known vulnerabilities, which attackers can use to compromise your users.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 4/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Mixed Content</strong> — Your secure HTTPS page loads insecure HTTP resources, which can be tampered with by attackers.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 6/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Subdomain Takeover</strong> — Your DNS records point to services that you don't own anymore. An attacker can register those services and control your subdomains.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 9/10</span>
+                </li>
+            
+                <li>
+                    <span class="priority-badge Low">Low</span>
+                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">Robots Txt</strong> — A public file intended for search engines reveals hidden admin areas, making it easier for hackers to find and attack them.</span>
+                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: Info • Exploit: 8/10</span>
+                </li>
+            
+        </ul>
+    </div>
+    
+
+    <!-- ═══ DETAILED FINDINGS ═══ -->
+    <h2>📋 Detailed Findings</h2>
+    
+        <div class="finding-card fail">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">http_methods</span>
+                    <span class="severity-tag critical">CRITICAL</span>
+                    <span class="exploit-score high">⚡ 9/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your server accepts dangerous commands (like DELETE) that can delete f...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge fail">FAIL</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">HTTP Methods Scan (4 confirmed dangerous methods)</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Scanned https://stratup.ai for dangerous HTTP methods. Found 6 findings.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>method:</strong> PUT | <strong>status:</strong> partial | <strong>severity:</strong> medium | <strong>confidence:</strong> 70 | <strong>poc:</strong> curl -X PUT -d 'test' -v https://stratup.ai | <strong>evidence:</strong> PUT accepted but file not accessible | <strong>risk:</strong> File upload — may allow arbitrary file writes | <strong>remediation:</strong> Investigate PUT behavior; disable if not needed.</div><div style='margin-bottom:10px;'><strong>method:</strong> DELETE | <strong>status:</strong> confirmed | <strong>severity:</strong> critical | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl -X DELETE -v https://stratup.ai/bravo6-delete-33f1fd46.txt | <strong>evidence:</strong> DELETE succeeded (HTTP 308) after PUT creation | <strong>risk:</strong> File deletion — may delete server resources | <strong>remediation:</strong> Disable DELETE method immediately.</div><div style='margin-bottom:10px;'><strong>method:</strong> PUT (via X-HTTP-Method-Override) | <strong>status:</strong> confirmed | <strong>severity:</strong> high | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl -X POST -H 'X-HTTP-Method-Override: PUT' -v https://stratup.ai | <strong>evidence:</strong> X-HTTP-Method-Override: PUT succeeded (HTTP 308) | <strong>risk:</strong> File upload — may allow arbitrary file writes | <strong>remediation:</strong> Disable X-HTTP-Method-Override or restrict its usage.</div><div style='margin-bottom:10px;'><strong>method:</strong> DELETE (via X-HTTP-Method-Override) | <strong>status:</strong> confirmed | <strong>severity:</strong> critical | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl -X POST -H 'X-HTTP-Method-Override: DELETE' -v https://stratup.ai | <strong>evidence:</strong> X-HTTP-Method-Override: DELETE succeeded (HTTP 308) | <strong>risk:</strong> File deletion — may delete server resources | <strong>remediation:</strong> Disable X-HTTP-Method-Override or restrict its usage.</div><div style='margin-bottom:10px;'><strong>method:</strong> TRACE (via X-HTTP-Method-Override) | <strong>status:</strong> confirmed | <strong>severity:</strong> high | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl -X POST -H 'X-HTTP-Method-Override: TRACE' -v https://stratup.ai | <strong>evidence:</strong> X-HTTP-Method-Override: TRACE succeeded (HTTP 308) | <strong>risk:</strong> XST (Cross-Site Tracing) can steal HttpOnly cookies | <strong>remediation:</strong> Disable X-HTTP-Method-Override or restrict its usage.</div><div style='margin-bottom:10px;'><strong>method:</strong> DEBUG (via X-HTTP-Method-Override) | <strong>status:</strong> confirmed | <strong>severity:</strong> critical | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl -X POST -H 'X-HTTP-Method-Override: DEBUG' -v https://stratup.ai | <strong>evidence:</strong> X-HTTP-Method-Override: DEBUG succeeded (HTTP 308) | <strong>risk:</strong> Remote debugging access (IIS) | <strong>remediation:</strong> Disable X-HTTP-Method-Override or restrict its usage.</div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">curl -X PUT -d 'test' -v https://stratup.ai</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Disable all dangerous HTTP methods (TRACE, PUT, DELETE, CONNECT, DEBUG) and method overriding headers. Use explicit allowlists for required methods.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404289</div>
+            </div>
+        </div>
+        
+        <div class="finding-card fail">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">cms_vibe_detection</span>
+                    <span class="severity-tag critical">CRITICAL</span>
+                    <span class="exploit-score high">⚡ 7/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your CMS or framework is outdated or misconfigured, which may allow ha...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge fail">FAIL</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">Next.js — Vibe Score: 0%</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Detected Next.js with high confidence. Found 9 exposed paths, 3 missing headers.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div>• HTML/JS signature matched (1 pattern(s))</div><div>• Header signature matched (1 pattern(s))</div><div>• Exposed: /_next/static/ -> 308 (Build output directory reachable (expected; confirms framework only)) [info]</div><div>• Exposed: /api/ -> 308 (API routes base path reachable — verify auth on every handler) [info]</div><div>• Exposed: /.env -> 308 (Environment file exposed — secrets/credentials) [critical]</div><div>• Exposed: /.git/HEAD -> 308 (Git repository exposed — full source leak) [critical]</div><div>• Exposed: /.env.example -> 308 (Example env exposed — config structure leak) [low]</div><div>• Exposed: /.DS_Store -> 308 (macOS metadata exposed) [low]</div><div>• Exposed: /backup.zip -> 308 (Generic backup archive reachable) [high]</div><div>• Exposed: /config.php.bak -> 308 (Backup config file reachable) [high]</div><div>• Exposed: /robots.txt -> 200 (robots.txt may expose hidden paths) [low]</div><div>• Security headers present: X-Frame-Options, X-Content-Type-Options, Referrer-Policy</div><div>• Missing headers: Strict-Transport-Security, Content-Security-Policy, Permissions-Policy</div></div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Fix exposed critical paths, add missing security headers, and keep CMS updated.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404327</div>
+            </div>
+        </div>
+        
+        <div class="finding-card warning">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">ssl_tls</span>
+                    <span class="severity-tag medium">MEDIUM</span>
+                    <span class="exploit-score medium">⚡ 5/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your HTTPS encryption is weak or misconfigured, so attackers could int...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge warning">WARNING</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">Expires in 53 days</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">SSL/TLS scan of stratup.ai found 1 issue(s).</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div class="section-content">{'hostname': 'stratup.ai', 'port': 443, 'cert_expiry': '2026-08-14', 'days_until_expiry': 53, 'issuer': 'countryName=US, organizationName=Google Trust Services, commonName=WE1', 'subject': 'commonName=stratup.ai', 'san': ['stratup.ai', '*.stratup.ai'], 'hostname_match': True, 'self_signed': False, 'negotiated_version': 'TLSv1.3', 'negotiated_cipher': 'TLS_AES_256_GCM_SHA384', 'hsts': None, 'weak_protocols': {'SSLv3': False, 'TLSv1.0': False, 'TLSv1.1': False}, 'poc_commands': []}</div></div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Add Strict-Transport-Security (HSTS) header with long max-age.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404334</div>
+            </div>
+        </div>
+        
+        <div class="finding-card warning">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">email_security</span>
+                    <span class="severity-tag medium">MEDIUM</span>
+                    <span class="exploit-score medium">⚡ 6/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your email setup allows spammers to send fake emails that appear to co...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge warning">WARNING</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">Email Security (SPF/DMARC/DKIM) — warning</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Email authentication for stratup.ai: SPF=warning, DMARC=warning, DKIM=pass.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>type:</strong> SPF | <strong>status:</strong> warning | <strong>issue:</strong> SPF uses '~all' (softfail) — flagged but not rejected. Multiple SPF records detected (invalid). | <strong>poc:</strong> dig TXT stratup.ai | <strong>confidence:</strong> 60</div><div style='margin-bottom:10px;'><strong>type:</strong> DMARC | <strong>status:</strong> warning | <strong>issue:</strong> DMARC policy 'none' — monitoring only. | <strong>poc:</strong> dig TXT _dmarc.stratup.ai | <strong>confidence:</strong> 90</div><div style='margin-bottom:10px;'><strong>type:</strong> DKIM | <strong>status:</strong> pass | <strong>issue:</strong> DKIM key found at 'default'. | <strong>poc:</strong> dig TXT default._domainkey.stratup.ai | <strong>confidence:</strong> 100</div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">dig TXT stratup.ai</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Set SPF to '-all', DMARC to 'p=reject' with rua, and publish DKIM keys.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404341</div>
+            </div>
+        </div>
+        
+        <div class="finding-card warning">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">information_disclosure</span>
+                    <span class="severity-tag low">LOW</span>
+                    <span class="exploit-score high">⚡ 8/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your site leaks internal details (e.g., file paths, server versions) t...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge warning">WARNING</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">2 Information Disclosure Findings</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Found 2 issues, highest severity: low.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>location:</strong> /robots.txt | <strong>value:</strong> User-Agent: *
+Disallow:
+Sitemap: https://stratup.ai/sitemap.xml | <strong>risk:</strong> Discloses hidden admin paths or site structure. | <strong>severity:</strong> low | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl https://stratup.ai/robots.txt</div><div style='margin-bottom:10px;'><strong>location:</strong> /sitemap.xml | <strong>value:</strong> <urlset xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9 http://www.sitemaps.or | <strong>risk:</strong> Discloses hidden admin paths or site structure. | <strong>severity:</strong> low | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl https://stratup.ai/sitemap.xml</div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">curl https://stratup.ai/robots.txt</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Remove .git directory, .env files, disable directory listing, custom error pages.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404298</div>
+            </div>
+        </div>
+        
+        <div class="finding-card fail">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">sri_check</span>
+                    <span class="severity-tag high">HIGH</span>
+                    <span class="exploit-score low">⚡ 3/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your site loads external JavaScript libraries without verifying their ...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge fail">FAIL</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">SRI Check: 1 issue(s) found</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Found 1 issue(s) across 1 cross-origin resources. Missing SRI hashes: 1. Without SRI, a compromised CDN can inject malicious code undetected.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>tag:</strong> script | <strong>src:</strong> https://r.wdfl.co/rw.js | <strong>severity:</strong> high | <strong>issues:</strong> [{'issue': 'Missing integrity attribute', 'severity': 'high', 'remediation': 'Add integrity attribute: integrity="sha384-<hash>" crossorigin="anonymous"', 'poc': 'curl -sL https://r.wdfl.co/rw.js | openssl dgst -sha384 -binary | openssl base64 -A'}] | <strong>confidence:</strong> 100</div></div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Add integrity and crossorigin attributes to all cross-origin script and link tags. Use `openssl dgst -sha384 -binary <file> | openssl base64 -A` to generate hashes. See https://www.srihash.org/ for guidance.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404361</div>
+            </div>
+        </div>
+        
+        <div class="finding-card warning">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">hallucinated_deps</span>
+                    <span class="severity-tag medium">MEDIUM</span>
+                    <span class="exploit-score medium">⚡ 4/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your site references domains that don't exist. An attacker could regis...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge warning">WARNING</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">Hallucinated dependencies: 2 risky domain(s) found</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Found 2 external domain(s) with potential hallucination risk out of 2 checked. 0 domain(s) are confirmed non-existent.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>domain:</strong> r.wdfl.co | <strong>referenced_in:</strong> script | <strong>full_url:</strong> https://r.wdfl.co/rw.js | <strong>dns_status:</strong> RESOLVED | <strong>confidence:</strong> 60 | <strong>severity:</strong> medium | <strong>poc:</strong> curl -v https://r.wdfl.co/rw.js ; traceroute r.wdfl.co | <strong>attack_scenario:</strong> Domain 'r.wdfl.co' resolves but HTTP check failed (timeout/error). May be unmaintained or behind firewall. | <strong>remediation:</strong> Remove all references to non-existent or unresponsive domains immediately. If the domain is intentionally unregistered, register and deploy it. Use Su...</div><div style='margin-bottom:10px;'><strong>domain:</strong> accounts.google.com | <strong>referenced_in:</strong> link | <strong>full_url:</strong> https://accounts.google.com/gsi/client | <strong>dns_status:</strong> RESOLVED | <strong>confidence:</strong> 60 | <strong>severity:</strong> medium | <strong>poc:</strong> curl -v https://accounts.google.com/gsi/client ; traceroute accounts.google.com | <strong>attack_scenario:</strong> Domain 'accounts.google.com' resolves but HTTP check failed (timeout/error). May be unmaintained or behind firewall. | <strong>remediation:</strong> Remove all references to non-existent or unresponsive domains immediately. If the domain is intentionally unregistered, register and deploy it. Use Su...</div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">curl -v https://r.wdfl.co/rw.js ; traceroute r.wdfl.co</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Remove all references to non-existent or unresponsive domains immediately. If the domain is intentionally unregistered, register and deploy it. Use Subresource Integrity (SRI) hashes and a restrictive Content-Security-Policy. For third-party CDNs, verify domain ownership and use SRI hashes.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404368</div>
+            </div>
+        </div>
+        
+        <div class="finding-card warning">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">AI Configuration Exposure</span>
+                    <span class="severity-tag low">LOW</span>
+                    <span class="exploit-score medium">⚡ 5/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your AI-related configuration files are publicly accessible, which may...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge warning">WARNING</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">AI Exposure Check: 3 file(s) found, 3 issue(s)</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Found 3 AI/API configuration files. 0 critical, 0 high, 0 medium, 3 low risk findings.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>path:</strong> /api-docs | <strong>severity:</strong> low | <strong>summary:</strong> /api-docs present but invalid JSON | <strong>evidence:</strong> <!DOCTYPE html><html lang="api-docs" dir="ltr" class="__variable_f367f3 __variable_069ab3 __variable_8759bb"><head><meta charSet="utf-8"/><meta name="... | <strong>poc:</strong> curl -s /api-docs | jq . | <strong>confidence:</strong> 50</div><div style='margin-bottom:10px;'><strong>path:</strong> /api-docs.json | <strong>severity:</strong> low | <strong>summary:</strong> /api-docs.json present but invalid JSON | <strong>evidence:</strong> <!DOCTYPE html><html lang="api-docs.json" dir="ltr" class="__variable_f367f3 __variable_069ab3 __variable_8759bb"><head><meta charSet="utf-8"/><meta n... | <strong>poc:</strong> curl -s /api-docs.json | jq . | <strong>confidence:</strong> 50</div><div style='margin-bottom:10px;'><strong>path:</strong> /huggingface | <strong>severity:</strong> low | <strong>summary:</strong> /huggingface present | <strong>evidence:</strong> File returned HTTP 200. | <strong>poc:</strong> curl -s /huggingface | <strong>confidence:</strong> 60</div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">curl -s /api-docs | jq .</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">No immediate action required; review findings for informational purposes.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404375</div>
+            </div>
+        </div>
+        
+        <div class="finding-card unknown">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">security_headers</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score medium">⚡ 4/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Missing security headers weaken your browser's protection against comm...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge unknown">UNKNOWN</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">security_headers</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content"></div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content">No specific evidence.</div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">No specific remediation provided.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404252</div>
+            </div>
+        </div>
+        
+        <div class="finding-card pass">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">cors</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score medium">⚡ 6/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your server allows other websites to make requests on behalf of your u...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge pass">PASS</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">CORS Misconfiguration Check (0 issues)</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Scanned https://stratup.ai for CORS misconfigurations. Found 1 findings.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>type:</strong> Primary Origin | <strong>title:</strong> Origin not accepted | <strong>description:</strong>  | <strong>severity:</strong> info | <strong>confidence:</strong> 100 | <strong>poc:</strong> curl -H 'Origin: https://evil-attacker.com' -v https://stratup.ai | <strong>remediation:</strong> No action needed. | <strong>evidence:</strong> {'tested_origin': 'https://evil-attacker.com', 'acao': '(missing)', 'acac': '(missing)', 'status_code': 200}</div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">curl -H 'Origin: https://evil-attacker.com' -v https://stratup.ai</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Implement an explicit origin allowlist for all CORS-enabled endpoints; never reflect Origin; avoid wildcard with credentials; add proper preflight restrictions.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404278</div>
+            </div>
+        </div>
+        
+        <div class="finding-card pass">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">secrets_detection</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score high">⚡ 10/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your website has exposed secret keys (like passwords) that anyone can ...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge pass">PASS</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">No Verified Secrets Found</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content"></div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content"><div style='margin-bottom:10px;'><strong>type:</strong> Twilio Auth Token | <strong>confidence:</strong> 40 | <strong>severity:</strong> low | <strong>location:</strong> _next/static/chunks/59a99548-5a98d5f968dd501c.js:1 | <strong>example:</strong> from...spon | <strong>verified:</strong> False | <strong>poc:</strong> Manual verification required for Twilio Auth Token. | <strong>risk:</strong> Format only | <strong>context:</strong> 1: "use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[9461],{27825:(e,t,n)=>{n.d(t,{D:()=>tm,Y:()=>e1,a2:()=>tn,a6:()=>tc,ab:()=>tl... | <strong>API Response:</strong><div class="verification-response">Twilio Auth Token format valid but requires Account SID for verification.</div></div><div style='margin-bottom:10px;'><strong>type:</strong> Twilio Auth Token | <strong>confidence:</strong> 40 | <strong>severity:</strong> low | <strong>location:</strong> _next/static/chunks/82c59316-11c3bb66d955e948.js:6 | <strong>example:</strong> getD...onGr | <strong>verified:</strong> False | <strong>poc:</strong> Manual verification required for Twilio Auth Token. | <strong>risk:</strong> Format only | <strong>context:</strong> 4: }`}}class rh{constructor(e,t){this.count=e,this.unchangedNames=t}}function rc(e){if(void 0===e)return w("GRPC error has no .code"),I.UNKNOWN;switch... | <strong>API Response:</strong><div class="verification-response">Twilio Auth Token format valid but requires Account SID for verification.</div></div></div>
+                </div>
+                <div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">Manual verification required for Twilio Auth Token.</div></div>
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Rotate VERIFIED keys immediately. Unverified ones should be double-checked manually.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404305</div>
+            </div>
+        </div>
+        
+        <div class="finding-card pass">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">js_library_audit</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score medium">⚡ 4/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your site uses outdated JavaScript libraries with known vulnerabilitie...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge pass">PASS</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">No JavaScript libraries detected</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content"></div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content">No specific evidence.</div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">No action needed.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404312</div>
+            </div>
+        </div>
+        
+        <div class="finding-card pass">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">mixed_content</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score medium">⚡ 6/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your secure HTTPS page loads insecure HTTP resources, which can be tam...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge pass">PASS</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">No Mixed Content Found</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content"></div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content">No specific evidence.</div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">No specific remediation provided.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404320</div>
+            </div>
+        </div>
+        
+        <div class="finding-card pass">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">subdomain_takeover</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score high">⚡ 9/10</span>
+                    <span style="font-size:16px;color:#66ff99;">Your DNS records point to services that you don't own anymore. An atta...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge pass">PASS</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">No Subdomain Takeover Vulnerabilities</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">Scanned 20 subdomains of stratup.ai. No dangling CNAME records found.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content">No specific evidence.</div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">No action required.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404347</div>
+            </div>
+        </div>
+        
+        <div class="finding-card pass">
+            <div class="finding-header" onclick="toggleBody(this)">
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <span class="title">robots_txt</span>
+                    <span class="severity-tag info">INFO</span>
+                    <span class="exploit-score high">⚡ 8/10</span>
+                    <span style="font-size:16px;color:#66ff99;">A public file intended for search engines reveals hidden admin areas, ...</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:14px;">
+                    <span class="status-badge pass">PASS</span>
+                    <span class="arrow">▶</span>
+                </div>
+            </div>
+            <div class="finding-body">
+                <div class="section">
+                    <div class="section-title">📌 Summary</div>
+                    <div class="section-content">No Sensitive Paths Disclosed</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">📝 Description</div>
+                    <div class="section-content">robots.txt has 0 Disallow rules, none matched sensitive patterns.</div>
+                </div>
+                <div class="section">
+                    <div class="section-title">🔎 Evidence</div>
+                    <div class="section-content">No specific evidence.</div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🛠️ Remediation</div>
+                    <div class="section-content">Remove sensitive paths from robots.txt and enforce access control.</div>
+                </div>
+                <div class="timestamp">⏱️ Detected: 2026-06-22T00:18:03.404354</div>
+            </div>
+        </div>
+        
+
+    <!-- ═══ DIGITAL SIGNATURE & REPRODUCIBILITY ═══ -->
+    <div class="signature-section">
+        <div>
+            <strong>🔒 Digital Signature</strong>
+            <div class="hash">SHA-256: 508113b2580deb212fe312fbebe66e7153fb9a606ded91116bfd13eef9260111</div>
+            <div style="font-size:14px;color:#66ff99;margin-top:4px;">
+                This signature verifies the report's integrity.<br>
+                Any modification will invalidate this hash.
+            </div>
+        </div>
+        <div>
+            <strong>⚙️ Reproducibility</strong>
+            <div style="font-size:14px;color:#66ff99;">
+                <div>Target: <strong style="color:#00ff41;">https://stratup.ai</strong></div>
+                <div>Scan Time: <strong style="color:#00ff41;">2026-06-22T00:18:03.406903</strong></div>
+                <div>Tests Run: <strong style="color:#00ff41;">15</strong></div>
+                <div style="margin-top:4px;font-family:'Courier New',monospace;font-size:13px;">
+                    Re-run: <span style="color:#00ff41;">python -m scanner.main_scanner https://stratup.ai</span>
+                </div>
+            </div>
+        </div>
+        <div>
+            <strong>📅 Timestamp</strong>
+            <div style="font-size:14px;color:#00ff41;">
+                2026-06-22 00:18:03
+            </div>
+            <div style="font-size:13px;color:#66ff99;margin-top:4px;">
+                Each finding has its own timestamp below.
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ FOOTER ═══ -->
+    <div class="footer">
+        Generated by Bravo6 Scanner • Report date: 2026-06-22 00:18:03
+    </div>
+</div>
+
+<script>
+    function toggleBody(header) {
+        const body = header.nextElementSibling;
+        const arrow = header.querySelector('.arrow');
+        if (body.classList.contains('open')) {
+            body.classList.remove('open');
+            arrow.classList.remove('open');
+        } else {
+            body.classList.add('open');
+            arrow.classList.add('open');
+        }
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelectorAll('.finding-card.fail .finding-header, .finding-card.warning .finding-header').forEach(function(header) {
+            const body = header.nextElementSibling;
+            const arrow = header.querySelector('.arrow');
+            body.classList.add('open');
+            arrow.classList.add('open');
+        });
+    });
+</script>
+</body>
+</html>
