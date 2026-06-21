@@ -1,7 +1,7 @@
 """
 Bravo6 Scanner Package
 ======================
-Exports all 13 passive security test modules and the main orchestrator.
+Exports all 16 passive security test modules and the main orchestrator.
 """
 
 from scanner import (
@@ -18,6 +18,9 @@ from scanner import (
     test_11_cors,
     test_12_http_methods,
     test_13_cms_fingerprinting,
+    test_14_subresource_integrity_sri,
+    test_15_hallucinated_deps,
+    test_16_ai_exposure,
 )
 
 __all__ = [
@@ -34,4 +37,7 @@ __all__ = [
     "test_11_cors",
     "test_12_http_methods",
     "test_13_cms_fingerprinting",
+    "test_14_subresource_integrity_sri",
+    "test_15_hallucinated_deps",
+    "test_16_ai_exposure",
 ]
