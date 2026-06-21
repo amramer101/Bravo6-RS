@@ -1,62 +1,52 @@
 """
-test_06_info_disclosure.py — Advanced Intelligence Gathering (Active & Aggressive)
+test_06_info_disclosure.py — Fast Intelligence Gathering (Optimized)
 
-Upgraded with:
-- Backup files (.zip, .tar, .sql, domain-specific dumps).
-- IDE workspaces (.idea, .vscode).
-- Source Maps (.js.map) -> reveals frontend source code.
-- Active verification: checks if discovered admin paths are actually accessible.
-- Technology fingerprinting via cookies & error pages.
-- Cloud Bucket enumeration (S3, GCP, Azure) if links found.
-- Swagger/OpenAPI & GraphQL Introspection probing.
-- Changelog/Version detection to infer CVEs.
-- Path Traversal fuzzing to trigger directory listings outside root.
-- Evidence correlation: combines headers, cookies, and found paths into a single risk narrative.
+Optimized for speed (target < 10s):
+- Reduced path list (only high-impact files)
+- Smaller concurrency (4)
+- Shorter timeouts (8s per request)
+- Global timeout (12s) to cancel remaining tasks
+- Limited subdomain and bucket checks
+- Quick but accurate detection
 """
 
 import asyncio
 import re
 import json
-from urllib.parse import urljoin, urlparse, quote
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 TEST_NAME = "information_disclosure"
 USER_AGENT = "Bravo6-Scanner/1.0"
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=12)
-MAX_CONCURRENT_REQUESTS = 12  # Limit to avoid WAF blocks
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=8)  # shorter
+MAX_CONCURRENT_REQUESTS = 4  # lower
+GLOBAL_TIMEOUT = 12  # seconds
 
 # ── Technology detection via cookies ──────────────────────────────────────
 TECH_COOKIE_MAP = {
     "PHPSESSID": "PHP",
-    "JSESSIONID": "Java (JSP/Servlet)",
-    "connect.sid": "Node.js (Express)",
-    "laravel_session": "Laravel (PHP)",
+    "JSESSIONID": "Java",
+    "connect.sid": "Node.js",
+    "laravel_session": "Laravel",
     "ASP.NET_SessionId": "ASP.NET",
-    "ci_session": "CodeIgniter (PHP)",
     "wp-settings-": "WordPress",
-    "XSRF-TOKEN": "Laravel / Angular / Django",
 }
 
-# ── High-value sensitive paths (Top 30 most dangerous) ──────────────────
+# ── High-value sensitive paths (top 20) ──────────────────────────────────
 SENSITIVE_PATHS = [
     ".git/HEAD",
     ".env",
     ".env.production",
     ".env.local",
-    ".git/config",
     "backup.zip",
     "backup.tar.gz",
     "dump.sql",
-    "db.sql",
     "composer.json",
     "package.json",
-    "package-lock.json",
-    "yarn.lock",
     "phpinfo.php",
     "info.php",
-    "test.php",
     "config.php",
     "settings.py",
     "web.config",
@@ -64,34 +54,22 @@ SENSITIVE_PATHS = [
     "sitemap.xml",
     "CHANGELOG.md",
     "VERSION",
-    "RELEASE",
     ".htaccess",
-    ".idea/workspace.xml",
-    ".vscode/settings.json",
     "swagger-ui.html",
     "v3/api-docs",
-    "api-docs",
-    "swagger/v1/swagger.json",
 ]
 
-# ── Common backup naming patterns (domain-aware) ──────────────────────
-BACKUP_EXTENSIONS = [".zip", ".tar.gz", ".tgz", ".rar", ".7z", ".sql", ".bak"]
+# ── Backup patterns (domain-based) ──────────────────────────────────────
+BACKUP_EXTENSIONS = [".zip", ".tar.gz", ".sql", ".bak"]
 
-# ── Source Map patterns ──────────────────────────────────────────────────
-SOURCE_MAP_PATTERNS = [
-    "main.js.map",
-    "bundle.js.map",
-    "app.js.map",
-    "vendor.js.map",
-    "runtime.js.map",
-    "chunk.js.map",
-]
+# ── Source Map patterns (only most common) ──────────────────────────────
+SOURCE_MAP_PATTERNS = ["main.js.map", "bundle.js.map"]
 
-# ── Directory listing test points ──────────────────────────────────────
-DIR_LISTING_PATHS = ["/images/", "/assets/", "/static/", "/uploads/", "/files/", "/content/"]
+# ── Directory listing test points (fewer) ──────────────────────────────
+DIR_LISTING_PATHS = ["/assets/", "/static/", "/uploads/"]
 
 # ── Cloud Bucket hostnames ──────────────────────────────────────────────
-BUCKET_HOSTS = [".s3.amazonaws.com", ".s3.", "storage.googleapis.com", "blob.core.windows.net"]
+BUCKET_HOSTS = [".s3.amazonaws.com", "storage.googleapis.com"]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -110,14 +88,13 @@ def _extract_domain(url: str) -> str:
     return parsed.netloc.split(":")[0]
 
 
-def _get_safe_text(text: str, max_len: int = 300) -> str:
+def _get_safe_text(text: str, max_len: int = 200) -> str:
     if not text:
         return ""
     return text[:max_len] + ("..." if len(text) > max_len else "")
 
 
 async def _safe_get(session, url, **kwargs) -> tuple:
-    """Perform a GET request with safe error handling."""
     try:
         async with session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True, ssl=False, **kwargs) as resp:
             text = await resp.text(errors="replace")
@@ -127,7 +104,6 @@ async def _safe_get(session, url, **kwargs) -> tuple:
 
 
 async def _head_only(session, url) -> tuple:
-    """Perform a HEAD request to check existence efficiently."""
     try:
         async with session.head(url, timeout=REQUEST_TIMEOUT, allow_redirects=True, ssl=False) as resp:
             return resp.status, dict(resp.headers), str(resp.url)
@@ -152,25 +128,23 @@ async def run(url: str) -> dict:
         tech_stack = set()
         discovered_paths = set()
 
-        # ── 1. Setup Client ──────────────────────────────────────────
-        connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, limit_per_host=5)
+        connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, limit_per_host=4)
         async with aiohttp.ClientSession(
             headers={"User-Agent": USER_AGENT},
             connector=connector
         ) as session:
 
-            # ── 2. Fetch Root & Detect Technology ──────────────────
+            # ── 1. Fetch Root & Detect Technology ──────────────────
             root_text, root_headers, root_status, final_root_url = await _safe_get(session, target)
 
             if root_headers:
-                # Check Server/Powered-By
-                for h in ["Server", "X-Powered-By", "X-Generator", "X-AspNet-Version"]:
+                for h in ["Server", "X-Powered-By", "X-Generator"]:
                     val = root_headers.get(h)
                     if val:
                         findings.append({
                             "location": f"Header: {h}",
                             "value": val,
-                            "risk": "Technology/version disclosure.",
+                            "risk": "Technology disclosure.",
                             "severity": "low",
                             "confidence": 100,
                             "poc": f"curl -I {target} | grep -i {h}",
@@ -178,7 +152,6 @@ async def run(url: str) -> dict:
                         })
                         tech_stack.add(val)
 
-                # Check Cookies for technology
                 cookie_header = root_headers.get("Set-Cookie", "")
                 if cookie_header:
                     for cookie_pattern, tech in TECH_COOKIE_MAP.items():
@@ -194,14 +167,13 @@ async def run(url: str) -> dict:
                             })
                             tech_stack.add(tech)
 
-            # ── 3. Extract Links from Root HTML ──────────────────────
+            # ── 2. Extract Links from Root HTML ──────────────────────
             if root_text:
                 soup = BeautifulSoup(root_text, "html.parser")
                 all_links = [urljoin(target, a.get("href", "")) for a in soup.find_all("a", href=True)]
                 all_scripts = [urljoin(target, s.get("src", "")) for s in soup.find_all("script", src=True)]
                 all_styles = [urljoin(target, l.get("href", "")) for l in soup.find_all("link", rel="stylesheet")]
 
-                # Check for Cloud Storage links
                 for link in all_links + all_scripts + all_styles:
                     if any(bh in link for bh in BUCKET_HOSTS):
                         findings.append({
@@ -213,84 +185,74 @@ async def run(url: str) -> dict:
                             "poc": f"curl {link}",
                             "category": "passive"
                         })
-                        # Attempt bucket listing later
 
-            # ── 4. Build Dynamic Backup Name List (Domain-based) ──────
+            # ── 3. Build Dynamic Backup Name List ──────────────────────
             backup_names = []
             for ext in BACKUP_EXTENSIONS:
                 backup_names.append(f"{domain}{ext}")
                 backup_names.append(f"{domain}_backup{ext}")
                 backup_names.append(f"backup_{domain}{ext}")
-                backup_names.append(f"db{ext}")
 
             all_paths_to_check = set(SENSITIVE_PATHS)
             all_paths_to_check.update(backup_names)
             all_paths_to_check.update(SOURCE_MAP_PATTERNS)
 
-            # ── 5. Parallel Path Probing (Active + Passive) ────────
+            # ── 4. Parallel Path Probing ──────────────────────────────
             semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+            probe_tasks = []
 
             async def probe_path(path):
                 async with semaphore:
                     full_url = urljoin(base_url, path)
-                    # Use HEAD first for speed
-                    status, headers, final_url = await _head_only(session, full_url)
+                    status, _, final_url = await _head_only(session, full_url)
                     if status is None:
-                        return None
-                    is_accessible = status < 400
-                    is_redirect = 300 <= status < 400
-
-                    # For certain types, we need the body (e.g., .env, .git)
+                        return
+                    # Decide if we need body
                     fetch_body = False
-                    if path.endswith((".env", ".env.production", ".env.local", ".git/HEAD", ".git/config", ".sql", "dump.sql", "composer.json", "package.json", "web.config")):
-                        fetch_body = True
-                    if status == 200 and (path.endswith(".map") or path.endswith(".zip") or path.endswith(".tar.gz") or path.endswith(".sql")):
-                        fetch_body = True
-
+                    if any(ext in path for ext in [".env", ".git/HEAD", ".sql", "composer.json", "package.json", "web.config", ".map", ".zip", ".tar.gz"]):
+                        if status == 200:
+                            fetch_body = True
                     body = None
-                    body_headers = None
-                    if fetch_body and status == 200:
-                        body, body_headers, _, _ = await _safe_get(session, full_url)
+                    if fetch_body:
+                        body, _, _, _ = await _safe_get(session, full_url)
 
-                    # Determine severity based on path type & accessibility
                     severity = "info"
                     risk = "File discovered."
                     confidence = 80
                     poc = f"curl {full_url}"
 
                     if status == 200:
-                        # Critical: Source code, DB dumps, env, git
-                        if any(k in path for k in [".git", ".env", "dump.sql", "db.sql", "backup.zip", "backup.tar.gz", "composer.json", "web.config"]):
+                        # Critical classifications
+                        if any(k in path for k in [".git", ".env", "dump.sql", "backup.zip", "backup.tar.gz", "composer.json", "web.config"]):
                             severity = "critical"
-                            risk = "Extremely sensitive file exposed (source code/credentials/database)."
+                            risk = "Extremely sensitive file exposed (source/credentials/database)."
                             confidence = 100
                         elif path.endswith(".map"):
                             severity = "high"
-                            risk = "Source Map exposed. Frontend source code is reconstructible."
+                            risk = "Source Map exposed. Frontend code reconstructible."
                             confidence = 100
                         elif "api-docs" in path or "swagger" in path:
                             severity = "high"
-                            risk = "API documentation exposed. Reveals all endpoints and parameters."
+                            risk = "API documentation exposed."
                             confidence = 95
                         elif "phpinfo" in path or "info.php" in path:
                             severity = "critical"
-                            risk = "PHP Info page exposed. Discloses environment variables, paths, and configuration."
+                            risk = "PHP Info exposed."
                             confidence = 100
                         elif "robots.txt" in path or "sitemap" in path:
                             severity = "low"
-                            risk = "May expose hidden admin paths."
+                            risk = "May expose hidden paths."
                             confidence = 90
-                        elif "CHANGELOG" in path or "VERSION" in path or "RELEASE" in path:
+                        elif "CHANGELOG" in path or "VERSION" in path:
                             severity = "medium"
-                            risk = "Exact version disclosure. Can be used to find matching CVEs."
+                            risk = "Exact version disclosure."
                             confidence = 95
                         else:
                             severity = "medium"
                             risk = "Potentially sensitive file accessible."
 
-                        # If body exists, extract snippets for evidence
                         evidence_value = path
-                        if body and len(body) < 1000:
+                        if body and len(body) < 500:
                             evidence_value = f"{path} (content: {_get_safe_text(body)})"
                         elif body:
                             evidence_value = f"{path} (size: {len(body)} bytes)"
@@ -304,7 +266,6 @@ async def run(url: str) -> dict:
                             "poc": poc,
                             "category": "active",
                             "status_code": status,
-                            "redirected": is_redirect,
                         })
 
                         if "admin" in path or "login" in path or "dashboard" in path:
@@ -314,7 +275,7 @@ async def run(url: str) -> dict:
                         findings.append({
                             "location": path,
                             "value": "HTTP 403 Forbidden",
-                            "risk": "File exists but is protected. Still confirms its presence.",
+                            "risk": "File exists but protected.",
                             "severity": "low",
                             "confidence": 90,
                             "poc": poc,
@@ -325,46 +286,47 @@ async def run(url: str) -> dict:
                         findings.append({
                             "location": path,
                             "value": f"Redirects to {final_url}",
-                            "risk": "File exists but redirects (likely login page).",
+                            "risk": "File exists but redirects.",
                             "severity": "info",
                             "confidence": 70,
                             "poc": poc,
                             "category": "passive",
                             "status_code": status,
                         })
-                    # else: ignore 404
 
-            # Run probes
-            tasks = [probe_path(p) for p in all_paths_to_check]
-            await asyncio.gather(*tasks)
+            # Launch probes with global timeout
+            for p in all_paths_to_check:
+                probe_tasks.append(probe_path(p))
+            # Use asyncio.wait with timeout to get partial results
+            done, pending = await asyncio.wait(probe_tasks, timeout=GLOBAL_TIMEOUT)
+            for task in pending:
+                task.cancel()
 
-            # ── 6. GraphQL Introspection (Special Probe) ──────────────
+            # ── 5. GraphQL Introspection (quick check) ──────────────────
             graphql_url = urljoin(base_url, "/graphql")
-            introspection_query = json.dumps({"query": "query { __schema { types { name } } }"})
-            async with semaphore:
-                try:
+            try:
+                async with semaphore:
                     async with session.post(
                         graphql_url,
-                        data=introspection_query,
-                        headers={"Content-Type": "application/json"}
+                        json={"query": "query { __schema { types { name } } }"},
+                        timeout=REQUEST_TIMEOUT
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            if "data" in data and "__schema" in data["data"]:
-                                types = [t.get("name") for t in data["data"]["__schema"]["types"]]
+                            if data.get("data", {}).get("__schema"):
                                 findings.append({
                                     "location": "/graphql",
-                                    "value": f"Introspection allowed. Schema has {len(types)} types.",
-                                    "risk": "GraphQL schema fully exposed. Attackers can see all queries/mutations.",
+                                    "value": "Introspection allowed.",
+                                    "risk": "GraphQL schema exposed.",
                                     "severity": "high",
                                     "confidence": 100,
-                                    "poc": f"curl -X POST {graphql_url} -H 'Content-Type: application/json' -d '{introspection_query}'",
+                                    "poc": f"curl -X POST {graphql_url} -H 'Content-Type: application/json' -d '{{\"query\":\"query {{ __schema {{ types {{ name }} }} }}\"}}'",
                                     "category": "active"
                                 })
-                except Exception:
-                    pass
+            except:
+                pass
 
-            # ── 7. Directory Listing Fuzzing (Active) ──────────────
+            # ── 6. Directory Listing Fuzzing (quick) ──────────────────
             async def check_listing(path):
                 async with semaphore:
                     full_url = urljoin(base_url, path)
@@ -373,20 +335,20 @@ async def run(url: str) -> dict:
                         findings.append({
                             "location": f"Directory Listing: {path}",
                             "value": _get_safe_text(text, 150),
-                            "risk": "Directory listing enabled. Exposes file structure and potentially sensitive files.",
+                            "risk": "Directory listing enabled.",
                             "severity": "high",
                             "confidence": 100,
                             "poc": f"curl {full_url}",
                             "category": "active"
                         })
-                    # Path Traversal attempt: try /assets/../
+                    # Path traversal attempt
                     traversal_url = urljoin(base_url, path + "../")
                     t_text, _, t_status, _ = await _safe_get(session, traversal_url)
                     if t_status == 200 and t_text and ("index of /" in t_text.lower()):
                         findings.append({
                             "location": f"Path Traversal via {path}../",
                             "value": _get_safe_text(t_text, 150),
-                            "risk": "Directory listing outside root via path traversal.",
+                            "risk": "Path traversal to root listing.",
                             "severity": "critical",
                             "confidence": 100,
                             "poc": f"curl {traversal_url}",
@@ -394,51 +356,30 @@ async def run(url: str) -> dict:
                         })
 
             tasks = [check_listing(p) for p in DIR_LISTING_PATHS]
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-            # ── 8. Cloud Bucket Enumeration ─────────────────────────
-            bucket_links = [f["value"] for f in findings if "Cloud Storage reference" in f.get("risk", "")]
-            for bucket_url in bucket_links[:3]:  # Limit to 3 to avoid abuse
-                # Check if listing is possible
+            # ── 7. Cloud Bucket Enumeration (only if found) ───────────
+            bucket_links = [f["value"] for f in findings if "Cloud Storage" in f.get("risk", "")]
+            for bucket_url in bucket_links[:2]:
                 list_url = bucket_url
                 if ".s3.amazonaws.com" in bucket_url:
                     list_url = bucket_url + "?list-type=2"
                 elif "storage.googleapis.com" in bucket_url:
                     list_url = bucket_url + "?prefix="
-                # Azure: just try root
-
                 text, _, status, _ = await _safe_get(session, list_url)
-                if status == 200:
-                    if "<ListBucketResult" in text or "Key" in text or "items" in text:
-                        findings.append({
-                            "location": "Cloud Bucket",
-                            "value": f"{bucket_url} is listable!",
-                            "risk": "Cloud storage bucket allows directory listing. Confidential files may be exposed.",
-                            "severity": "critical",
-                            "confidence": 100,
-                            "poc": f"curl {list_url}",
-                            "category": "active"
-                        })
-
-            # ── 9. Active Verification of Discovered Admin Paths ────
-            # (Paths found in robots.txt or inferred from structure)
-            # We already have them in discovered_paths, but let's verify if they are 200 OK.
-            for path in list(discovered_paths)[:5]:
-                full_url = urljoin(base_url, path)
-                text, _, status, _ = await _safe_get(session, full_url)
-                if status == 200 and "login" not in text.lower() and "signin" not in text.lower():
+                if status == 200 and ("ListBucketResult" in text or "Key" in text):
                     findings.append({
-                        "location": f"Admin/Dashboard Path: {path}",
-                        "value": f"Accessible without authentication (Status {status}).",
-                        "risk": "Sensitive admin interface is publicly accessible.",
+                        "location": "Cloud Bucket",
+                        "value": f"{bucket_url} is listable!",
+                        "risk": "Cloud bucket allows directory listing.",
                         "severity": "critical",
-                        "confidence": 95,
-                        "poc": f"curl {full_url}",
+                        "confidence": 100,
+                        "poc": f"curl {list_url}",
                         "category": "active"
                     })
 
-        # ── 10. Correlation & Summarization ──────────────────────────
-        # Remove duplicates based on location
+        # ── 8. Summarize ──────────────────────────────────────────────────
+        # Remove duplicates
         unique_findings = []
         seen_locations = set()
         for f in findings:
@@ -453,7 +394,7 @@ async def run(url: str) -> dict:
                 "status": "pass",
                 "severity": "info",
                 "title": "No sensitive information disclosures found.",
-                "description": "Passive and active checks did not reveal exposed sensitive files or directories.",
+                "description": "Passive and active checks did not reveal exposed sensitive files.",
                 "evidence": [],
                 "remediation": "No action required.",
                 "tech_stack": list(tech_stack),
@@ -461,8 +402,7 @@ async def run(url: str) -> dict:
 
         # Determine worst severity
         severity_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
-        worst_sev = max(unique_findings, key=lambda x: severity_rank.get(x.get("severity", "info"), 0))
-        worst_sev_label = worst_sev.get("severity", "info")
+        worst_sev_label = max(unique_findings, key=lambda x: severity_rank.get(x.get("severity", "info"), 0)).get("severity", "info")
         status = "fail" if worst_sev_label in ("critical", "high") else "warning"
 
         critical_count = sum(1 for f in unique_findings if f.get("severity") == "critical")
@@ -474,22 +414,22 @@ async def run(url: str) -> dict:
         elif high_count > 0:
             title += f" (including {high_count} HIGH items)"
 
-        # Smart remediation based on findings
+        # Remediation
         remediation_steps = []
         if any("git" in f.get("location", "") for f in unique_findings):
-            remediation_steps.append("Remove .git directory from web root immediately.")
+            remediation_steps.append("Remove .git directory from web root.")
         if any(".env" in f.get("location", "") for f in unique_findings):
-            remediation_steps.append("Move .env files outside the public web root.")
+            remediation_steps.append("Move .env files outside public web root.")
         if any(f.get("severity") == "critical" for f in unique_findings):
             remediation_steps.append("Review all exposed critical files and restrict permissions.")
         if any("Directory Listing" in f.get("location", "") for f in unique_findings):
-            remediation_steps.append("Disable directory listing in web server configuration.")
+            remediation_steps.append("Disable directory listing.")
         if any("phpinfo" in f.get("location", "") for f in unique_findings):
-            remediation_steps.append("Delete phpinfo.php and similar debug scripts in production.")
+            remediation_steps.append("Delete phpinfo.php and similar debug scripts.")
         if any("swagger" in f.get("location", "").lower() or "graphql" in f.get("location", "").lower() for f in unique_findings):
-            remediation_steps.append("Restrict access to API documentation endpoints via IP whitelist or authentication.")
+            remediation_steps.append("Restrict access to API documentation endpoints.")
         if not remediation_steps:
-            remediation_steps.append("Conduct a full audit of all exposed static files and implement proper access controls.")
+            remediation_steps.append("Implement proper access controls on static files.")
 
         return {
             "test_name": test_name,
@@ -509,7 +449,7 @@ async def run(url: str) -> dict:
             "status": "error",
             "severity": "info",
             "title": f"Scan failed: {str(e)[:100]}",
-            "description": "An unexpected error occurred during the information disclosure scan.",
+            "description": "An unexpected error occurred.",
             "evidence": [],
             "remediation": "Check network connectivity and target availability.",
         }

@@ -67,7 +67,7 @@ SCORE_DEDUCTIONS = {
 # WAF / CDN detection (context only)
 # --------------------------------------------------------------------------
 
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 USER_AGENT = "Bravo6-Scanner/1.0"
 
 WAF_SIGNATURES = {
@@ -138,6 +138,7 @@ def _calculate_score(findings: list) -> int:
     score = 100
     seen_tests = set()
 
+    # Sort by severity (highest first)
     sorted_findings = sorted(
         findings,
         key=lambda f: SEVERITY_RANK.get(f.get("severity", "info"), 0),
@@ -160,7 +161,7 @@ def _calculate_score(findings: list) -> int:
 
 
 # --------------------------------------------------------------------------
-# Result aggregation
+# Result aggregation (UPDATED to handle nested findings)
 # --------------------------------------------------------------------------
 
 def _severity_label(score: int) -> str:
@@ -176,9 +177,10 @@ def _severity_label(score: int) -> str:
 
 
 def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict | None = None) -> dict:
-    findings = []
+    all_findings = []
     scan_errors = []
 
+    # ── Step 1: Flatten all results ──────────────────────────────────────
     for r in raw_results:
         if isinstance(r, Exception):
             scan_errors.append(str(r))
@@ -186,40 +188,59 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
         if not isinstance(r, dict):
             scan_errors.append(f"Unexpected result type: {type(r).__name__}")
             continue
-        findings.append(r)
 
-    score = _calculate_score(findings)
+        # Case 1: The result contains a 'findings' list (e.g., test_05, test_04)
+        if "findings" in r and isinstance(r["findings"], list):
+            test_name = r.get("test_name", "unknown")
+            for sub_finding in r["findings"]:
+                # Ensure each sub-finding has a test_name
+                if "test_name" not in sub_finding:
+                    sub_finding["test_name"] = test_name
+                # If sub_finding has 'overall_status' we might want to map it to 'status'
+                if "overall_status" in sub_finding and "status" not in sub_finding:
+                    sub_finding["status"] = sub_finding["overall_status"]
+                all_findings.append(sub_finding)
+        else:
+            # Case 2: The result is a single finding (e.g., test_03, test_06)
+            # Ensure it has a test_name
+            if "test_name" not in r:
+                r["test_name"] = "unknown"
+            all_findings.append(r)
+
+    # ── Step 2: Calculate score and summary ─────────────────────────────
+    score = _calculate_score(all_findings)
     grade = _severity_label(score)
 
     summary = {
-        "critical": sum(1 for f in findings if f.get("severity") == "critical" and f.get("status") in ("fail", "warning")),
-        "high":     sum(1 for f in findings if f.get("severity") == "high"     and f.get("status") in ("fail", "warning")),
-        "medium":   sum(1 for f in findings if f.get("severity") == "medium"   and f.get("status") in ("fail", "warning")),
-        "low":      sum(1 for f in findings if f.get("severity") == "low"      and f.get("status") in ("fail", "warning")),
-        "passed":   sum(1 for f in findings if f.get("status") == "pass"),
-        "errors":   sum(1 for f in findings if f.get("status") == "error") + len(scan_errors),
+        "critical": sum(1 for f in all_findings if f.get("severity") == "critical" and f.get("status") in ("fail", "warning")),
+        "high":     sum(1 for f in all_findings if f.get("severity") == "high"     and f.get("status") in ("fail", "warning")),
+        "medium":   sum(1 for f in all_findings if f.get("severity") == "medium"   and f.get("status") in ("fail", "warning")),
+        "low":      sum(1 for f in all_findings if f.get("severity") == "low"      and f.get("status") in ("fail", "warning")),
+        "passed":   sum(1 for f in all_findings if f.get("status") == "pass"),
+        "errors":   sum(1 for f in all_findings if f.get("status") == "error") + len(scan_errors),
     }
 
     if summary["critical"] > 0 or summary["high"] > 0:
         overall_status = "fail"
     elif summary["medium"] > 0 or summary["low"] > 0:
         overall_status = "warning"
-    elif summary["errors"] == len(findings):
+    elif summary["errors"] == len(all_findings) and len(all_findings) > 0:
         overall_status = "error"
     else:
         overall_status = "pass"
 
+    # ── Step 3: Build final result ───────────────────────────────────────
     return {
         "url": url,
         "status": overall_status,
         "score": score,
         "grade": grade,
         "summary": summary,
-        "findings": findings,
+        "findings": all_findings,
         "scan_errors": scan_errors,
         "waf_context": waf_context or {"detected": None, "note": None},
         "meta": {
-            "tests_run": len(findings),
+            "tests_run": len(all_findings),
             "tests_errored": len(scan_errors),
             "duration_seconds": round(duration, 2),
         },
@@ -252,6 +273,7 @@ async def run_scout(url: str) -> dict:
         async with aiohttp.ClientSession() as session:
             return await _detect_waf(target, session)
 
+    # ── Run all tests ──────────────────────────────────────────────────────
     *raw_results, waf_name = await asyncio.gather(
         # ── Group A: HTTP layer ──────────────────────────────────────────
         test_05_security_headers.run(target),
@@ -358,13 +380,10 @@ if __name__ == "__main__":
     print(f"[Bravo6] Score: {result['score']}/100 (Grade {result['grade']})")
     print(f"[Bravo6] Duration: {result['meta']['duration_seconds']}s")
 
-    # Generate HTML report if requested or if no specific output specified (optional)
-    # Let's generate it by default unless --no-html is passed (we didn't add that, but we can)
-    # For convenience, we'll generate if --html is present.
+    # Generate HTML report if requested
     if html_output is not None or '--html' in sys.argv:
         out = generate_report(result, html_output if isinstance(html_output, str) else None)
         if out:
             print(f"[Bravo6] HTML report saved to: {out}")
     else:
-        # Optionally, user can enable by default; we'll keep it optional to avoid file clutter.
         print("[Bravo6] Use --html <filename> to generate HTML report.")

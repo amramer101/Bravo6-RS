@@ -29,7 +29,7 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 
 # ── Configuration ──────────────────────────────────────────────────────────
-CONNECT_TIMEOUT = 10
+CONNECT_TIMEOUT = 15
 DEFAULT_HTTPS_PORT = 443
 MAX_RETRIES = 2
 USER_AGENT = "Bravo6-Scanner/1.0"

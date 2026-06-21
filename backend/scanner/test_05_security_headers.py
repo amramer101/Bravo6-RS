@@ -23,7 +23,7 @@ import aiohttp
 
 TEST_NAME = "security_headers"
 USER_AGENT = "Bravo6-Scanner/1.0"
-REQUEST_TIMEOUT_SECONDS = 12
+REQUEST_TIMEOUT_SECONDS = 15
 MAX_REDIRECTS = 5
 
 # ── CDN / Shared domains that cannot have HSTS ──────────────────────────

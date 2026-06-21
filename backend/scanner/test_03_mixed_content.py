@@ -25,8 +25,8 @@ from bs4 import BeautifulSoup
 
 TEST_NAME = "mixed_content"
 USER_AGENT = "Bravo6-Scanner/1.0"
-REQUEST_TIMEOUT_SECONDS = 8
-MAX_VERIFY_CONCURRENCY = 15
+REQUEST_TIMEOUT_SECONDS = 12
+MAX_VERIFY_CONCURRENCY = 5
 MAX_EXTERNAL_FILES = 10  # Limit external files to analyse to avoid timeouts
 
 # ── Tag/attribute patterns ──────────────────────────────────────────────

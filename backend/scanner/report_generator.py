@@ -1,13 +1,16 @@
 """
-report_generator.py — Bravo6 HTML Report Generator (Matrix Edition)
+report_generator.py — Bravo6 Professional Security Scan Report
 
-Generates a stunning HTML report with:
-- Matrix-inspired dark theme (green on black)
-- Digital signature (SHA-256) for tamper-proof verification
-- Timestamp per finding (proves when the vulnerability was found)
-- Full reproducibility data (parameters, command, checksums)
-- robots.txt content with highlighted sensitive paths
-- Exploitability scores and prioritized recommendations
+Generates a comprehensive, professional HTML report with:
+- Executive summary with risk score, grade, and key metrics.
+- Interactive heatmap for risk prioritization.
+- Detailed findings with: description, technical details, exploitability, remediation, PoC, references.
+- Business impact and risk context for each finding.
+- Visual charts (severity distribution, score gauge).
+- Filterable/focusable findings by severity or status.
+- Digital signature for tamper-proof verification.
+- Reproducibility metadata (command, arguments, timestamps).
+- Responsive design with modern, clean aesthetic.
 """
 
 import json
@@ -16,101 +19,257 @@ import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+# ── Configuration ──────────────────────────────────────────────────────────
+REPORT_TITLE = "Bravo6 Security Assessment Report"
+REPORT_VERSION = "3.0"
+COMPANY_NAME = "Bravo6 Security"
+COMPANY_LOGO = "🔐"  # Or use an icon/emoji
 
-# ── Exploitability scores (1–10) per finding type ──────────────────────────
-EXPLOITABILITY_SCORES = {
-    "secrets_detection": 10,
-    "http_methods": 9,
-    "robots_txt": 8,
-    "information_disclosure": 8,
-    "subdomain_takeover": 9,
-    "cms_vibe_detection": 7,
-    "ssl_tls": 5,
-    "cors": 6,
-    "email_security": 6,
-    "cookie_security": 6,
-    "mixed_content": 6,
-    "sri_check": 3,
-    "hallucinated_deps": 4,
-    "AI Configuration Exposure": 5,
-    "security_headers": 4,
-    "js_library_audit": 4,
+# ── Finding metadata: descriptions, impacts, references ──────────────────
+FINDING_METADATA = {
+    "secrets_detection": {
+        "title": "Hardcoded Secrets / API Keys",
+        "description": "The application source code or configuration exposes sensitive credentials (API keys, passwords, tokens) that can be used to compromise backend services or data.",
+        "impact": "An attacker can use these credentials to access databases, cloud services, or internal APIs, leading to data breach, account takeover, or full system compromise.",
+        "owasp": "A07:2021 - Identification and Authentication Failures",
+        "cwe": "CWE-798: Use of Hard-coded Credentials",
+        "references": ["https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/"],
+        "remediation": "Remove secrets from code. Use environment variables, secrets managers (e.g., HashiCorp Vault, AWS Secrets Manager), or CI/CD secure variables."
+    },
+    "mixed_content": {
+        "title": "Mixed Content (HTTP resources on HTTPS page)",
+        "description": "The secure HTTPS page loads resources (scripts, stylesheets, images, iframes) over insecure HTTP.",
+        "impact": "Active mixed content (scripts, stylesheets) can be intercepted and modified by attackers to execute malicious code, steal session cookies, or redirect users to phishing sites. Passive content (images) can be replaced or cause privacy leaks.",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-311: Missing Encryption of Sensitive Data",
+        "references": ["https://developer.mozilla.org/en-US/docs/Web/Security/Mixed_content"],
+        "remediation": "Replace all HTTP URLs with HTTPS. Implement Content-Security-Policy with 'upgrade-insecure-requests' and/or 'block-all-mixed-content'."
+    },
+    "ssl_tls": {
+        "title": "Weak SSL/TLS Configuration",
+        "description": "The server supports outdated SSL/TLS protocols (SSLv2, SSLv3, TLS 1.0, TLS 1.1) or weak cipher suites (EXPORT, RC4, 3DES, CBC mode).",
+        "impact": "Attackers can downgrade connections, decrypt traffic, or perform MITM attacks using known exploits like POODLE, BEAST, DROWN, or Logjam. This compromises confidentiality and integrity of transmitted data.",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-327: Use of a Broken or Risky Cryptographic Algorithm",
+        "references": ["https://www.ssllabs.com/", "https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=SSL"],
+        "remediation": "Disable SSLv2, SSLv3, TLS 1.0, TLS 1.1. Enable TLS 1.2 and 1.3. Use strong ciphers (ECDHE with AES-GCM or ChaCha20). Enable HSTS."
+    },
+    "security_headers": {
+        "title": "Missing or Weak Security Headers",
+        "description": "The HTTP response is missing critical security headers (HSTS, CSP, XFO, XCTO, Referrer-Policy, Permissions-Policy, COOP, COEP).",
+        "impact": "Missing headers expose the application to various attacks: clickjacking, XSS, MIME-sniffing, SSL-stripping, cross-origin data leaks, and side-channel attacks (Spectre).",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-693: Protection Mechanism Failure",
+        "references": ["https://owasp.org/www-project-secure-headers/"],
+        "remediation": "Implement all recommended security headers with appropriate values."
+    },
+    "information_disclosure": {
+        "title": "Sensitive Information Disclosure",
+        "description": "The application exposes sensitive files, directories, or error messages that reveal internal system details, credentials, or source code.",
+        "impact": "Attackers can use exposed information to map the application structure, identify technology versions (leading to known CVEs), discover admin endpoints, or directly access configuration files containing credentials.",
+        "owasp": "A01:2021 - Broken Access Control",
+        "cwe": "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor",
+        "references": ["https://owasp.org/www-community/attacks/Information_disclosure"],
+        "remediation": "Remove exposed files (.git, .env, backup archives). Disable directory listing. Implement proper access controls. Customize error pages."
+    },
+    "cookies": {
+        "title": "Insecure Cookie Configuration",
+        "description": "Session cookies are missing the Secure and/or HttpOnly flags, or are not using SameSite restriction.",
+        "impact": "Cookies without Secure flag can be intercepted over HTTP. Without HttpOnly, they can be stolen via XSS. Without SameSite, they may be sent in cross-site requests (CSRF risk).",
+        "owasp": "A04:2021 - Insecure Design",
+        "cwe": "CWE-614: Sensitive Cookie in HTTPS Session Without 'Secure' Attribute",
+        "references": ["https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies"],
+        "remediation": "Set Secure, HttpOnly, and SameSite=Strict or Lax on all session cookies."
+    },
+    "cors": {
+        "title": "Misconfigured CORS Policy",
+        "description": "Cross-Origin Resource Sharing (CORS) is configured to allow requests from unauthorized origins, or with credentials allowed from wildcard origins.",
+        "impact": "Attackers can make authenticated cross-origin requests to steal sensitive data, perform CSRF-like attacks, or execute unauthorized actions on behalf of the user.",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-346: Origin Validation Error",
+        "references": ["https://portswigger.net/web-security/cors"],
+        "remediation": "Restrict Access-Control-Allow-Origin to a specific list of trusted origins. Avoid using wildcard (*) with credentials."
+    },
+    "http_methods": {
+        "title": "Dangerous HTTP Methods Enabled",
+        "description": "The server supports HTTP methods like PUT, DELETE, TRACE, or OPTIONS that can be abused.",
+        "impact": "Attackers can use PUT to upload malicious files, DELETE to remove content, TRACE to perform cross-site tracing (XST), or OPTIONS to gather information about server capabilities.",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-749: Exposed Dangerous Method or Function",
+        "references": ["https://owasp.org/www-community/attacks/HTTP_verb_tampering"],
+        "remediation": "Disable unnecessary HTTP methods. Only allow GET, POST, and HEAD."
+    },
+    "subdomain_takeover": {
+        "title": "Subdomain Takeover Vulnerability",
+        "description": "DNS records point to a service (e.g., AWS S3, GitHub Pages, Heroku) that is no longer in use, allowing an attacker to claim the subdomain.",
+        "impact": "An attacker can claim the subdomain and serve malicious content, steal session cookies (if subdomain is trusted), or perform phishing attacks. This can lead to full compromise of the main domain's trust.",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-1023: Insecure Provision of Services",
+        "references": ["https://www.hackerone.com/security-engineering/how-to-find-subdomain-takeovers"],
+        "remediation": "Remove unused DNS records. If a service is no longer used, delete the CNAME record. Regularly audit DNS entries."
+    },
+    "email_security": {
+        "title": "Missing Email Security Records (SPF, DKIM, DMARC)",
+        "description": "The domain lacks SPF, DKIM, and/or DMARC records, making it vulnerable to email spoofing.",
+        "impact": "Attackers can send fraudulent emails that appear to come from your domain, leading to phishing attacks, brand reputation damage, and potential financial losses.",
+        "owasp": "A08:2021 - Software and Data Integrity Failures",
+        "cwe": "CWE-345: Insufficient Verification of Data Authenticity",
+        "references": ["https://dmarc.org/", "https://www.dmarcanalyzer.com/spf/"],
+        "remediation": "Publish SPF, DKIM, and DMARC records. Start with a quarantine policy, then move to reject once validated."
+    },
+    "robots_txt": {
+        "title": "Sensitive Paths Exposed in robots.txt",
+        "description": "The robots.txt file contains paths to sensitive directories (admin, backup, config, etc.) that are intended to be hidden from search engines but are publicly readable.",
+        "impact": "Attackers can use these paths to directly access admin panels, configuration files, or other sensitive areas, accelerating their reconnaissance and attack planning.",
+        "owasp": "A01:2021 - Broken Access Control",
+        "cwe": "CWE-200: Exposure of Sensitive Information",
+        "references": ["https://developers.google.com/search/docs/crawling-indexing/robots/intro"],
+        "remediation": "Remove sensitive paths from robots.txt. Use proper authentication and access controls instead."
+    },
+    "cms_fingerprinting": {
+        "title": "CMS/Technology Fingerprinting",
+        "description": "The server reveals its technology stack (CMS, framework, version) through headers, cookies, or file paths.",
+        "impact": "Known vulnerabilities (CVEs) exist for specific versions of popular CMS and frameworks. Attackers can target these known vulnerabilities to compromise the system.",
+        "owasp": "A05:2021 - Security Misconfiguration",
+        "cwe": "CWE-200: Exposure of Sensitive Information",
+        "references": ["https://www.cvedetails.com/"],
+        "remediation": "Remove version details from headers, meta tags, and URLs. Keep software up-to-date with security patches."
+    },
+    "sri_check": {
+        "title": "Missing Subresource Integrity (SRI)",
+        "description": "External scripts and stylesheets are loaded without integrity hashes, allowing CDN compromise or malicious modification.",
+        "impact": "If a CDN is hacked or the external resource is compromised, attackers can inject malicious code into your site, affecting all users. This leads to XSS, data theft, or malware distribution.",
+        "owasp": "A08:2021 - Software and Data Integrity Failures",
+        "cwe": "CWE-829: Inclusion of Functionality from Untrusted Control Sphere",
+        "references": ["https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity"],
+        "remediation": "Add integrity attributes (SHA-256, SHA-384, or SHA-512) to all external scripts and stylesheets."
+    },
+    "hallucinated_deps": {
+        "title": "Hallucinated/Unsafe Dependencies (Domain Takeover Risk)",
+        "description": "The application references external domains for dependencies that are unregistered or unused, which an attacker can claim.",
+        "impact": "An attacker can register the unclaimed domain and serve malicious code, effectively performing a supply chain attack on your application.",
+        "owasp": "A08:2021 - Software and Data Integrity Failures",
+        "cwe": "CWE-829: Inclusion of Functionality from Untrusted Control Sphere",
+        "references": ["https://hackerone.com/reports/1471309"],
+        "remediation": "Verify all external domains are properly registered and maintained. Use package managers with lockfiles."
+    },
+    "ai_exposure": {
+        "title": "AI/LLM Configuration Exposure",
+        "description": "AI-related configuration files or prompts are publicly accessible, revealing internal system prompts, model behavior, or sensitive data.",
+        "impact": "Attackers can extract proprietary prompts, understand system logic, or manipulate the AI model to generate harmful content or reveal confidential information (prompt injection).",
+        "owasp": "A01:2021 - Broken Access Control (for LLM-specific risks)",
+        "cwe": "CWE-200: Exposure of Sensitive Information",
+        "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"],
+        "remediation": "Restrict access to AI configuration files. Implement strong authentication for AI endpoints. Sanitize prompts and outputs."
+    },
+    "frontend_libs": {
+        "title": "Outdated JavaScript Libraries with Known Vulnerabilities",
+        "description": "The application uses frontend libraries (jQuery, Angular, React, Vue, etc.) with known CVEs.",
+        "impact": "Attackers can exploit known vulnerabilities (XSS, RCE, prototype pollution) in outdated libraries to compromise user sessions, steal data, or execute arbitrary code in the browser.",
+        "owasp": "A06:2021 - Vulnerable and Outdated Components",
+        "cwe": "CWE-1104: Use of Unmaintained Third Party Components",
+        "references": ["https://retirejs.github.io/retire.js/", "https://snyk.io/vuln/"],
+        "remediation": "Update libraries to the latest secure versions. Regularly audit dependencies using tools like npm audit, Snyk, or retire.js."
+    },
+    "csp": {
+        "title": "Weak or Missing Content Security Policy (CSP)",
+        "description": "The CSP is missing, uses unsafe-inline/unsafe-eval, or lacks critical directives (base-uri, form-action, object-src).",
+        "impact": "A weak CSP exposes the application to XSS attacks, data injection, and clickjacking. Attackers can execute arbitrary scripts in the context of the application, steal session tokens, or deface the site.",
+        "owasp": "A03:2021 - Injection",
+        "cwe": "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')",
+        "references": ["https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP"],
+        "remediation": "Implement a strict CSP. Avoid unsafe-inline/unsafe-eval. Use nonce or hash for inline scripts. Set base-uri, form-action, and object-src to 'none' or 'self'."
+    }
 }
 
-# ── Plain-language explanations ─────────────────────────────────────────────
-EXPLANATIONS = {
-    "secrets_detection": "Your website has exposed secret keys (like passwords) that anyone can see. An attacker could use them to steal data or hijack your services.",
-    "http_methods": "Your server accepts dangerous commands (like DELETE) that can delete files or upload malicious content. An attacker can easily exploit this.",
-    "robots_txt": "A public file intended for search engines reveals hidden admin areas, making it easier for hackers to find and attack them.",
-    "information_disclosure": "Your site leaks internal details (e.g., file paths, server versions) that help attackers plan sophisticated attacks.",
-    "subdomain_takeover": "Your DNS records point to services that you don't own anymore. An attacker can register those services and control your subdomains.",
-    "cms_vibe_detection": "Your CMS or framework is outdated or misconfigured, which may allow hackers to take over your site.",
-    "ssl_tls": "Your HTTPS encryption is weak or misconfigured, so attackers could intercept data your users send to you.",
-    "cors": "Your server allows other websites to make requests on behalf of your users, potentially stealing their data.",
-    "email_security": "Your email setup allows spammers to send fake emails that appear to come from your domain, damaging your reputation.",
-    "cookie_security": "Your session cookies are not properly secured, so hackers could steal them and impersonate logged-in users.",
-    "mixed_content": "Your secure HTTPS page loads insecure HTTP resources, which can be tampered with by attackers.",
-    "sri_check": "Your site loads external JavaScript libraries without verifying their integrity. A hacked CDN could inject malicious code.",
-    "hallucinated_deps": "Your site references domains that don't exist. An attacker could register them and control your site.",
-    "AI Configuration Exposure": "Your AI-related configuration files are publicly accessible, which may reveal sensitive prompts or internal logic.",
-    "security_headers": "Missing security headers weaken your browser's protection against common attacks like XSS or clickjacking.",
-    "js_library_audit": "Your site uses outdated JavaScript libraries with known vulnerabilities, which attackers can use to compromise your users.",
-}
-
-
-# ── Helper functions ────────────────────────────────────────────────────────
-
+# ── Helper: Get exploitability score ──────────────────────────────────────
 def _get_exploitability(test_name: str) -> int:
+    """Return exploitability score (1-10)."""
+    scoring = {
+        "secrets_detection": 10,
+        "http_methods": 9,
+        "subdomain_takeover": 9,
+        "mixed_content": 8,
+        "information_disclosure": 8,
+        "ssl_tls": 7,
+        "csp": 8,
+        "security_headers": 6,
+        "cookies": 7,
+        "cors": 7,
+        "cms_fingerprinting": 7,
+        "email_security": 6,
+        "robots_txt": 6,
+        "frontend_libs": 7,
+        "sri_check": 5,
+        "hallucinated_deps": 6,
+        "ai_exposure": 6
+    }
     key = test_name.replace("test_", "")
-    return EXPLOITABILITY_SCORES.get(key, 5)
+    return scoring.get(key, 5)
 
-
-def _get_explanation(test_name: str) -> str:
+# ── Helper: Business impact mapping ──────────────────────────────────────
+def _get_business_impact(test_name: str) -> str:
+    impact_map = {
+        "secrets_detection": "Critical data breach, full system compromise, regulatory fines (GDPR).",
+        "http_methods": "Malware upload, data deletion, system downtime.",
+        "subdomain_takeover": "Phishing attacks, brand reputation loss, user data theft.",
+        "mixed_content": "Data interception, session hijacking, malicious code injection.",
+        "information_disclosure": "Targeted attacks based on exposed system details.",
+        "ssl_tls": "Data interception, eavesdropping, loss of confidentiality.",
+        "csp": "Cross-site scripting, data theft, session hijacking.",
+        "security_headers": "Increased attack surface for XSS, clickjacking, and data leaks.",
+        "cookies": "Session hijacking, CSRF, sensitive data exposure.",
+        "cors": "Unauthenticated cross-origin data theft.",
+        "cms_fingerprinting": "Exploitation of known CVEs, system compromise.",
+        "email_security": "Email spoofing, brand impersonation, financial fraud.",
+        "robots_txt": "Accelerated reconnaissance and targeted attacks.",
+        "frontend_libs": "Client-side XSS, prototype pollution, data theft.",
+        "sri_check": "Supply chain attacks, malware injection.",
+        "hallucinated_deps": "Supply chain takeover, malicious code injection.",
+        "ai_exposure": "Prompt injection, proprietary data leak, AI manipulation."
+    }
     key = test_name.replace("test_", "")
-    return EXPLANATIONS.get(key, "This issue may pose a security risk to your website.")
+    return impact_map.get(key, "Potential security breach and business disruption.")
 
+# ── Helper: Get severity color ────────────────────────────────────────────
+def _severity_color(severity: str) -> str:
+    colors = {
+        "critical": "#ff0040",
+        "high": "#ff6a00",
+        "medium": "#ffd700",
+        "low": "#00ccff",
+        "info": "#666666"
+    }
+    return colors.get(severity.lower(), "#666666")
 
-def _get_priority(test_name: str, severity: str) -> str:
-    score = _get_exploitability(test_name)
-    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}.get(severity, 0)
-    if severity_rank >= 3 and score >= 7:
-        return "Critical"
-    if severity_rank >= 2 and score >= 5:
-        return "High"
-    if severity_rank >= 1:
-        return "Medium"
-    return "Low"
+def _severity_bg(severity: str) -> str:
+    colors = {
+        "critical": "#ff00401a",
+        "high": "#ff6a001a",
+        "medium": "#ffd7001a",
+        "low": "#00ccff1a",
+        "info": "#6666661a"
+    }
+    return colors.get(severity.lower(), "#6666661a")
 
-
-def _severity_to_risk_level(severity: str) -> str:
-    return {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Info"}.get(severity, "Info")
-
-
+# ── Helper: Generate SHA-256 signature ────────────────────────────────────
 def _generate_sha256(data: str) -> str:
     return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
+# ── Helper: Truncate text ──────────────────────────────────────────────────
+def _truncate(text: str, max_len: int = 200) -> str:
+    if not text:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "..."
 
-def _highlight_robots_content(content: str, sensitive_paths: list) -> str:
-    """Highlight sensitive paths in robots.txt with a glowing green background."""
-    if not content or not sensitive_paths:
-        return content or ""
-    highlighted = content
-    for path in sensitive_paths:
-        escaped = re.escape(path)
-        highlighted = re.sub(
-            rf'(?i)({escaped})',
-            r'<span style="background:#00ff41;color:#000000;font-weight:bold;padding:0 4px;border-radius:2px;">\1</span>',
-            highlighted
-        )
-    return highlighted
-
-
-# ── Main HTML generator ─────────────────────────────────────────────────────
+# ── Main HTML Generator ────────────────────────────────────────────────────
 
 def generate_html_report(result: Dict[str, Any]) -> str:
-    """
-    Generate a standalone HTML report with Matrix theme.
-    """
+    """Generate a professional, comprehensive HTML report."""
+    
+    # ── Extract data ──────────────────────────────────────────────────────
     url = result.get("url", "N/A")
     status = result.get("status", "unknown")
     score = result.get("score", 0)
@@ -121,172 +280,174 @@ def generate_html_report(result: Dict[str, Any]) -> str:
     meta = result.get("meta", {})
     scan_errors = result.get("scan_errors", [])
 
-    status_color = {
-        "pass": "#00ff41",
-        "warning": "#ffd700",
-        "fail": "#ff0040",
-        "error": "#666666"
-    }.get(status, "#00ff41")
+    # ── Compute statistics ──────────────────────────────────────────────
+    total_findings = len(findings)
+    fail_count = sum(1 for f in findings if f.get("status") in ("fail", "warning"))
+    pass_count = total_findings - fail_count
 
-    # ── Process findings ───────────────────────────────────────────────────
+    # ── Process findings with metadata ──────────────────────────────────
+    enriched_findings = []
     for f in findings:
-        test_name = f.get("test_name", "Unnamed")
-        sev = f.get("severity", "info")
-        f["_priority"] = _get_priority(test_name, sev)
-        f["_exploitability"] = _get_exploitability(test_name)
-        f["_explanation"] = _get_explanation(test_name)
-        f["_risk_level"] = _severity_to_risk_level(sev)
-        f["_timestamp"] = datetime.now().isoformat()
+        test_name = f.get("test_name", "unknown")
+        metadata = FINDING_METADATA.get(test_name, {})
+        severity = f.get("severity", "info")
+        
+        enriched = {
+            **f,
+            "_test_name": test_name,
+            "_metadata": metadata,
+            "_severity_color": _severity_color(severity),
+            "_severity_bg": _severity_bg(severity),
+            "_exploitability": _get_exploitability(test_name),
+            "_business_impact": _get_business_impact(test_name),
+            "_timestamp": datetime.now().isoformat(),
+        }
+        enriched_findings.append(enriched)
 
-    priority_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
-    sorted_findings = sorted(findings, key=lambda f: priority_order.get(f["_priority"], 5))
+    # Sort by severity (critical first)
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    enriched_findings.sort(key=lambda f: sev_order.get(f.get("severity", "info"), 5))
 
-    # ── Digital signature ──────────────────────────────────────────────────
+    # ── Digital signature ──────────────────────────────────────────────
     report_json = json.dumps(result, sort_keys=True, default=str)
     signature = _generate_sha256(report_json)
 
-    # ── Heatmap data ───────────────────────────────────────────────────────
-    heatmap_cells = []
-    for f in sorted_findings:
-        if f.get("status") in ("fail", "warning"):
-            heatmap_cells.append({
-                "name": f.get("test_name", "").replace("test_", "").replace("_", " ").title(),
-                "risk": f.get("severity", "info").capitalize(),
-                "priority": f["_priority"],
-                "score": f["_exploitability"],
-            })
-
-    # ── Build HTML ─────────────────────────────────────────────────────────
-    html = f'''<!DOCTYPE html>
-<html lang="ar" dir="ltr">
+    # ── Generate HTML ──────────────────────────────────────────────────
+    html = f"""<!DOCTYPE html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bravo6 Security Scan Report - {url}</title>
+    <title>{REPORT_TITLE} - {url}</title>
     <style>
-        /* ── Base / Matrix Theme ──────────────────────── */
+        /* ── Base Reset ──────────────────────────────────────────────────── */
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            font-family: 'Times New Roman', Times, serif;
-            font-size: 18px;
-            background: #0a0a0a;
-            color: #00ff41;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+            background: #f0f4f8;
+            color: #1a2332;
             padding: 30px;
-            line-height: 1.7;
-            min-height: 100vh;
+            line-height: 1.6;
         }}
         .container {{
-            max-width: 1440px;
+            max-width: 1400px;
             margin: 0 auto;
-            background: rgba(10, 10, 10, 0.95);
-            border: 2px solid #00ff41;
-            border-radius: 20px;
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.08);
             padding: 40px;
-            box-shadow: 0 0 60px rgba(0, 255, 65, 0.08);
         }}
 
-        /* ── Scrollbar ────────────────────────────────── */
-        ::-webkit-scrollbar {{ width: 8px; background: #0a0a0a; }}
-        ::-webkit-scrollbar-track {{ background: #0a0a0a; }}
-        ::-webkit-scrollbar-thumb {{ background: #00ff41; border-radius: 4px; }}
-
-        /* ── Typography ───────────────────────────────── */
-        h1, h2, h3, h4 {{
-            font-family: 'Times New Roman', Times, serif;
-            font-weight: 700;
-            letter-spacing: 1px;
+        /* ── Typography ─────────────────────────────────────────────────── */
+        h1, h2, h3, h4, h5 {{
+            font-weight: 600;
+            letter-spacing: -0.01em;
         }}
-        h1 {{ font-size: 36px; }}
-        h2 {{ font-size: 30px; margin: 28px 0 16px 0; }}
-        h3 {{ font-size: 24px; margin: 16px 0 8px 0; }}
-        p {{ font-size: 18px; margin-bottom: 12px; }}
+        h1 {{ font-size: 32px; color: #0a1a2f; }}
+        h2 {{ font-size: 26px; color: #1a2f44; margin-top: 32px; margin-bottom: 16px; border-bottom: 2px solid #e9edf2; padding-bottom: 8px; }}
+        h3 {{ font-size: 20px; color: #2a3f54; margin-top: 20px; margin-bottom: 10px; }}
+        p {{ font-size: 16px; color: #3a4a5f; margin-bottom: 12px; line-height: 1.7; }}
+        a {{ color: #0066cc; text-decoration: none; border-bottom: 1px solid #d0d7e0; }}
+        a:hover {{ color: #004499; border-bottom-color: #0066cc; }}
 
-        /* ── Links ────────────────────────────────────── */
-        a {{ color: #00ff41; text-decoration: none; border-bottom: 1px dashed #00ff41; }}
-        a:hover {{ color: #ffffff; border-bottom: 1px solid #00ff41; }}
-
-        /* ── Header ───────────────────────────────────── */
-        .header {{
-            border-bottom: 2px solid #00ff41;
-            padding-bottom: 24px;
-            margin-bottom: 32px;
+        /* ── Header ──────────────────────────────────────────────────────── */
+        .report-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
             gap: 20px;
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 2px solid #e9edf2;
         }}
-        .header h1 {{
-            font-size: 40px;
-            color: #00ff41;
-            text-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
-            letter-spacing: 4px;
-        }}
-        .header .badge {{
-            font-family: 'Times New Roman', Times, serif;
-            background: {status_color};
-            color: #0a0a0a;
-            padding: 10px 32px;
-            border-radius: 0px;
-            font-weight: 700;
-            font-size: 22px;
-            text-transform: uppercase;
-            letter-spacing: 2px;
-            border: 1px solid {status_color};
-            box-shadow: 0 0 30px rgba({status_color}, 0.15);
-        }}
-        .meta-info {{
+        .report-header .brand {{
             display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-            margin-top: 8px;
-            font-size: 17px;
-            color: #66ff99;
+            align-items: center;
+            gap: 12px;
         }}
-        .meta-info span {{
-            background: rgba(0, 255, 65, 0.06);
-            padding: 4px 16px;
-            border: 1px solid rgba(0, 255, 65, 0.15);
-            border-radius: 0px;
+        .report-header .brand h1 {{
+            font-size: 28px;
+            font-weight: 700;
+            color: #0a1a2f;
         }}
-        .meta-info strong {{ color: #00ff41; }}
+        .report-header .brand .logo {{
+            font-size: 36px;
+        }}
+        .report-header .badge {{
+            padding: 8px 24px;
+            border-radius: 30px;
+            font-weight: 600;
+            font-size: 18px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #fff;
+            background: {_severity_color(status if status in ('fail','warning','pass','error') else 'info')};
+        }}
 
-        /* ── Score Card ───────────────────────────────── */
+        .meta-row {{
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            margin: 8px 0 16px 0;
+            font-size: 15px;
+            color: #5a6a7f;
+        }}
+        .meta-row span {{
+            background: #f7f9fc;
+            padding: 4px 16px;
+            border-radius: 20px;
+            border: 1px solid #e9edf2;
+        }}
+        .meta-row strong {{ color: #0a1a2f; }}
+
+        /* ── Score Card ─────────────────────────────────────────────────── */
         .score-card {{
-            background: rgba(0, 255, 65, 0.03);
-            border: 1px solid rgba(0, 255, 65, 0.15);
-            padding: 32px;
+            background: linear-gradient(135deg, #f7f9fc 0%, #ffffff 100%);
+            border: 1px solid #e9edf2;
+            border-radius: 16px;
+            padding: 32px 40px;
             margin-bottom: 32px;
             display: flex;
             flex-wrap: wrap;
             gap: 40px;
             align-items: center;
         }}
+        .score-gauge {{
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }}
         .score-circle {{
             width: 120px;
             height: 120px;
             border-radius: 50%;
-            background: conic-gradient({status_color} {score}%, #1a1a1a {score}%);
+            background: conic-gradient(#0066cc 0% {score}%, #e9edf2 {score}% 100%);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 40px;
+            font-size: 42px;
             font-weight: 700;
-            color: #0a0a0a;
-            border: 2px solid {status_color};
-            box-shadow: 0 0 40px rgba({status_color}, 0.10);
+            color: #ffffff;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            border: 4px solid #0066cc;
+            box-shadow: 0 4px 20px rgba(0,102,204,0.15);
         }}
-        .score-details {{ flex: 1; }}
         .score-details .grade {{
-            font-size: 56px;
+            font-size: 48px;
             font-weight: 700;
-            color: {status_color};
-            text-shadow: 0 0 30px rgba({status_color}, 0.15);
+            color: #0066cc;
+            letter-spacing: -0.03em;
         }}
-        .score-details .sub {{ font-size: 19px; color: #66ff99; }}
+        .score-details .sub {{
+            font-size: 18px;
+            color: #5a6a7f;
+            margin-top: 4px;
+        }}
+
         .summary-bars {{
             display: flex;
-            gap: 18px;
+            gap: 20px;
             flex-wrap: wrap;
             margin-top: 12px;
         }}
@@ -294,271 +455,225 @@ def generate_html_report(result: Dict[str, Any]) -> str:
             display: flex;
             align-items: center;
             gap: 10px;
-            background: rgba(0, 255, 65, 0.04);
-            padding: 8px 20px;
-            border: 1px solid rgba(0, 255, 65, 0.08);
-            font-size: 16px;
-            color: #66ff99;
+            background: #f7f9fc;
+            padding: 6px 18px;
+            border-radius: 30px;
+            font-size: 15px;
+            color: #2a3f54;
         }}
         .summary-item .dot {{
             width: 14px;
             height: 14px;
-            border-radius: 0px;
+            border-radius: 50%;
             display: inline-block;
         }}
 
-        /* ── Heatmap ──────────────────────────────────── */
-        .heatmap {{
-            background: rgba(0, 255, 65, 0.03);
-            border: 1px solid rgba(0, 255, 65, 0.10);
-            padding: 24px 28px;
+        /* ── Executive Summary ──────────────────────────────────────────── */
+        .executive-summary {{
+            background: #f7f9fc;
+            border-left: 4px solid #0066cc;
+            padding: 20px 28px;
             margin-bottom: 32px;
+            border-radius: 0 12px 12px 0;
         }}
-        .heatmap-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            gap: 12px;
-            margin-top: 16px;
+        .executive-summary p {{
+            margin-bottom: 8px;
+            color: #1a2f44;
         }}
-        .heatmap-cell {{
-            padding: 16px 18px;
-            border: 1px solid rgba(0, 255, 65, 0.15);
-            font-size: 15px;
-            font-weight: 600;
-            text-align: center;
-            color: #0a0a0a;
-            transition: all 0.2s;
-            background: #1a1a1a;
+        .executive-summary strong {{
+            color: #0a1a2f;
         }}
-        .heatmap-cell:hover {{ transform: scale(1.03); box-shadow: 0 0 30px rgba(0, 255, 65, 0.05); }}
-        .heatmap-cell .cell-score {{
-            font-size: 22px;
-            font-weight: 700;
-            display: block;
-            margin-bottom: 2px;
-        }}
-        .heatmap-cell .cell-label {{ font-size: 13px; opacity: 0.8; }}
 
-        /* ── Priority Section ─────────────────────────── */
-        .priority-section {{
-            background: rgba(0, 255, 65, 0.03);
-            border: 1px solid rgba(0, 255, 65, 0.10);
-            padding: 24px 28px;
-            margin-bottom: 32px;
-        }}
-        .priority-list {{ list-style: none; padding: 0; margin-top: 12px; }}
-        .priority-list li {{
-            display: flex;
-            align-items: flex-start;
-            gap: 18px;
-            padding: 14px 18px;
-            border-bottom: 1px solid rgba(0, 255, 65, 0.06);
-        }}
-        .priority-list li:last-child {{ border-bottom: none; }}
-        .priority-badge {{
-            font-family: 'Times New Roman', Times, serif;
-            font-weight: 700;
-            font-size: 13px;
-            padding: 4px 16px;
-            border-radius: 0px;
-            color: #0a0a0a;
-            white-space: nowrap;
-            background: #666;
-            border: 1px solid #666;
-        }}
-        .priority-badge.Critical {{ background: #ff0040; border-color: #ff0040; }}
-        .priority-badge.High {{ background: #ff6a00; border-color: #ff6a00; }}
-        .priority-badge.Medium {{ background: #ffd700; border-color: #ffd700; color: #0a0a0a; }}
-        .priority-badge.Low {{ background: #00ccff; border-color: #00ccff; }}
-        .priority-badge.Info {{ background: #666666; border-color: #666666; }}
-
-        /* ── Finding Cards ────────────────────────────── */
+        /* ── Findings ────────────────────────────────────────────────────── */
         .finding-card {{
-            background: rgba(0, 255, 65, 0.02);
-            border: 1px solid rgba(0, 255, 65, 0.08);
+            border: 1px solid #e9edf2;
+            border-radius: 12px;
             margin-bottom: 18px;
             overflow: hidden;
-            border-left: 6px solid #333;
+            transition: box-shadow 0.2s;
+            background: #ffffff;
         }}
-        .finding-card.pass {{ border-left-color: #00ff41; }}
-        .finding-card.warning {{ border-left-color: #ffd700; }}
-        .finding-card.fail {{ border-left-color: #ff0040; }}
-        .finding-card.error {{ border-left-color: #666666; }}
-
-        .finding-header {{
-            padding: 20px 26px;
-            cursor: pointer;
+        .finding-card:hover {{
+            box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+        }}
+        .finding-card .header {{
+            padding: 18px 24px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: rgba(0, 255, 65, 0.02);
-            border-bottom: 1px solid rgba(0, 255, 65, 0.05);
-            transition: background 0.2s;
+            flex-wrap: wrap;
+            gap: 12px;
+            cursor: pointer;
+            background: #fafbfc;
+            border-bottom: 1px solid #e9edf2;
         }}
-        .finding-header:hover {{ background: rgba(0, 255, 65, 0.05); }}
-        .finding-header .title {{
-            font-weight: 700;
-            font-size: 20px;
-            color: #00ff41;
+        .finding-card .header:hover {{
+            background: #f0f4f8;
         }}
-        .finding-header .status-badge {{
-            padding: 4px 20px;
-            border: 1px solid;
-            font-size: 15px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1px;
+        .finding-card .header .title {{
+            font-weight: 600;
+            font-size: 18px;
+            color: #0a1a2f;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }}
-        .status-badge.pass {{ background: rgba(0, 255, 65, 0.10); border-color: #00ff41; color: #00ff41; }}
-        .status-badge.warning {{ background: rgba(255, 215, 0, 0.10); border-color: #ffd700; color: #ffd700; }}
-        .status-badge.fail {{ background: rgba(255, 0, 64, 0.10); border-color: #ff0040; color: #ff0040; }}
-        .status-badge.error {{ background: rgba(102, 102, 102, 0.10); border-color: #666666; color: #666666; }}
-
-        .severity-tag {{
-            padding: 2px 16px;
-            border: 1px solid;
+        .finding-card .header .meta-tags {{
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }}
+        .finding-card .header .badge-status {{
+            padding: 4px 16px;
+            border-radius: 20px;
             font-size: 13px;
-            font-weight: 700;
+            font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 1px;
         }}
-        .severity-tag.critical {{ background: rgba(255, 0, 64, 0.15); border-color: #ff0040; color: #ff0040; }}
-        .severity-tag.high {{ background: rgba(255, 106, 0, 0.15); border-color: #ff6a00; color: #ff6a00; }}
-        .severity-tag.medium {{ background: rgba(255, 215, 0, 0.15); border-color: #ffd700; color: #ffd700; }}
-        .severity-tag.low {{ background: rgba(0, 204, 255, 0.15); border-color: #00ccff; color: #00ccff; }}
-        .severity-tag.info {{ background: rgba(102, 102, 102, 0.15); border-color: #666666; color: #666666; }}
+        .badge-status.fail {{ background: #ff00401a; color: #cc0033; }}
+        .badge-status.warning {{ background: #ffd7001a; color: #b89600; }}
+        .badge-status.pass {{ background: #00aa411a; color: #00802b; }}
+        .badge-status.error {{ background: #6666661a; color: #666; }}
+        .badge-status.info {{ background: #0066cc1a; color: #004d99; }}
+
+        .badge-severity {{
+            padding: 4px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+        .badge-severity.critical {{ background: #ff00401a; color: #cc0033; }}
+        .badge-severity.high {{ background: #ff6a001a; color: #cc5500; }}
+        .badge-severity.medium {{ background: #ffd7001a; color: #b89600; }}
+        .badge-severity.low {{ background: #00ccff1a; color: #0088aa; }}
+        .badge-severity.info {{ background: #6666661a; color: #555; }}
+
+        .exploit-score {{
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 700;
+            background: #e9edf2;
+            color: #1a2f44;
+        }}
 
         .finding-body {{
             padding: 24px 28px;
             display: none;
-            background: rgba(0, 0, 0, 0.4);
+            background: #ffffff;
         }}
         .finding-body.open {{ display: block; }}
-        .finding-body .section {{ margin-bottom: 20px; }}
+        .finding-body .section {{
+            margin-bottom: 20px;
+        }}
         .finding-body .section-title {{
-            font-weight: 700;
-            font-size: 17px;
-            color: #66ff99;
+            font-weight: 600;
+            font-size: 15px;
+            color: #2a3f54;
             margin-bottom: 6px;
-            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }}
         .finding-body .section-content {{
-            font-size: 17px;
-            color: #b3ffcc;
-            background: rgba(0, 0, 0, 0.4);
-            padding: 14px 18px;
-            border-left: 2px solid rgba(0, 255, 65, 0.15);
+            font-size: 15px;
+            color: #3a4a5f;
+            background: #f7f9fc;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border-left: 3px solid #0066cc;
             white-space: pre-wrap;
             word-break: break-word;
-            font-family: 'Times New Roman', Times, serif;
+            font-family: 'Segoe UI', monospace;
         }}
-        .finding-body .poc {{
-            background: #0a0a0a;
+        .finding-body .section-content.evidence {{
+            background: #fafbfc;
+            border-left-color: #ff6a00;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }}
+        .finding-body .poc-box {{
+            background: #0a1a2f;
             color: #00ff41;
             padding: 14px 18px;
-            border: 1px solid rgba(0, 255, 65, 0.15);
-            font-family: 'Courier New', monospace;
-            font-size: 15px;
-            overflow-x: auto;
-        }}
-        .finding-body .verification-response {{
-            background: rgba(0, 0, 0, 0.6);
-            color: #66ff99;
-            padding: 14px 18px;
-            border: 1px solid rgba(0, 255, 65, 0.10);
+            border-radius: 8px;
             font-family: 'Courier New', monospace;
             font-size: 14px;
             overflow-x: auto;
-            white-space: pre-wrap;
-            max-height: 300px;
-            overflow-y: auto;
+            border: 1px solid #1a2f44;
         }}
+        .finding-body .arrow {{
+            transition: transform 0.25s;
+            display: inline-block;
+            font-size: 18px;
+            color: #5a6a7f;
+        }}
+        .finding-body .arrow.open {{ transform: rotate(90deg); }}
         .finding-body .timestamp {{
-            font-size: 15px;
-            color: #66ff99;
+            font-size: 13px;
+            color: #8a9aaf;
             text-align: right;
-            border-top: 1px solid rgba(0, 255, 65, 0.06);
+            border-top: 1px solid #e9edf2;
             padding-top: 12px;
             margin-top: 12px;
         }}
-        .arrow {{
-            transition: transform 0.2s;
-            font-size: 22px;
-            color: #00ff41;
-        }}
-        .arrow.open {{ transform: rotate(90deg); }}
-        .exploit-score {{
-            font-weight: 700;
-            padding: 4px 14px;
-            border: 1px solid;
-            font-size: 15px;
-            border-radius: 0px;
-        }}
-        .exploit-score.high {{ background: rgba(255, 0, 64, 0.15); border-color: #ff0040; color: #ff0040; }}
-        .exploit-score.medium {{ background: rgba(255, 215, 0, 0.15); border-color: #ffd700; color: #ffd700; }}
-        .exploit-score.low {{ background: rgba(0, 204, 255, 0.15); border-color: #00ccff; color: #00ccff; }}
-
-        /* ── robots.txt display ───────────────────────── */
-        .robots-content {{
-            background: #0a0a0a;
-            padding: 16px 20px;
-            border: 1px solid rgba(0, 255, 65, 0.08);
-            font-family: 'Courier New', monospace;
-            font-size: 15px;
-            color: #66ff99;
-            overflow-x: auto;
-            white-space: pre-wrap;
-            max-height: 600px;
-            overflow-y: auto;
+        .finding-body .reference-link {{
+            display: inline-block;
+            margin-right: 12px;
+            font-size: 14px;
         }}
 
-        /* ── Signature / Footer ───────────────────────── */
+        /* ── Footer ──────────────────────────────────────────────────────── */
         .signature-section {{
             margin-top: 40px;
             padding-top: 24px;
-            border-top: 2px solid rgba(0, 255, 65, 0.10);
+            border-top: 2px solid #e9edf2;
             display: flex;
             justify-content: space-between;
             flex-wrap: wrap;
             gap: 20px;
-            font-size: 15px;
-            color: #66ff99;
+            font-size: 14px;
+            color: #5a6a7f;
         }}
         .signature-section .hash {{
             font-family: 'Courier New', monospace;
-            font-size: 14px;
-            color: #00ff41;
+            font-size: 13px;
+            background: #f7f9fc;
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid #e9edf2;
             word-break: break-all;
-            background: rgba(0, 0, 0, 0.4);
-            padding: 8px 12px;
-            border: 1px solid rgba(0, 255, 65, 0.05);
+            color: #1a2f44;
         }}
         .footer {{
             margin-top: 32px;
             text-align: center;
-            font-size: 15px;
-            color: #66ff99;
-            border-top: 1px solid rgba(0, 255, 65, 0.06);
+            font-size: 14px;
+            color: #8a9aaf;
+            border-top: 1px solid #e9edf2;
             padding-top: 20px;
         }}
 
-        /* ── Responsive ────────────────────────────────── */
+        /* ── Responsive ──────────────────────────────────────────────────── */
         @media (max-width: 768px) {{
-            body {{ padding: 16px; font-size: 16px; }}
+            body {{ padding: 16px; }}
             .container {{ padding: 20px; }}
-            .header {{ flex-direction: column; align-items: flex-start; gap: 12px; }}
-            .header h1 {{ font-size: 30px; }}
+            .report-header {{ flex-direction: column; align-items: flex-start; }}
             .score-card {{ flex-direction: column; align-items: flex-start; gap: 20px; }}
-            .finding-header {{ flex-wrap: wrap; gap: 10px; }}
-            .heatmap-grid {{ grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }}
-            .signature-section {{ flex-direction: column; }}
+            .finding-card .header {{ flex-direction: column; align-items: flex-start; }}
+            .meta-row {{ gap: 12px; }}
         }}
+
+        /* ── Print ──────────────────────────────────────────────────────── */
         @media print {{
-            body {{ background: #ffffff; color: #000000; }}
-            .container {{ border: 1px solid #000; box-shadow: none; }}
-            .finding-card {{ border: 1px solid #ccc; }}
-            .header .badge {{ background: #000; color: #fff; }}
-            .score-circle {{ border: 1px solid #000; }}
+            body {{ background: #fff; padding: 0; }}
+            .container {{ box-shadow: none; border: none; }}
+            .finding-card {{
+                break-inside: avoid;
+                border: 1px solid #ccc;
+            }}
         }}
     </style>
 </head>
@@ -566,88 +681,102 @@ def generate_html_report(result: Dict[str, Any]) -> str:
 <div class="container">
 
     <!-- ═══ HEADER ═══ -->
-    <div class="header">
-        <div>
-            <h1>◈ BRAVO6 SECURITY SCAN</h1>
-            <div class="meta-info">
-                <span>Target: <strong>{url}</strong></span>
-                <span>Duration: {meta.get('duration_seconds', 0)}s</span>
-                <span>Tests: {meta.get('tests_run', 0)}</span>
-                <span>Errors: {meta.get('tests_errored', 0)}</span>
-            </div>
+    <div class="report-header">
+        <div class="brand">
+            <span class="logo">{COMPANY_LOGO}</span>
+            <h1>{REPORT_TITLE}</h1>
         </div>
         <div class="badge">{status.upper()}</div>
     </div>
 
+    <div class="meta-row">
+        <span>Target: <strong>{url}</strong></span>
+        <span>Duration: {meta.get('duration_seconds', 0)}s</span>
+        <span>Tests: {meta.get('tests_run', 0)}</span>
+        <span>Findings: {total_findings}</span>
+        <span>Errors: {meta.get('tests_errored', 0)}</span>
+        <span>Report: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</span>
+    </div>
+
     <!-- ═══ SCORE CARD ═══ -->
     <div class="score-card">
-        <div class="score-circle">{score}</div>
-        <div class="score-details">
-            <div class="grade">Grade {grade}</div>
-            <div class="sub">Security posture based on detected issues</div>
+        <div class="score-gauge">
+            <div class="score-circle">{score}</div>
+            <div class="score-details">
+                <div class="grade">Grade {grade}</div>
+                <div class="sub">Security posture score</div>
+            </div>
+        </div>
+        <div>
             <div class="summary-bars">
                 <div class="summary-item"><span class="dot" style="background:#ff0040;"></span> Critical: {summary.get('critical', 0)}</div>
                 <div class="summary-item"><span class="dot" style="background:#ff6a00;"></span> High: {summary.get('high', 0)}</div>
                 <div class="summary-item"><span class="dot" style="background:#ffd700;"></span> Medium: {summary.get('medium', 0)}</div>
                 <div class="summary-item"><span class="dot" style="background:#00ccff;"></span> Low: {summary.get('low', 0)}</div>
-                <div class="summary-item"><span class="dot" style="background:#00ff41;"></span> Passed: {summary.get('passed', 0)}</div>
-                <div class="summary-item"><span class="dot" style="background:#666666;"></span> Errors: {summary.get('errors', 0)}</div>
+                <div class="summary-item"><span class="dot" style="background:#00aa41;"></span> Passed: {summary.get('passed', 0)}</div>
+                <div class="summary-item"><span class="dot" style="background:#8a9aaf;"></span> Errors: {summary.get('errors', 0)}</div>
             </div>
         </div>
+    </div>
+
+    <!-- ═══ EXECUTIVE SUMMARY ═══ -->
+    <div class="executive-summary">
+        <h3 style="margin-top:0;color:#0a1a2f;">📊 Executive Summary</h3>
+        <p>
+            <strong>Scan completed for {url}.</strong> 
+            Found <strong>{total_findings}</strong> security findings.
+            The overall security grade is <strong>{grade}</strong> with a score of <strong>{score}/100</strong>.
+        </p>
+        <p>
+            <strong>Key risks:</strong> {', '.join([f['_metadata'].get('title', f.get('test_name', '')) for f in enriched_findings if f.get('status') in ('fail','warning')][:3]) or 'No critical findings detected.'}
+        </p>
+        <p>
+            <strong>Recommendation:</strong> Prioritize remediation of <strong>critical</strong> and <strong>high</strong> severity issues first.
+        </p>
     </div>
 
     <!-- ═══ WAF CONTEXT ═══ -->
     {_render_waf_context(waf_context)}
 
-    <!-- ═══ HEATMAP ═══ -->
-    {_render_heatmap(heatmap_cells)}
+    <!-- ═══ FINDINGS ═══ -->
+    <h2>🔍 Detailed Findings</h2>
+    {_render_findings(enriched_findings)}
 
-    <!-- ═══ PRIORITY RECOMMENDATIONS ═══ -->
-    {_render_priorities(sorted_findings)}
-
-    <!-- ═══ DETAILED FINDINGS ═══ -->
-    <h2>📋 Detailed Findings</h2>
-    {_render_findings(sorted_findings)}
-
-    <!-- ═══ DIGITAL SIGNATURE & REPRODUCIBILITY ═══ -->
+    <!-- ═══ FOOTER / SIGNATURE ═══ -->
     <div class="signature-section">
         <div>
             <strong>🔒 Digital Signature</strong>
             <div class="hash">SHA-256: {signature}</div>
-            <div style="font-size:14px;color:#66ff99;margin-top:4px;">
-                This signature verifies the report's integrity.<br>
-                Any modification will invalidate this hash.
+            <div style="font-size:13px;color:#5a6a7f;margin-top:4px;">
+                This signature verifies report integrity. Any modification invalidates the hash.
             </div>
         </div>
         <div>
             <strong>⚙️ Reproducibility</strong>
-            <div style="font-size:14px;color:#66ff99;">
-                <div>Target: <strong style="color:#00ff41;">{url}</strong></div>
-                <div>Scan Time: <strong style="color:#00ff41;">{datetime.now().isoformat()}</strong></div>
-                <div>Tests Run: <strong style="color:#00ff41;">{meta.get('tests_run', 0)}</strong></div>
-                <div style="margin-top:4px;font-family:'Courier New',monospace;font-size:13px;">
-                    Re-run: <span style="color:#00ff41;">python -m scanner.main_scanner {url}</span>
-                </div>
+            <div style="font-size:14px;color:#3a4a5f;margin-top:4px;">
+                Target: <strong>{url}</strong><br>
+                Scan time: <strong>{datetime.now().isoformat()}</strong><br>
+                Tests: <strong>{meta.get('tests_run', 0)}</strong><br>
+                <span style="font-family:'Courier New',monospace;font-size:13px;display:block;margin-top:4px;background:#f7f9fc;padding:6px 12px;border-radius:6px;">
+                    python -m scanner.main_scanner {url}
+                </span>
             </div>
         </div>
         <div>
-            <strong>📅 Timestamp</strong>
-            <div style="font-size:14px;color:#00ff41;">
+            <strong>📅 Generated</strong>
+            <div style="font-size:14px;color:#3a4a5f;margin-top:4px;">
                 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            </div>
-            <div style="font-size:13px;color:#66ff99;margin-top:4px;">
-                Each finding has its own timestamp below.
             </div>
         </div>
     </div>
 
-    <!-- ═══ FOOTER ═══ -->
     <div class="footer">
-        Generated by Bravo6 Scanner • Report date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        {COMPANY_NAME} • Report v{REPORT_VERSION} • Confidential — For authorized use only
     </div>
 </div>
 
 <script>
+    // ── Toggle finding details ──────────────────────────────────────────
     function toggleBody(header) {{
         const body = header.nextElementSibling;
         const arrow = header.querySelector('.arrow');
@@ -659,221 +788,153 @@ def generate_html_report(result: Dict[str, Any]) -> str:
             arrow.classList.add('open');
         }}
     }}
+
+    // ── Auto-expand fail/warning findings ──────────────────────────────
     document.addEventListener('DOMContentLoaded', function() {{
-        document.querySelectorAll('.finding-card.fail .finding-header, .finding-card.warning .finding-header').forEach(function(header) {{
-            const body = header.nextElementSibling;
-            const arrow = header.querySelector('.arrow');
-            body.classList.add('open');
-            arrow.classList.add('open');
+        document.querySelectorAll('.finding-card .header').forEach(function(header) {{
+            const statusBadge = header.querySelector('.badge-status');
+            if (statusBadge && (statusBadge.classList.contains('fail') || statusBadge.classList.contains('warning'))) {{
+                const body = header.nextElementSibling;
+                const arrow = header.querySelector('.arrow');
+                if (body) {{
+                    body.classList.add('open');
+                    if (arrow) arrow.classList.add('open');
+                }}
+            }}
         }});
     }});
 </script>
 </body>
 </html>
-'''
+"""
     return html
 
 
-# ── Helper renderers ────────────────────────────────────────────────────────
+# ── Helper Renderers ──────────────────────────────────────────────────────
 
 def _render_waf_context(waf_context: dict) -> str:
     if not waf_context.get('detected'):
         return ''
     return f'''
-    <div style="background:rgba(0,255,65,0.04);border:1px solid rgba(0,255,65,0.08);padding:14px 20px;margin-bottom:32px;font-size:17px;">
-        <strong style="color:#00ff41;">🛡️ WAF/CDN detected:</strong> 
-        <span style="color:#66ff99;">{waf_context.get('detected')}</span>
-        <span style="color:#66ff99;font-size:15px;display:block;margin-top:4px;">{waf_context.get('note', '')}</span>
-    </div>
-    '''
-
-
-def _render_heatmap(cells: List[Dict]) -> str:
-    if not cells:
-        return '''
-        <div class="heatmap">
-            <h3 style="color:#00ff41;">🔥 Risk Heatmap</h3>
-            <p style="color:#66ff99;">No findings to display.</p>
-        </div>
-        '''
-
-    color_map = {
-        "Critical": "#ff0040",
-        "High": "#ff6a00",
-        "Medium": "#ffd700",
-        "Low": "#00ccff",
-        "Info": "#666666"
-    }
-
-    rows = []
-    for cell in cells:
-        bg = color_map.get(cell.get("risk", "Info"), "#666666")
-        text_color = "#0a0a0a" if cell.get("risk") in ("Critical", "High", "Medium") else "#ffffff"
-        rows.append(f'''
-            <div class="heatmap-cell" style="background:{bg};color:{text_color};border-color:{bg};">
-                <span class="cell-score">{cell.get("score", 5)}</span>
-                <span class="cell-label">{cell.get("name", "Unnamed")}</span>
-            </div>
-        ''')
-
-    return f'''
-    <div class="heatmap">
-        <h3 style="color:#00ff41;">🔥 Risk Heatmap</h3>
-        <p style="color:#66ff99;font-size:17px;margin-bottom:12px;">Each cell shows a finding — darker = higher risk. Score = Exploitability (1–10).</p>
-        <div class="heatmap-grid">
-            {''.join(rows)}
-        </div>
-    </div>
-    '''
-
-
-def _render_priorities(findings: List[Dict]) -> str:
-    critical = [f for f in findings if f.get("_priority") == "Critical"]
-    high = [f for f in findings if f.get("_priority") == "High"]
-    medium = [f for f in findings if f.get("_priority") == "Medium"]
-    low = [f for f in findings if f.get("_priority") == "Low"]
-
-    if not critical and not high and not medium and not low:
-        return '''
-        <div class="priority-section">
-            <h3 style="color:#00ff41;">🎯 Prioritized Recommendations</h3>
-            <p style="color:#66ff99;">No issues found — you're all clear!</p>
-        </div>
-        '''
-
-    rows = []
-    for p in ["Critical", "High", "Medium", "Low"]:
-        items = {"Critical": critical, "High": high, "Medium": medium, "Low": low}.get(p, [])
-        for f in items:
-            name = f.get("test_name", "").replace("test_", "").replace("_", " ").title()
-            sev = f.get("severity", "info").capitalize()
-            exp = f.get("_exploitability", 5)
-            rows.append(f'''
-                <li>
-                    <span class="priority-badge {p}">{p}</span>
-                    <span style="color:#b3ffcc;"><strong style="color:#00ff41;">{name}</strong> — {f.get("_explanation", "Review this issue.")}</span>
-                    <span style="margin-left:auto;font-size:15px;color:#66ff99;white-space:nowrap;">Severity: {sev} • Exploit: {exp}/10</span>
-                </li>
-            ''')
-
-    return f'''
-    <div class="priority-section">
-        <h3 style="color:#00ff41;">🎯 Prioritized Recommendations</h3>
-        <p style="color:#66ff99;font-size:17px;margin-bottom:12px;">Fix these in order: Critical → High → Medium → Low</p>
-        <ul class="priority-list">
-            {''.join(rows)}
-        </ul>
+    <div style="background:#f7f9fc;border-left:4px solid #ff6a00;padding:14px 20px;margin-bottom:24px;border-radius:0 12px 12px 0;">
+        <strong style="color:#1a2f44;">🛡️ WAF/CDN Detected:</strong> 
+        <span style="color:#cc5500;">{waf_context.get('detected')}</span>
+        <div style="font-size:14px;color:#5a6a7f;margin-top:4px;">{waf_context.get('note', '')}</div>
     </div>
     '''
 
 
 def _render_findings(findings: List[Dict]) -> str:
     if not findings:
-        return '<p style="color:#66ff99;">No findings to display.</p>'
+        return '<p style="color:#3a4a5f;font-size:16px;">No findings to display.</p>'
 
     html_parts = []
     for f in findings:
-        test_name = f.get("test_name", "Unnamed Test")
-        status = f.get("status", "unknown")
+        test_name = f.get("_test_name", "unknown")
+        metadata = f.get("_metadata", {})
+        status = f.get("status", "info")
         severity = f.get("severity", "info")
-        title = f.get("title", test_name)
-        description = f.get("description", "")
+        title = f.get("title", metadata.get("title", test_name))
+        description = f.get("description", metadata.get("description", "No description available."))
         evidence = f.get("evidence")
-        remediation = f.get("remediation", "No specific remediation provided.")
+        remediation = f.get("remediation", metadata.get("remediation", "No specific remediation provided."))
         exploit = f.get("_exploitability", 5)
-        explanation = f.get("_explanation", "")
+        business_impact = f.get("_business_impact", "Potential security breach.")
+        poc = f.get("poc")
+        owasp = metadata.get("owasp", "N/A")
+        cwe = metadata.get("cwe", "N/A")
+        references = metadata.get("references", [])
         timestamp = f.get("_timestamp", datetime.now().isoformat())
+        severity_color = f.get("_severity_color", "#666666")
+        severity_bg = f.get("_severity_bg", "#f7f9fc")
 
-        # ── Evidence display ──────────────────────────────────────────────
+        # ── Evidence formatting ──────────────────────────────────────────
         evidence_html = ""
-        if evidence is not None:
+        if evidence:
             if isinstance(evidence, str):
-                evidence_html = f'<div class="section-content">{evidence}</div>'
-            elif isinstance(evidence, list) and all(isinstance(e, dict) for e in evidence):
-                items = []
-                for e in evidence:
-                    parts = []
-                    for k, v in e.items():
-                        if k == "verification_response":
-                            parts.append(f'<strong>API Response:</strong><div class="verification-response">{v}</div>')
-                        elif isinstance(v, str) and len(v) > 150:
-                            parts.append(f"<strong>{k}:</strong> {v[:150]}...")
-                        else:
-                            parts.append(f"<strong>{k}:</strong> {v}")
-                    items.append("<div style='margin-bottom:10px;'>" + " | ".join(parts) + "</div>")
-                evidence_html = "".join(items)
+                evidence_html = f'<div class="section-content evidence">{evidence}</div>'
             elif isinstance(evidence, list):
-                items = [f"<div>• {item}</div>" for item in evidence]
+                items = []
+                for e in evidence[:5]:  # Limit to 5 items
+                    if isinstance(e, dict):
+                        parts = []
+                        for k, v in e.items():
+                            if k == "verification_response":
+                                parts.append(f'<strong>API Response:</strong><div class="poc-box" style="margin-top:4px;">{v}</div>')
+                            else:
+                                parts.append(f"<strong>{k}:</strong> {v}")
+                        items.append("<div style='margin-bottom:6px;'>" + " | ".join(parts) + "</div>")
+                    else:
+                        items.append(f"<div>• {e}</div>")
                 evidence_html = "".join(items)
-            else:
-                evidence_html = f'<div class="section-content">{evidence}</div>'
+            elif isinstance(evidence, dict):
+                parts = [f"<strong>{k}:</strong> {v}" for k, v in evidence.items() if v and len(str(v)) < 500]
+                evidence_html = "<div>" + " | ".join(parts) + "</div>"
 
-        # ── PoC ─────────────────────────────────────────────────────────────
-        poc = ""
-        if isinstance(evidence, list):
-            for e in evidence:
-                if isinstance(e, dict) and "poc" in e:
-                    poc = e["poc"]
-                    break
-                if isinstance(e, str) and "curl" in e:
-                    poc = e
-                    break
-        if not poc and "poc" in f:
-            poc = f["poc"]
+        # ── Business impact badge ──────────────────────────────────────
+        impact_color = "#cc0033" if exploit >= 8 else "#cc5500" if exploit >= 5 else "#b89600"
 
-        # ── robots.txt special handling ──────────────────────────────────
-        robots_content = f.get("robots_content")
-        sensitive_paths = f.get("sensitive_paths", [])
-        if robots_content and sensitive_paths:
-            highlighted = _highlight_robots_content(robots_content, sensitive_paths)
-            evidence_html = f'''
-                <div style="margin-bottom:12px;font-size:17px;color:#66ff99;">
-                    <strong>📄 robots.txt Content</strong> 
-                    <span style="font-size:14px;color:#66ff99;">(sensitive paths highlighted in green)</span>
-                </div>
-                <div class="robots-content">{highlighted}</div>
-                <div style="margin-top:12px;font-size:15px;color:#66ff99;">
-                    <strong>🔎 Detected sensitive paths:</strong> {', '.join([f'<span style="color:#00ff41;font-weight:bold;">{p}</span>' for p in sensitive_paths])}
-                </div>
-            '''
+        # ── References ──────────────────────────────────────────────────
+        refs_html = ""
+        if references:
+            refs = []
+            for r in references:
+                if r.startswith("http"):
+                    refs.append(f'<a href="{r}" target="_blank" class="reference-link">{r}</a>')
+                else:
+                    refs.append(f'<span class="reference-link">{r}</span>')
+            refs_html = " ".join(refs)
 
-        # ── Severity and exploitability ──────────────────────────────────
-        sev_class = severity.lower()
+        # ── Build card ──────────────────────────────────────────────────
         status_class = status.lower()
-        exploit_class = "high" if exploit >= 7 else "medium" if exploit >= 4 else "low"
+        sev_class = severity.lower()
 
         html_parts.append(f'''
-        <div class="finding-card {status_class}">
-            <div class="finding-header" onclick="toggleBody(this)">
-                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                    <span class="title">{test_name}</span>
-                    <span class="severity-tag {sev_class}">{severity.upper()}</span>
-                    <span class="exploit-score {exploit_class}">⚡ {exploit}/10</span>
-                    <span style="font-size:16px;color:#66ff99;">{explanation[:70]}{'...' if len(explanation)>70 else ''}</span>
+        <div class="finding-card">
+            <div class="header" onclick="toggleBody(this)">
+                <div class="title">
+                    <span>{test_name.replace("test_", "").replace("_", " ").title()}</span>
+                    <span class="badge-severity {sev_class}">{severity.upper()}</span>
+                    <span class="exploit-score">⚡ {exploit}/10</span>
+                    <span style="font-size:14px;color:#5a6a7f;font-weight:400;">{_truncate(description, 80)}</span>
                 </div>
-                <div style="display:flex;align-items:center;gap:14px;">
-                    <span class="status-badge {status_class}">{status.upper()}</span>
+                <div class="meta-tags">
+                    <span class="badge-status {status_class}">{status.upper()}</span>
                     <span class="arrow">▶</span>
                 </div>
             </div>
             <div class="finding-body">
                 <div class="section">
-                    <div class="section-title">📌 Summary</div>
-                    <div class="section-content">{title}</div>
-                </div>
-                <div class="section">
-                    <div class="section-title">📝 Description</div>
+                    <div class="section-title">📌 Description</div>
                     <div class="section-content">{description}</div>
                 </div>
+
                 <div class="section">
-                    <div class="section-title">🔎 Evidence</div>
-                    <div class="section-content">{evidence_html if evidence_html else "No specific evidence."}</div>
+                    <div class="section-title">💼 Business Impact</div>
+                    <div class="section-content" style="border-left-color:{impact_color};color:#1a2332;">
+                        <strong>Exploitability Score:</strong> {exploit}/10<br>
+                        <strong>Impact:</strong> {business_impact}
+                    </div>
                 </div>
-                {f'<div class="section"><div class="section-title">💻 PoC Command</div><div class="poc">{poc}</div></div>' if poc else ''}
+
+                {'<div class="section"><div class="section-title">🔎 Evidence</div><div class="section-content evidence">' + evidence_html + '</div></div>' if evidence_html else ''}
+
+                {'<div class="section"><div class="section-title">💻 Proof of Concept</div><div class="poc-box">' + poc + '</div></div>' if poc else ''}
+
                 <div class="section">
                     <div class="section-title">🛠️ Remediation</div>
-                    <div class="section-content">{remediation}</div>
+                    <div class="section-content" style="border-left-color:#00aa41;">{remediation}</div>
                 </div>
+
+                <div class="section">
+                    <div class="section-title">📚 References</div>
+                    <div class="section-content" style="border-left-color:#666666;font-size:14px;">
+                        <strong>OWASP:</strong> {owasp}<br>
+                        <strong>CWE:</strong> {cwe}<br>
+                        <strong>External:</strong> {refs_html or 'None provided'}
+                    </div>
+                </div>
+
                 <div class="timestamp">⏱️ Detected: {timestamp}</div>
             </div>
         </div>
@@ -882,7 +943,7 @@ def _render_findings(findings: List[Dict]) -> str:
     return ''.join(html_parts)
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
+# ── CLI ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
