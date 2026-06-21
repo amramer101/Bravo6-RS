@@ -7,14 +7,16 @@ Detects unnecessarily exposed server/technology information via:
   2. HTML source (comments, meta generator tags, hidden form fields)
   3. Custom error page detection (404 stack traces / framework leaks)
   4. Directory listing exposure (/images/, /assets/, /static/)
+  5. security.txt presence and validity (RFC 9116 disclosure policy)
 
-Single GET to the target root drives checks 1 & 2. Checks 3 & 4 issue
+Single GET to the target root drives checks 1 & 2. Checks 3, 4, & 5 issue
 their own bounded follow-up requests. All network calls share one
 aiohttp session, a 10s per-request timeout, and a fixed User-Agent.
 """
 
 import asyncio
 import re
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -347,6 +349,145 @@ def _check_directory_listing(text: str, path: str) -> list:
     return findings
 
 
+SECURITY_TXT_PATHS = ("/.well-known/security.txt", "/security.txt")
+
+CONTACT_FIELD_RE = re.compile(r"(?im)^Contact:\s*(.+)$")
+EXPIRES_FIELD_RE = re.compile(r"(?im)^Expires:\s*(.+)$")
+ENCRYPTION_FIELD_RE = re.compile(r"(?im)^Encryption:\s*(.+)$")
+
+
+def _parse_expires(value: str):
+    """Parse an RFC 9116 Expires timestamp (ISO 8601) into an aware datetime.
+    Returns None if the value can't be parsed."""
+    value = value.strip()
+    try:
+        if value.endswith(("Z", "z")):
+            value = value[:-1] + "+00:00"
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+async def _check_security_txt(session: aiohttp.ClientSession, base_url: str) -> list:
+    """
+    RFC 9116 security.txt check.
+
+    Tries /.well-known/security.txt first (the RFC-mandated location), then
+    falls back to the legacy /security.txt root path. Validates the required
+    Contact and Expires fields, and whether Expires has already passed.
+    Encryption is noted as a bonus but is not required.
+
+    Wrapped in its own try/except so a parsing surprise here can never take
+    down the rest of the scan.
+    """
+    findings = []
+
+    try:
+        body = None
+        found_path = None
+        tried_urls = []
+
+        for path in SECURITY_TXT_PATHS:
+            full_url = urljoin(base_url, path)
+            tried_urls.append(full_url)
+            text, headers, status = await _safe_get(session, full_url)
+            if (
+                headers is not None
+                and status
+                and 200 <= status < 300
+                and text
+                and text.strip()
+            ):
+                body = text
+                found_path = full_url
+                break
+
+        if body is None:
+            findings.append(
+                {
+                    "location": "security.txt",
+                    "value": f"Checked {' and '.join(tried_urls)} — not found.",
+                    "risk": (
+                        "No security.txt found — site lacks a vulnerability "
+                        "disclosure policy. This indicates low security maturity."
+                    ),
+                    "_severity": "info",
+                }
+            )
+            return findings
+
+        contact_match = CONTACT_FIELD_RE.search(body)
+        expires_match = EXPIRES_FIELD_RE.search(body)
+        encryption_match = ENCRYPTION_FIELD_RE.search(body)
+
+        if not contact_match:
+            findings.append(
+                {
+                    "location": f"security.txt ({found_path})",
+                    "value": body.strip()[:200],
+                    "risk": "security.txt exists but missing required Contact field.",
+                    "_severity": "low",
+                }
+            )
+            return findings
+
+        if not expires_match:
+            findings.append(
+                {
+                    "location": f"security.txt ({found_path})",
+                    "value": f"Contact: {contact_match.group(1).strip()} (no Expires field present)",
+                    "risk": "security.txt exists but missing required Expires field.",
+                    "_severity": "low",
+                }
+            )
+            return findings
+
+        expires_raw = expires_match.group(1).strip()
+        expires_dt = _parse_expires(expires_raw)
+
+        if expires_dt is not None and expires_dt < datetime.now(timezone.utc):
+            findings.append(
+                {
+                    "location": f"security.txt ({found_path})",
+                    "value": f"Expires: {expires_raw}",
+                    "risk": "security.txt found but has expired (Expires field is past).",
+                    "_severity": "low",
+                }
+            )
+            return findings
+
+        evidence_bits = [
+            f"Contact: {contact_match.group(1).strip()}",
+            f"Expires: {expires_raw}",
+        ]
+        if encryption_match:
+            evidence_bits.append(f"Encryption: {encryption_match.group(1).strip()}")
+
+        findings.append(
+            {
+                "location": f"security.txt ({found_path})",
+                "value": "; ".join(evidence_bits),
+                "risk": "Valid security.txt found with Contact and Expires fields.",
+                "_severity": "info",
+            }
+        )
+        return findings
+
+    except Exception as exc:
+        findings.append(
+            {
+                "location": "security.txt",
+                "value": f"{type(exc).__name__}: {exc}",
+                "risk": "security.txt check could not be completed due to an unexpected error.",
+                "_severity": "info",
+            }
+        )
+        return findings
+
+
 async def run(url: str) -> dict:
     """
     Scan a target for unnecessarily exposed server/technology information.
@@ -356,6 +497,7 @@ async def run(url: str) -> dict:
       2. HTML comments, meta generator tags, hidden form fields
       3. Custom vs. verbose 404 error page behavior
       4. Directory listing exposure on common static paths
+      5. security.txt presence and validity (RFC 9116)
 
     Never raises — all failures are captured and reported as a
     status="error" result instead.
@@ -414,6 +556,9 @@ async def run(url: str) -> dict:
                     continue
                 if dstatus and 200 <= dstatus < 300:
                     all_findings.extend(_check_directory_listing(dtext or "", path))
+
+            # --- 5: security.txt (RFC 9116) vulnerability disclosure policy ---
+            all_findings.extend(await _check_security_txt(session, base_url))
 
         # If literally every request failed, report as error/connection issue.
         if root_headers is None and error_headers is None and all(

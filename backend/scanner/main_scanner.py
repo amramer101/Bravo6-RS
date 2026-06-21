@@ -13,6 +13,8 @@ import asyncio
 import time
 from urllib.parse import urlparse
 
+import aiohttp
+
 from scanner import (
     test_01_secrets,
     test_02_frontend_libs,
@@ -43,6 +45,69 @@ SCORE_DEDUCTIONS = {
     "low": 3,
     "info": 0,
 }
+
+
+# --------------------------------------------------------------------------
+# WAF / CDN detection (context only — informs report consumers that some
+# findings, e.g. HTTP methods or rate-limit checks, may be false positives
+# due to WAF interception. Not used to bypass or evade anything.)
+# --------------------------------------------------------------------------
+
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
+USER_AGENT = "Bravo6-Scanner/1.0"
+
+# Each signature is either a bare header name (presence check) or a
+# "header: value-substring" pair when the value itself is the tell.
+WAF_SIGNATURES = {
+    "Cloudflare": ["cf-ray", "cf-cache-status"],
+    "AWS CloudFront": ["x-amz-cf-id", "x-amz-request-id"],
+    "Akamai": ["x-check-cacheable", "akamai-x-cache"],
+    "Azure Front Door": ["x-azure-ref", "x-fd-healthprobe"],
+    "Fastly": ["x-fastly-request-id", "fastly-restarts"],
+    "Sucuri": ["x-sucuri-id", "x-sucuri-cache"],
+    "Imperva": ["x-iinfo", "x-cdn"],
+    "Google Cloud CDN": ["x-goog-hash", "via: 1.1 google"],
+}
+
+
+async def _detect_waf(url: str, session: "aiohttp.ClientSession") -> str | None:
+    """
+    Detect a WAF/CDN from the response headers of a single GET request.
+
+    This is purely informational/context-gathering for the report (so
+    consumers understand why a finding like HTTP methods or rate-limiting
+    might look like a false positive). It does not attempt to bypass,
+    fingerprint version numbers, or probe for WAF weaknesses.
+
+    Returns the WAF/CDN name on first match, or None if nothing matched
+    or the request failed for any reason.
+    """
+    try:
+        async with session.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={"User-Agent": USER_AGENT},
+            ssl=False,
+            allow_redirects=True,
+        ) as resp:
+            headers_lower = {k.lower(): str(v).lower() for k, v in resp.headers.items()}
+
+            for waf_name, signatures in WAF_SIGNATURES.items():
+                for sig in signatures:
+                    sig = sig.lower()
+                    if ":" in sig:
+                        header_name, _, value_substr = sig.partition(":")
+                        header_name = header_name.strip()
+                        value_substr = value_substr.strip()
+                        actual_value = headers_lower.get(header_name, "")
+                        if value_substr and value_substr in actual_value:
+                            return waf_name
+                    elif sig in headers_lower:
+                        return waf_name
+            return None
+    except Exception:
+        # Detection is best-effort context — never let it break the scan.
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +185,7 @@ def _severity_label(score: int) -> str:
     return "F"
 
 
-def _aggregate(raw_results: list, url: str, duration: float) -> dict:
+def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict | None = None) -> dict:
     """
     Takes the raw list of results from asyncio.gather (may include
     Exception objects if return_exceptions=True) and builds the final
@@ -168,6 +233,7 @@ def _aggregate(raw_results: list, url: str, duration: float) -> dict:
         "summary": summary,
         "findings": findings,
         "scan_errors": scan_errors,
+        "waf_context": waf_context or {"detected": None, "note": None},
         "meta": {
             "tests_run": len(findings),
             "tests_errored": len(scan_errors),
@@ -189,7 +255,8 @@ async def run_scout(url: str) -> dict:
         B — Content     (secrets, JS libs, mixed content, CMS/vibe)
         C — DNS/Network (SSL, email security, subdomain takeover, robots.txt)
 
-    All 3 groups run concurrently via asyncio.gather.
+    All 3 groups run concurrently via asyncio.gather, alongside a
+    lightweight WAF/CDN header check used only for report context.
     Within each group, tests also run concurrently.
     return_exceptions=True ensures one failing test never kills the others.
 
@@ -197,7 +264,8 @@ async def run_scout(url: str) -> dict:
         url: Target URL or domain, e.g. "example.com" or "https://example.com"
 
     Returns:
-        Structured scan report dict with score, grade, summary, and findings.
+        Structured scan report dict with score, grade, summary, findings,
+        and a non-scored "waf_context" field noting any detected WAF/CDN.
     """
     target = _normalize_url(url)
 
@@ -210,14 +278,21 @@ async def run_scout(url: str) -> dict:
             "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "passed": 0, "errors": 1},
             "findings": [],
             "scan_errors": [f"Invalid or empty URL provided: '{url}'"],
+            "waf_context": {"detected": None, "note": None},
             "meta": {"tests_run": 0, "tests_errored": 1, "duration_seconds": 0},
         }
 
     start = time.time()
 
-    # Run all 13 tests concurrently
+    # One lightweight GET to fingerprint a WAF/CDN from response headers.
+    # This runs concurrently with the 13 tests rather than blocking them.
+    async def _waf_lookup() -> str | None:
+        async with aiohttp.ClientSession() as session:
+            return await _detect_waf(target, session)
+
+    # Run all 13 tests + WAF detection concurrently
     # return_exceptions=True: if one test crashes, others keep running
-    raw_results = await asyncio.gather(
+    *raw_results, waf_name = await asyncio.gather(
         # ── Group A: HTTP layer ──────────────────────────────────────────
         test_05_security_headers.run(target),
         test_11_cors.run(target),
@@ -234,11 +309,26 @@ async def run_scout(url: str) -> dict:
         test_08_email_security.run(target),
         test_09_subdomain_takeover.run(target),
         test_10_robots_txt.run(target),
+        # ── WAF/CDN context (not a finding, not scored) ──────────────────
+        _waf_lookup(),
         return_exceptions=True,
     )
 
+    # If WAF detection itself raised, treat it the same as "not detected"
+    # rather than letting it surface as a scan error.
+    if isinstance(waf_name, Exception):
+        waf_name = None
+
+    waf_context = {
+        "detected": waf_name,
+        "note": (
+            f"{waf_name} detected — some findings (HTTP methods, rate limiting) "
+            "may show false positives due to WAF interception."
+        ) if waf_name else None,
+    }
+
     duration = time.time() - start
-    return _aggregate(list(raw_results), target, duration)
+    return _aggregate(list(raw_results), target, duration, waf_context)
 
 
 # --------------------------------------------------------------------------
