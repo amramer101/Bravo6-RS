@@ -1,28 +1,25 @@
 """
-test_13_cms_fingerprinting.py — Fast CMS Fingerprinting (Optimized)
+test_13_cms_fingerprinting.py — Fast CMS Fingerprinting (Fully Fixed)
 
-Optimized for speed (< 2s):
-- Only 2 most common paths per CMS (instead of 10+)
-- Parallel requests with concurrency limit
-- Short timeouts (5s)
-- No redundant checks
-- Fixed dict_keys concatenation error
-
-Detects:
-- WordPress, Joomla, Drupal, Shopify, Magento, Laravel, Symfony, Django, Flask, Express
-- Uses: cookies, headers, meta tags, and common paths
+- Fixed import errors (urlparse, urljoin).
+- Detects 10+ CMS (WordPress, Joomla, Drupal, Shopify, Magento, Laravel, Symfony, Django, Flask, Express).
+- Uses headers, cookies, meta tags, and common paths.
+- Parallel requests with semaphore for speed.
+- Confidence scoring based on evidence.
+- Returns structured findings with PoC commands.
+- Fast (under 2 seconds).
 """
 
 import asyncio
 import re
-from urllib.parse import urljoin
+from urllib.parse import urlparse, urljoin
 
 import aiohttp
 
 TEST_NAME = "cms_fingerprinting"
 USER_AGENT = "Bravo6-Scanner/1.0"
 TIMEOUT = 5
-MAX_CONCURRENT = 10
+MAX_CONCURRENT = 8
 
 # ── CMS signatures ─────────────────────────────────────────────────────────
 CMS_SIGNATURES = {
@@ -90,90 +87,108 @@ CMS_SIGNATURES = {
 
 
 async def _fetch(session, url):
+    """Fetch a URL and return status, headers, and body (if short)."""
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=TIMEOUT), ssl=False) as resp:
-            return resp.status, dict(resp.headers)
-    except:
-        return None, None
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=TIMEOUT),
+            ssl=False,
+            allow_redirects=True,
+        ) as resp:
+            headers = dict(resp.headers)
+            body = ""
+            if resp.status == 200:
+                # Only read a small chunk for meta tags
+                try:
+                    body = await resp.text(errors="ignore", limit=8000)
+                except:
+                    pass
+            return resp.status, headers, body
+    except Exception:
+        return None, None, None
 
 
 async def _check_paths(session, base_url, paths):
-    """Check if any of the given paths exist."""
+    """Check if any of the given paths exist, return statuses."""
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     results = {}
 
     async def check(path):
         async with semaphore:
             full_url = urljoin(base_url, path)
-            status, headers = await _fetch(session, full_url)
-            results[path] = {"status": status, "headers": headers}
+            status, _, _ = await _fetch(session, full_url)
+            results[path] = status
 
     tasks = [check(p) for p in paths]
     await asyncio.gather(*tasks, return_exceptions=True)
     return results
 
 
-async def run(url: str, context=None) -> dict:
+async def run(url: str) -> dict:
     try:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
-    except:
-        return {"test_name": TEST_NAME, "status": "error", "severity": "info", "title": "Invalid URL", "evidence": [], "remediation": "Check URL format."}
+    except Exception as e:
+        return {
+            "test_name": TEST_NAME,
+            "status": "error",
+            "severity": "info",
+            "title": "Invalid URL",
+            "description": str(e),
+            "evidence": [],
+            "remediation": "Check URL format.",
+        }
 
     findings = []
     detected = []
 
     async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
-        # ── 1. Fetch homepage to get headers, cookies, meta ──────────────
-        home_status, home_headers = await _fetch(session, base_url)
-        if home_status is None:
-            return {"test_name": TEST_NAME, "status": "error", "severity": "info", "title": "Cannot fetch homepage", "evidence": [], "remediation": "Check connectivity."}
+        # ── 1. Fetch homepage ──────────────────────────────────────────────
+        status, headers, body = await _fetch(session, base_url)
+        if status is None:
+            return {
+                "test_name": TEST_NAME,
+                "status": "error",
+                "severity": "info",
+                "title": "Fetch failed",
+                "description": "Could not fetch homepage.",
+                "evidence": [],
+                "remediation": "Check connectivity.",
+            }
 
-        # Collect cookies from headers
-        set_cookie = home_headers.get("Set-Cookie", "")
+        set_cookie = headers.get("Set-Cookie", "")
 
-        # Collect meta tags (we'll use BeautifulSoup if needed, but we'll keep it simple)
-        # Actually, we need to fetch HTML to get meta generator.
-        home_html = ""
-        try:
-            async with session.get(base_url, timeout=aiohttp.ClientTimeout(total=TIMEOUT), ssl=False) as resp:
-                if resp.status == 200:
-                    home_html = await resp.text(errors="ignore")
-        except:
-            pass
-
-        # ── 2. Check signatures ────────────────────────────────────────────
+        # ── 2. Check each CMS signature ───────────────────────────────────
         for cms_name, sig in CMS_SIGNATURES.items():
             score = 0
             evidence = []
 
-            # Check headers
+            # Headers
             for h, val in sig.get("headers", {}).items():
-                if h in home_headers and val.lower() in home_headers[h].lower():
+                if h in headers and val.lower() in headers[h].lower():
                     score += 20
-                    evidence.append(f"Header {h}: {home_headers[h]}")
+                    evidence.append(f"Header {h}: {headers[h]}")
 
-            # Check cookies
+            # Cookies
             cookie_pattern = sig.get("cookie", "")
             if cookie_pattern and cookie_pattern in set_cookie:
                 score += 25
                 evidence.append(f"Cookie: {cookie_pattern}")
 
-            # Check meta generator
-            if home_html and "meta" in sig:
-                meta_gen = sig["meta"].get("generator", "")
-                if meta_gen and meta_gen in home_html.lower():
-                    score += 25
-                    evidence.append(f"Meta generator: {meta_gen}")
+            # Meta generator (check body)
+            meta_gen = sig.get("meta", {}).get("generator", "")
+            if meta_gen and body and meta_gen in body.lower():
+                score += 25
+                evidence.append(f"Meta generator: {meta_gen}")
 
-            # Check common paths
-            paths = sig.get("paths", [])
+            # Paths (only top 2 most important)
+            paths = sig.get("paths", [])[:2]
             if paths:
-                path_results = await _check_paths(session, base_url, paths[:2])  # only 2 most important
-                for path, result in path_results.items():
-                    if result.get("status") == 200:
+                path_results = await _check_paths(session, base_url, paths)
+                for path, st in path_results.items():
+                    if st == 200:
                         score += 15
                         evidence.append(f"Path exists: {path}")
 
@@ -191,12 +206,12 @@ async def run(url: str, context=None) -> dict:
                     "severity": "info",
                 })
 
-        # ── 3. If no CMS detected, try a quick scan of common files ──────
+        # ── 3. If no CMS detected, check for common admin paths ──────────
         if not detected:
-            common_files = ["/wp-login.php", "/administrator/", "/user/login", "/admin/"]
-            file_results = await _check_paths(session, base_url, common_files)
-            for path, result in file_results.items():
-                if result.get("status") == 200:
+            common_admin = ["/wp-login.php", "/administrator/", "/user/login", "/admin/"]
+            admin_results = await _check_paths(session, base_url, common_admin)
+            for path, st in admin_results.items():
+                if st == 200:
                     findings.append({
                         "cms": "Unknown (possible admin panel)",
                         "confidence": 50,
@@ -211,32 +226,36 @@ async def run(url: str, context=None) -> dict:
         status = "pass"
         severity = "info"
         title = f"Detected: {', '.join([d['cms'] for d in detected])}"
-        desc = f"Identified {len(detected)} CMS(es) with high confidence."
+        description = f"Identified {len(detected)} CMS(es) with high confidence."
+        remediation = "Ensure CMS is up-to-date and properly configured."
     elif findings:
         status = "warning"
         severity = "low"
         title = "Possible admin panel detected"
-        desc = "Found admin-like paths, but CMS not identified."
+        description = "Found admin-like paths, but CMS not identified."
+        remediation = "Restrict access to admin paths and remove unnecessary ones."
     else:
         status = "pass"
         severity = "info"
         title = "No CMS detected"
-        desc = "Could not identify any known CMS."
+        description = "Could not identify any known CMS."
+        remediation = "No action required."
 
     return {
         "test_name": TEST_NAME,
         "status": status,
         "severity": severity,
         "title": title,
-        "description": desc,
+        "description": description,
         "evidence": findings,
-        "remediation": "Ensure CMS is up-to-date and properly configured. Remove unnecessary admin paths if not needed.",
+        "remediation": remediation,
         "detected_cms": detected,
     }
 
 
 if __name__ == "__main__":
-    import json, sys
+    import json
+    import sys
     target = sys.argv[1] if len(sys.argv) > 1 else "example.com"
     result = asyncio.run(run(target))
     print(json.dumps(result, indent=2))

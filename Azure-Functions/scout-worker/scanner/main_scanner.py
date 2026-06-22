@@ -67,7 +67,7 @@ SCORE_DEDUCTIONS = {
 # WAF / CDN detection (context only)
 # --------------------------------------------------------------------------
 
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
 USER_AGENT = "Bravo6-Scanner/1.0"
 
 WAF_SIGNATURES = {
@@ -161,7 +161,7 @@ def _calculate_score(findings: list) -> int:
 
 
 # --------------------------------------------------------------------------
-# Result aggregation (UPDATED to handle nested findings)
+# Result aggregation (FIXED: properly counts findings, handles nested lists)
 # --------------------------------------------------------------------------
 
 def _severity_label(score: int) -> str:
@@ -177,8 +177,13 @@ def _severity_label(score: int) -> str:
 
 
 def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict | None = None) -> dict:
+    """
+    Aggregates raw results from all tests.
+    Handles both flat findings and tests that return a list of findings under 'findings'.
+    """
     all_findings = []
     scan_errors = []
+    total_tests = len(raw_results)  # Number of test modules run
 
     # ── Step 1: Flatten all results ──────────────────────────────────────
     for r in raw_results:
@@ -189,20 +194,19 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
             scan_errors.append(f"Unexpected result type: {type(r).__name__}")
             continue
 
-        # Case 1: The result contains a 'findings' list (e.g., test_05, test_04)
+        # If the test returns a list of findings under the key "findings"
         if "findings" in r and isinstance(r["findings"], list):
             test_name = r.get("test_name", "unknown")
+            # Ensure each sub-finding has a test_name and status
             for sub_finding in r["findings"]:
-                # Ensure each sub-finding has a test_name
                 if "test_name" not in sub_finding:
                     sub_finding["test_name"] = test_name
-                # If sub_finding has 'overall_status' we might want to map it to 'status'
+                # Some tests use 'overall_status' instead of 'status'
                 if "overall_status" in sub_finding and "status" not in sub_finding:
                     sub_finding["status"] = sub_finding["overall_status"]
                 all_findings.append(sub_finding)
         else:
-            # Case 2: The result is a single finding (e.g., test_03, test_06)
-            # Ensure it has a test_name
+            # Single finding (or test with no nested list)
             if "test_name" not in r:
                 r["test_name"] = "unknown"
             all_findings.append(r)
@@ -229,7 +233,7 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
     else:
         overall_status = "pass"
 
-    # ── Step 3: Build final result ───────────────────────────────────────
+    # ── Step 3: Build final result ──────────────────────────────────────
     return {
         "url": url,
         "status": overall_status,
@@ -240,7 +244,8 @@ def _aggregate(raw_results: list, url: str, duration: float, waf_context: dict |
         "scan_errors": scan_errors,
         "waf_context": waf_context or {"detected": None, "note": None},
         "meta": {
-            "tests_run": len(all_findings),
+            "tests_run": total_tests,               # عدد الاختبارات الفعلية
+            "findings_count": len(all_findings),    # عدد النتائج الفعلية
             "tests_errored": len(scan_errors),
             "duration_seconds": round(duration, 2),
         },
@@ -264,7 +269,7 @@ async def run_scout(url: str) -> dict:
             "findings": [],
             "scan_errors": [f"Invalid or empty URL provided: '{url}'"],
             "waf_context": {"detected": None, "note": None},
-            "meta": {"tests_run": 0, "tests_errored": 1, "duration_seconds": 0},
+            "meta": {"tests_run": 0, "findings_count": 0, "tests_errored": 1, "duration_seconds": 0},
         }
 
     start = time.time()

@@ -1,15 +1,16 @@
 """
-test_05_security_headers.py — Advanced Security Headers Scanner (Fixed & Optimized)
+test_05_security_headers.py — Advanced Security Headers Scanner (Fully Fixed)
 
-- Fixed tuple unpacking error (returns exactly 2 values where needed)
-- Handles redirect chains (collects headers from all responses)
-- Deep CSP analysis with nonce detection
-- HSTS preload readiness check
-- COOP, COEP, CORP, Permissions-Policy, Referrer-Policy, XFO, XCTO
-- Cache-Control verification only if Set-Cookie is present
-- Context-aware: skips non-applicable headers for API responses
-- Fast concurrent checks with timeouts
-- Provides actionable PoC commands and remediation
+- Fixed tuple unpacking errors (all functions return consistent number of values).
+- Handles redirect chains, collects headers from all responses.
+- Deep CSP analysis: checks base-uri, form-action, object-src, script-src with nonce/strict-dynamic.
+- HSTS: validates max-age, includeSubDomains, preload readiness.
+- Modern isolation headers: COOP, COEP, CORP.
+- Permissions-Policy, Referrer-Policy, X-Content-Type-Options, X-Frame-Options.
+- Cache-Control verification only if Set-Cookie present (authenticated pages).
+- WAF context awareness (Cloudflare, etc.) to reduce false positives.
+- Fast parallel requests with timeouts.
+- Structured output with PoC, confidence, severity, remediation.
 """
 
 import asyncio
@@ -85,7 +86,6 @@ def _is_cdn_domain(hostname: str) -> bool:
 
 
 def _parse_csp(csp: str) -> Dict[str, str]:
-    """Parse CSP into directive:value dict."""
     directives = {}
     if not csp:
         return directives
