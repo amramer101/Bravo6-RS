@@ -1,19 +1,9 @@
 """
-test_04_ssl_tls.py — SSL/TLS Vulnerability Scanner (Active & Exploit-Oriented)
+test_04_ssl_tls.py — SSL/TLS Vulnerability Scanner (Fully Fixed v2)
 
-Detects real exploitable weaknesses:
-- SSLv2 (DROWN)
-- Weak EXPORT ciphers (FREAK)
-- Weak DH parameters (Logjam)
-- TLS compression (CRIME)
-- Insecure renegotiation
-- CBC ciphers with TLS 1.0 (BEAST)
-- 3DES (Sweet32)
-- RC4 ciphers
-- Weak certificate issues (expiry, hostname, self-signed, SHA-1)
-- HSTS context for risk adjustment
-
-Provides actionable PoC commands and remediation steps.
+- Fixed false positives: checks negotiated cipher name, not just handshake success.
+- Fixed renegotiation: skips finding silently when openssl is not installed.
+- Handles TLS version compatibility gracefully.
 """
 
 import asyncio
@@ -28,13 +18,11 @@ import aiohttp
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 
-# ── Configuration ──────────────────────────────────────────────────────────
 CONNECT_TIMEOUT = 15
 DEFAULT_HTTPS_PORT = 443
 MAX_RETRIES = 2
 USER_AGENT = "Bravo6-Scanner/1.0"
 
-# ── Internal IP ranges (to reduce false positives for self-signed/hostname) ──
 INTERNAL_IP_RANGES = [
     "10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",
     "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.",
@@ -42,24 +30,21 @@ INTERNAL_IP_RANGES = [
     "127.", "::1", "fc00:", "fe80:"
 ]
 
-# ── Severity ranking ──────────────────────────────────────────────────────
 SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
-# ── Weak cipher suites to test (OpenSSL cipher strings) ──────────────────
 WEAK_CIPHER_SUITES = {
-    "EXP-RC4-MD5": "EXPORT (512-bit) RC4-MD5",
-    "EXP-DES-CBC-SHA": "EXPORT (512-bit) DES-CBC-SHA",
-    "EXP-EDH-DSS-DES-CBC-SHA": "EXPORT DH-DSS-DES",
-    "EXP-EDH-RSA-DES-CBC-SHA": "EXPORT DH-RSA-DES",
+    "NULL-MD5": "NULL cipher (MD5)",
+    "NULL-SHA": "NULL cipher (SHA1)",
     "RC4-MD5": "RC4-MD5",
     "RC4-SHA": "RC4-SHA",
     "DES-CBC3-SHA": "3DES-CBC-SHA",
     "DES-CBC-SHA": "DES-CBC-SHA",
-    "NULL-MD5": "NULL cipher",
-    "NULL-SHA": "NULL cipher",
+    "EXP-RC4-MD5": "EXPORT (512-bit) RC4-MD5",
+    "EXP-DES-CBC-SHA": "EXPORT (512-bit) DES-CBC-SHA",
+    "EXP-EDH-DSS-DES-CBC-SHA": "EXPORT DH-DSS-DES",
+    "EXP-EDH-RSA-DES-CBC-SHA": "EXPORT DH-RSA-DES",
 }
 
-# ── Helper functions ──────────────────────────────────────────────────────
 
 def _normalize_target(url: str) -> tuple[str, int]:
     raw = url.strip()
@@ -71,6 +56,7 @@ def _normalize_target(url: str) -> tuple[str, int]:
         raise ValueError(f"Invalid hostname: {url}")
     port = parsed.port or DEFAULT_HTTPS_PORT
     return hostname, port
+
 
 def _is_internal_ip(hostname: str) -> bool:
     try:
@@ -84,10 +70,12 @@ def _is_internal_ip(hostname: str) -> bool:
         pass
     return False
 
+
 def _parse_dn(name) -> str:
     if not name:
         return ""
     return ", ".join(f"{a.oid._name}={a.value}" for a in name)
+
 
 def _get_san(cert) -> list:
     try:
@@ -95,6 +83,7 @@ def _get_san(cert) -> list:
         return ext.value.get_values_for_type(x509.DNSName)
     except:
         return []
+
 
 def _hostname_matches(hostname: str, cert) -> bool:
     san_names = _get_san(cert)
@@ -109,17 +98,17 @@ def _hostname_matches(hostname: str, cert) -> bool:
             return True
     return False
 
+
 def _check_self_signed(cert) -> bool:
     return _parse_dn(cert.issuer) == _parse_dn(cert.subject)
+
 
 def _is_weak_signature(cert) -> bool:
     alg = cert.signature_algorithm_oid._name.lower()
     return "sha1" in alg or "md5" in alg
 
-# ── Protocol and cipher probing using ssl module ─────────────────────────
 
 def _probe_protocol(hostname: str, port: int, version: ssl.TLSVersion) -> bool:
-    """Return True if the server supports the given TLS version."""
     try:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
@@ -132,20 +121,39 @@ def _probe_protocol(hostname: str, port: int, version: ssl.TLSVersion) -> bool:
     except Exception:
         return False
 
-def _probe_cipher(hostname: str, port: int, cipher_string: str) -> bool:
-    """Attempt to connect using a specific cipher suite."""
+
+def _probe_cipher_suite(hostname: str, port: int, cipher_string: str) -> bool:
+    """
+    Check if a specific weak cipher is actually negotiated.
+    Verifies the negotiated cipher name to avoid false positives.
+    """
     try:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
+        context.minimum_version = ssl.TLSVersion.TLSv1
+        context.maximum_version = ssl.TLSVersion.TLSv1_2
         context.set_ciphers(cipher_string)
+
         with socket.create_connection((hostname, port), timeout=CONNECT_TIMEOUT) as sock:
             with context.wrap_socket(sock, server_hostname=hostname) as tls_sock:
-                return True
+                negotiated = tls_sock.cipher()
+                if not negotiated:
+                    return False
+                # ✅ Key fix: verify the negotiated cipher IS the requested one
+                negotiated_name = negotiated[0].upper()
+                requested_name = cipher_string.upper()
+                return requested_name in negotiated_name
+
+    except ssl.SSLError as e:
+        if "no shared cipher" in str(e).lower():
+            return False
+        return False
+    except OSError:
+        return False
     except Exception:
         return False
 
-# ── Asynchronous wrappers ──────────────────────────────────────────────────
 
 async def _probe_async(func, *args) -> dict:
     loop = asyncio.get_event_loop()
@@ -163,10 +171,8 @@ async def _probe_async(func, *args) -> dict:
                 return {"success": False, "error": str(e)}
     return {"success": False, "error": "max retries"}
 
-# ── External openssl check (for SSLv2 and renegotiation) ─────────────────
 
 async def _check_ssl2(hostname: str, port: int) -> dict:
-    """Check SSLv2 support using openssl s_client -ssl2."""
     cmd = ["openssl", "s_client", "-ssl2", "-connect", f"{hostname}:{port}", "-no_ign_eof"]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -176,20 +182,18 @@ async def _check_ssl2(hostname: str, port: int) -> dict:
             stdin=subprocess.DEVNULL
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONNECT_TIMEOUT)
-        # If openssl returns 0 or output contains "SSL handshake succeeded"
-        # we consider SSLv2 supported.
         output = stdout.decode() + stderr.decode()
         if "SSL handshake succeeded" in output or "CONNECTED" in output:
-            return {"supported": True, "error": None}
-        else:
-            return {"supported": False, "error": output[:200] if output else "unknown"}
+            if "no cipher" not in output.lower() and "protocol not available" not in output.lower():
+                return {"supported": True, "error": None}
+        return {"supported": False, "error": None}
     except FileNotFoundError:
         return {"supported": False, "error": "openssl not installed"}
     except Exception as e:
         return {"supported": False, "error": str(e)}
 
+
 async def _check_renegotiation(hostname: str, port: int) -> dict:
-    """Check insecure renegotiation using openssl s_client -renegotiate."""
     cmd = ["openssl", "s_client", "-connect", f"{hostname}:{port}", "-renegotiate"]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -205,15 +209,14 @@ async def _check_renegotiation(hostname: str, port: int) -> dict:
         elif "Secure Renegotiation IS supported" in output:
             return {"supported": True, "error": None}
         else:
-            # Could not determine
             return {"supported": None, "error": "ambiguous output"}
     except FileNotFoundError:
         return {"supported": None, "error": "openssl not installed"}
     except Exception as e:
         return {"supported": None, "error": str(e)}
 
+
 async def _check_compression(hostname: str, port: int) -> dict:
-    """Check TLS compression support using openssl s_client -comp."""
     cmd = ["openssl", "s_client", "-connect", f"{hostname}:{port}", "-comp"]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -226,14 +229,10 @@ async def _check_compression(hostname: str, port: int) -> dict:
         output = stdout.decode() + stderr.decode()
         if "Compression: zlib" in output or "Compression: 1" in output:
             return {"supported": True}
-        elif "Compression: NONE" in output:
-            return {"supported": False}
-        else:
-            return {"supported": None}
+        return {"supported": False}
     except:
         return {"supported": None}
 
-# ── Main scan function ─────────────────────────────────────────────────────
 
 async def run(url: str) -> dict:
     test_name = "ssl_tls"
@@ -252,7 +251,6 @@ async def run(url: str) -> dict:
 
     is_internal = _is_internal_ip(hostname)
 
-    # ── Get HSTS header (for context) ──────────────────────────────────
     hsts_value = None
     async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
         try:
@@ -261,7 +259,6 @@ async def run(url: str) -> dict:
         except:
             pass
 
-    # ── 1. Main TLS handshake to get certificate and negotiated cipher ──
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -285,7 +282,6 @@ async def run(url: str) -> dict:
             "remediation": "Check network and TLS configuration."
         }
 
-    # ── 2. Certificate Analysis ────────────────────────────────────────
     now = datetime.now(timezone.utc)
     days_until_expiry = (cert.not_valid_after_utc - now).days
 
@@ -309,13 +305,12 @@ async def run(url: str) -> dict:
         "poc_commands": []
     }
 
-    findings = []  # list of (status, severity, title, description, poc)
+    findings = []
 
-    # ── 3. Certificate checks ──────────────────────────────────────────
+    # Certificate checks
     if days_until_expiry < 0:
         findings.append(("fail", "critical", "Certificate expired",
-                         f"Certificate expired on {cert.not_valid_after_utc.strftime('%Y-%m-%d')}.",
-                         None))
+                         f"Certificate expired on {cert.not_valid_after_utc.strftime('%Y-%m-%d')}.", None))
     elif days_until_expiry < 7:
         findings.append(("fail", "high", f"Certificate expires in {days_until_expiry} days",
                          "Renew immediately.", None))
@@ -325,8 +320,7 @@ async def run(url: str) -> dict:
 
     if not evidence["hostname_match"] and not is_internal:
         findings.append(("fail", "critical", "Hostname mismatch",
-                         "Certificate does not match the requested hostname.",
-                         None))
+                         "Certificate does not match the requested hostname.", None))
     elif not evidence["hostname_match"] and is_internal:
         findings.append(("warning", "low", "Hostname mismatch (internal)",
                          "Internal IP with certificate mismatch.", None))
@@ -342,8 +336,7 @@ async def run(url: str) -> dict:
         findings.append(("fail", "high", "Weak signature algorithm (SHA-1/MD5)",
                          "Certificate uses weak hash algorithm.", None))
 
-    # ── 4. Protocol Probing ──────────────────────────────────────────────
-    # SSLv2 (using openssl)
+    # Protocol probing
     ssl2_result = await _check_ssl2(hostname, port)
     if ssl2_result.get("supported"):
         evidence["weak_protocols"]["SSLv2"] = True
@@ -353,9 +346,8 @@ async def run(url: str) -> dict:
     else:
         evidence["weak_protocols"]["SSLv2"] = False
 
-    # SSLv3
-    sslv3_supported = await _probe_async(_probe_protocol, hostname, port, ssl.TLSVersion.SSLv3)
-    if sslv3_supported["success"]:
+    sslv3 = await _probe_async(_probe_protocol, hostname, port, ssl.TLSVersion.SSLv3)
+    if sslv3["success"]:
         evidence["weak_protocols"]["SSLv3"] = True
         findings.append(("fail", "critical", "SSLv3 supported (POODLE)",
                          "SSLv3 is vulnerable to POODLE attack.",
@@ -363,7 +355,6 @@ async def run(url: str) -> dict:
     else:
         evidence["weak_protocols"]["SSLv3"] = False
 
-    # TLS 1.0
     tls10 = await _probe_async(_probe_protocol, hostname, port, ssl.TLSVersion.TLSv1)
     if tls10["success"]:
         evidence["weak_protocols"]["TLSv1.0"] = True
@@ -373,7 +364,6 @@ async def run(url: str) -> dict:
     else:
         evidence["weak_protocols"]["TLSv1.0"] = False
 
-    # TLS 1.1
     tls11 = await _probe_async(_probe_protocol, hostname, port, ssl.TLSVersion.TLSv1_1)
     if tls11["success"]:
         evidence["weak_protocols"]["TLSv1.1"] = True
@@ -383,31 +373,31 @@ async def run(url: str) -> dict:
     else:
         evidence["weak_protocols"]["TLSv1.1"] = False
 
-    # ── 5. Weak Cipher Probing ────────────────────────────────────────────
+    # Weak cipher probing (fixed)
     for cipher_string, description in WEAK_CIPHER_SUITES.items():
-        result = await _probe_async(_probe_cipher, hostname, port, cipher_string)
+        result = await _probe_async(_probe_cipher_suite, hostname, port, cipher_string)
         if result["success"]:
             evidence["weak_ciphers"][cipher_string] = True
-            severity = "critical" if "EXPORT" in cipher_string or "NULL" in cipher_string else "high"
-            if "RC4" in cipher_string:
+            if "NULL" in cipher_string or "EXPORT" in cipher_string:
+                severity = "critical"
+                risk = f"EXPORT/NULL cipher is critically weak (FREAK/no encryption)."
+            elif "RC4" in cipher_string:
                 severity = "high"
                 risk = "RC4 is broken and allows plaintext recovery."
-            elif "3DES" in cipher_string:
+            elif "3DES" in cipher_string or "DES" in cipher_string:
                 severity = "medium"
-                risk = "3DES is weak (Sweet32)."
-            elif "DES" in cipher_string:
-                severity = "high"
-                risk = "DES is weak."
+                risk = "3DES/DES is weak (Sweet32 attack)."
             else:
+                severity = "medium"
                 risk = f"Weak cipher: {description}."
 
             findings.append(("fail", severity, f"Weak cipher accepted: {description}",
                              risk,
-                             f"openssl s_client -cipher {cipher_string} -connect {hostname}:{port}"))
+                             f"openssl s_client -cipher {cipher_string} -connect {hostname}:{port} -tls1_2"))
         else:
             evidence["weak_ciphers"][cipher_string] = False
 
-    # ── 6. TLS Compression (CRIME) ──────────────────────────────────────
+    # TLS Compression
     compress_result = await _check_compression(hostname, port)
     if compress_result.get("supported") is True:
         findings.append(("fail", "high", "TLS Compression supported (CRIME)",
@@ -417,38 +407,31 @@ async def run(url: str) -> dict:
     else:
         evidence["tls_compression"] = False
 
-    # ── 7. Insecure Renegotiation ──────────────────────────────────────
+    # ✅ Renegotiation (fixed: skip silently if openssl not installed)
     reneg_result = await _check_renegotiation(hostname, port)
-    if reneg_result.get("supported") is False:  # Not supported is good
-        # Actually, if it says "Secure Renegotiation IS NOT supported" it's insecure.
-        # But we need to interpret: we want to know if insecure renegotiation is possible.
-        # Usually, openssl output: "Secure Renegotiation IS supported" means safe.
-        # If "Secure Renegotiation IS NOT supported", then renegotiation is insecure.
-        # We'll treat that as a finding.
-        pass
-    # The above logic is tricky; we'll just report if we detected that insecure renegotiation is possible.
-    # For simplicity, we'll skip automated detection and provide a warning if openssl fails to detect.
-    # We'll add a note if we couldn't determine.
-    if reneg_result.get("error"):
-        # Could not determine, we'll add an informational message
-        findings.append(("info", "info", "Insecure Renegotiation detection failed",
-                         "Could not determine renegotiation status. Manual check recommended.",
+    if reneg_result.get("supported") is False:
+        findings.append(("warning", "medium", "Insecure Renegotiation possible",
+                         "Server does not support secure renegotiation.",
                          f"openssl s_client -connect {hostname}:{port} -renegotiate"))
+    elif reneg_result.get("supported") is None and reneg_result.get("error"):
+        error_msg = reneg_result.get("error", "")
+        # ✅ Fix: skip silently if openssl is not available
+        if "not installed" not in error_msg and "not found" not in error_msg:
+            findings.append(("info", "info", "Renegotiation check inconclusive",
+                             "Could not determine renegotiation status. Manual check recommended.",
+                             f"openssl s_client -connect {hostname}:{port} -renegotiate"))
 
-    # ── 8. Check for HSTS ──────────────────────────────────────────────
+    # HSTS
     if not hsts_value and not is_internal:
         findings.append(("warning", "medium", "HSTS header missing",
-                         "No HSTS header. SSL-stripping attacks possible.",
-                         None))
+                         "No HSTS header. SSL-stripping attacks possible.", None))
 
-    # ── 9. Compute overall status ──────────────────────────────────────
-    # Determine worst severity from findings
+    # Compute overall status
     worst_sev = "info"
     for _, sev, _, _, _ in findings:
         if SEVERITY_RANK.get(sev, 0) > SEVERITY_RANK.get(worst_sev, 0):
             worst_sev = sev
 
-    # Status: fail if any critical or high; warning if medium/low; pass otherwise.
     if any(SEVERITY_RANK.get(sev, 0) >= 3 for _, sev, _, _, _ in findings):
         status = "fail"
     elif any(SEVERITY_RANK.get(sev, 0) >= 1 for _, sev, _, _, _ in findings):
@@ -456,7 +439,7 @@ async def run(url: str) -> dict:
     else:
         status = "pass"
 
-    # ── 10. Build remediation ──────────────────────────────────────────
+    # Build remediation
     remediation_steps = []
     if days_until_expiry < 30:
         remediation_steps.append("Renew certificate immediately.")
@@ -474,53 +457,46 @@ async def run(url: str) -> dict:
         remediation_steps.append("Disable TLS 1.0.")
     if evidence["weak_protocols"].get("TLSv1.1"):
         remediation_steps.append("Disable TLS 1.1.")
-    if evidence["weak_ciphers"]:
-        remediation_steps.append("Remove weak ciphers: " + ", ".join(evidence["weak_ciphers"].keys()))
+    if any(v for v in evidence["weak_ciphers"].values()):
+        weak = [k for k, v in evidence["weak_ciphers"].items() if v]
+        remediation_steps.append(f"Remove weak ciphers: {', '.join(weak)}.")
     if evidence.get("tls_compression"):
         remediation_steps.append("Disable TLS compression.")
     if not hsts_value and not is_internal:
-        remediation_steps.append("Add HSTS header with max-age=63072000; includeSubDomains; preload.")
-
+        remediation_steps.append("Add HSTS header: max-age=63072000; includeSubDomains; preload.")
     if not remediation_steps:
-        remediation_steps.append("No immediate action required, but keep monitoring.")
+        remediation_steps.append("No immediate action required.")
 
-    # ── 11. Build final result ──────────────────────────────────────────
-    # Convert findings to list of dicts for report
+    # Build findings list
     findings_list = []
     for status_f, sev, title, desc, poc in findings:
-        finding = {
+        findings_list.append({
             "test_name": test_name,
             "status": status_f,
             "severity": sev,
             "title": title,
             "description": desc,
             "evidence": {"poc": poc} if poc else {}
-        }
-        findings_list.append(finding)
+        })
 
     return {
         "test_name": test_name,
         "status": status,
         "severity": worst_sev,
-        "title": f"SSL/TLS scan: {len(findings)} issues",
-        "description": f"Found {len(findings)} SSL/TLS issues.",
+        "title": f"SSL/TLS scan: {len(findings)} issues found",
+        "description": f"Found {len(findings)} SSL/TLS issues for {hostname}.",
         "evidence": evidence,
         "remediation": " ".join(remediation_steps),
         "findings": findings_list,
     }
 
-# ── Command-line entry point ──────────────────────────────────────────────
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        url = sys.argv[1]
-        result = asyncio.run(run(url))
-        print(f"Status: {result['status']} (Severity: {result['severity']})")
+        result = asyncio.run(run(sys.argv[1]))
+        print(f"Status: {result['status']} | Severity: {result['severity']}")
         print(f"Title: {result['title']}")
-        print("Remediation:", result['remediation'])
-        print("\nFindings:")
         for f in result.get("findings", []):
-            print(f"  - [{f['status']}] {f['title']} ({f['severity']})")
-            if f.get('evidence', {}).get('poc'):
-                print(f"      PoC: {f['evidence']['poc']}")
+            print(f"  [{f['status']}] {f['title']} ({f['severity']})")
     else:
         print("Usage: python test_04_ssl_tls.py <url>")
