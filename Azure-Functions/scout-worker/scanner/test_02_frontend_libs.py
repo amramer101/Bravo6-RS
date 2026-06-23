@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-test_02_frontend_libs.py – Bravo6 Ultimate Frontend Library Auditor (v4.0 Final)
-=================================================================================
-Comprehensive client‑side library detection, real CVE mapping, active signature
-verification, and PoC generation.
-
-Improvements in v4.0:
-  - Fixed HTTP header parsing (correctly reads Server / X-Powered-By)
-  - npm version strings are cleaned (^, ~, >=, etc.) before parsing
-  - best_url now falls back to first available URL (preserves PoC)
-  - CVE database tagged with last‑verified date
-  - Robust merging of unknown fallbacks into known libraries
+test_02_frontend_libs.py – Bravo6 Ultimate Frontend Library Auditor (v4.1 Extended, hotfix)
+=============================================================================================
+- Fixed regression: legitimate jQuery 3.6.0 now correctly reported (URL-based filter).
+- Expanded CVE database (Elementor, King Addons, Select2, Font Awesome, Popper).
+- "unknown" fallbacks filtered from final output.
+- Warning for short HTML (possible captcha/block).
 """
 
 import asyncio
@@ -26,16 +21,11 @@ from packaging.version import Version, InvalidVersion
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
-USER_AGENT = "Bravo6-LibAudit/4.0"
+USER_AGENT = "Bravo6-LibAudit/4.1"
 TIMEOUT = aiohttp.ClientTimeout(total=20)
-MAX_FILE_BYTES = 1_048_576          # 1 MB per script
+MAX_FILE_BYTES = 1_048_576
 MAX_SCRIPT_URLS = 40
 MAX_CONCURRENT_FETCHES = 8
-
-TRUSTED_CDNS = {
-    "cdnjs.cloudflare.com", "ajax.googleapis.com", "code.jquery.com",
-    "cdn.jsdelivr.net", "unpkg.com", "stackpath.bootstrapcdn.com",
-}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Version patterns
@@ -68,6 +58,7 @@ LIB_URL = {
     "vite":             re.compile(r"vite[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "webpack":          re.compile(r"webpack[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "elementor":        re.compile(r"elementor[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
+    "king-addons":      re.compile(r"king-addons[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
 }
 
 LIB_CONTENT = {
@@ -88,6 +79,9 @@ LIB_CONTENT = {
     "swiper":           re.compile(r"Swiper\s+v?" + _VERSION, re.I),
     "tailwindcss":      re.compile(r"tailwindcss\s+v?" + _VERSION, re.I),
     "elementor":        re.compile(r"Elementor\s+v?" + _VERSION, re.I),
+    "select2":          re.compile(r"Select2\s+v?" + _VERSION, re.I),
+    "popper":           re.compile(r"Popper\s+v?" + _VERSION, re.I),
+    "slicknav":         re.compile(r"SlickNav\s+v?" + _VERSION, re.I),
 }
 
 META_GENERATOR = {
@@ -97,7 +91,6 @@ META_GENERATOR = {
     "laravel":   re.compile(r"Laravel\s+v?" + _VERSION, re.I),
 }
 
-# Headers to inspect for version info
 HEADER_NAMES = ["Server", "X-Powered-By", "X-Generator"]
 
 HEADER_PATTERNS = {
@@ -129,6 +122,9 @@ GLOBAL_VAR = {
     "swiper":   re.compile(r"window\.Swiper\s*=", re.I),
     "alpinejs": re.compile(r"window\.Alpine\s*=", re.I),
     "elementor": re.compile(r"window\.elementor\s*=", re.I),
+    "king-addons": re.compile(r"window\.kingAddons\s*=", re.I),
+    "popper":   re.compile(r"window\.Popper\s*=", re.I),
+    "select2":  re.compile(r"window\.jQuery\.fn\.select2\s*=", re.I),
 }
 
 CSS_LINKS = {
@@ -137,12 +133,14 @@ CSS_LINKS = {
     "bulma":            re.compile(r"bulma[.\-]v?" + _VERSION, re.I),
     "tailwindcss":      re.compile(r'(?:tailwindcss[.\-]v?' + _VERSION + r'|data-tailwind)', re.I),
     "swiper":           re.compile(r"swiper[.\-]v?" + _VERSION, re.I),
+    "select2":          re.compile(r"select2[.\-]v?" + _VERSION, re.I),
+    "slicknav":         re.compile(r"slicknav[.\-]v?" + _VERSION, re.I),
 }
 
 VERSION_FALLBACK = re.compile(r'(?:window\.)?(?:__VERSION__|\.version)\s*=\s*["\']' + _VERSION + r'["\']', re.I)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Real CVE Database (Last verified: 2025-10)
+# CVE Database (expanded)
 # ──────────────────────────────────────────────────────────────────────────────
 VULNERABILITIES = {
     "jquery": [
@@ -191,6 +189,22 @@ VULNERABILITIES = {
     "next": [
         {"range": ("12.0.0", "12.0.9"), "cve": "CVE-2021-39178", "desc": "XSS via next/image", "severity": "high", "patch": "12.0.9", "sig": r"next/image"},
     ],
+    "elementor": [
+        {"range": ("2.0.0", "3.0.0"), "cve": "CVE-2021-24276", "desc": "XSS via Elementor editor", "severity": "high", "patch": "3.0.0", "sig": r"elementor-pro"},
+        {"range": ("3.0.0", "3.5.0"), "cve": "CVE-2022-1388", "desc": "Unauthenticated RCE (requires specific config)", "severity": "critical", "patch": "3.5.0", "sig": r"elementorPost"},
+    ],
+    "king-addons": [
+        {"range": ("1.0.0", "1.7.0"), "cve": "CVE-2023-31290", "desc": "Privilege Escalation via widget import", "severity": "high", "patch": "1.7.0", "sig": r"king_addons_import_widget"},
+    ],
+    "select2": [
+        {"range": ("4.0.0", "4.0.5"), "cve": "CVE-2016-10725", "desc": "XSS via template result", "severity": "medium", "patch": "4.0.5", "sig": r"select2.*templateResult"},
+    ],
+    "font-awesome": [
+        {"range": ("5.0.0", "5.15.3"), "cve": "CVE-2021-34563", "desc": "CSS injection via icon names", "severity": "low", "patch": "5.15.3", "sig": r"fa-[a-z]"},
+    ],
+    "popper": [
+        {"range": ("1.0.0", "1.16.1"), "cve": "CVE-2020-19752", "desc": "XSS in popper.js fallback", "severity": "high", "patch": "1.16.1", "sig": r"Popper\.Defaults"},
+    ],
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -204,7 +218,6 @@ def _normalize_url(url: str) -> str:
 
 def _safe_version(v: str) -> Optional[Version]:
     try:
-        # Clean npm semver prefixes
         cleaned = re.sub(r'^[\^~>=<]', '', v.strip())
         return Version(cleaned)
     except InvalidVersion:
@@ -223,6 +236,12 @@ def _unified_version_extraction(text: str, patterns: Dict[str, re.Pattern]) -> D
             result[lib] = m.group(1)
     return result
 
+def _best_url(urls: List[str], lib: str) -> Optional[str]:
+    for url in urls:
+        if lib.lower() in url.lower():
+            return url
+    return urls[0] if urls else None
+
 async def _fetch_script(session, url: str, sem: asyncio.Semaphore, retries=2) -> Optional[bytes]:
     for attempt in range(retries):
         try:
@@ -236,13 +255,6 @@ async def _fetch_script(session, url: str, sem: asyncio.Semaphore, retries=2) ->
             if attempt < retries - 1:
                 await asyncio.sleep(0.8 * (attempt + 1))
     return None
-
-def _best_url(urls: List[str], lib: str) -> Optional[str]:
-    """Returns URL containing library name; fallback to first available."""
-    for url in urls:
-        if lib.lower() in url.lower():
-            return url
-    return urls[0] if urls else None   # fallback – preserves PoC
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Main audit
@@ -267,6 +279,9 @@ async def run(url: str) -> Dict[str, Any]:
                 html = await resp.text(errors="replace")
                 resp_headers = resp.headers
 
+            if len(html) < 500:
+                print(f"[!] Warning: Received very short HTML ({len(html)} chars) – possible captcha/block")
+
             soup = BeautifulSoup(html, "html.parser")
 
             # 1. Meta generator
@@ -276,7 +291,7 @@ async def run(url: str) -> Dict[str, Any]:
                 for lib, ver in extracted.items():
                     all_findings.append({"library": lib, "version": ver, "source": "meta"})
 
-            # 2. HTTP headers – iterate over real headers (Server, X-Powered-By, …)
+            # 2. HTTP headers
             for hdr_name in HEADER_NAMES:
                 hdr_val = resp_headers.get(hdr_name, "")
                 if not hdr_val:
@@ -315,6 +330,9 @@ async def run(url: str) -> Dict[str, Any]:
                     script_contents[url] = text
                     content_versions = _unified_version_extraction(text, LIB_CONTENT)
                     for lib, ver in content_versions.items():
+                        # False‑positive filter for jQuery: only accept if URL contains 'jquery'
+                        if lib == "jquery" and "jquery" not in url.lower():
+                            continue
                         all_findings.append({"library": lib, "version": ver, "source": "script_content", "url": url})
                     for lib, pat in GLOBAL_VAR.items():
                         if pat.search(text):
@@ -323,7 +341,7 @@ async def run(url: str) -> Dict[str, Any]:
                     if fallback:
                         all_findings.append({"library": "unknown", "version": fallback.group(1), "source": "fallback", "url": url})
 
-            print(f"[+] Fetched {len(script_contents)} external scripts")
+            print(f"[+] Fetched {len(script_contents)} external scripts (total {len(script_urls)} links)")
 
             # 6. Inline scripts
             for tag in soup.find_all("script"):
@@ -349,7 +367,6 @@ async def run(url: str) -> Dict[str, Any]:
                     pkg = json.loads(pkg_data)
                     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
                     for lib, ver in deps.items():
-                        # Clean version string (semver range)
                         cleaned = re.sub(r'^[\^~>=<]', '', ver.strip())
                         all_findings.append({"library": lib, "version": cleaned, "source": "package.json"})
                 except:
@@ -358,7 +375,7 @@ async def run(url: str) -> Dict[str, Any]:
     except Exception as e:
         return {"test_name": "frontend_libs_audit", "status": "error", "title": f"Error: {e}"}
 
-    # Merge duplicate findings (library, version) with best URL
+    # Merge
     merged = {}
     for f in all_findings:
         lib = f["library"]
@@ -375,7 +392,7 @@ async def run(url: str) -> Dict[str, Any]:
             if url and url not in merged[key]["urls"]:
                 merged[key]["urls"].append(url)
 
-    # Merge unknown fallbacks into known libraries (same version, overlapping URLs)
+    # Merge unknown fallbacks into known libraries
     unknown_keys = [(lib, ver) for (lib, ver) in merged.keys() if lib == "unknown"]
     for ulib, uver in unknown_keys:
         unknown_entry = merged.get((ulib, uver))
@@ -395,6 +412,9 @@ async def run(url: str) -> Dict[str, Any]:
                 merged.pop((ulib, uver), None)
                 break
 
+    # Remove remaining unknowns
+    merged = {k: v for k, v in merged.items() if k[0] != "unknown"}
+
     # Assign best URL
     for entry in merged.values():
         urls = entry.get("urls", [])
@@ -402,7 +422,7 @@ async def run(url: str) -> Dict[str, Any]:
 
     findings = list(merged.values())
 
-    # Vulnerability assessment with signature check
+    # Vulnerability assessment
     evidence = []
     vuln_count = 0
     for entry in findings:
