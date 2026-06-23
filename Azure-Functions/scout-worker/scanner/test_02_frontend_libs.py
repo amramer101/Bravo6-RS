@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-test_02_frontend_libs.py – Bravo6 Ultimate Frontend Library Auditor (v3.3 Final)
+test_02_frontend_libs.py – Bravo6 Ultimate Frontend Library Auditor (v4.0 Final)
 =================================================================================
-Fully production‑ready, zero false‑positive, active vulnerability signature
-verification for client‑side JavaScript libraries.
+Comprehensive client‑side library detection, real CVE mapping, active signature
+verification, and PoC generation.
 
-Features:
-  - 8+ detection sources (script tags, meta, headers, cookies, CSS, global vars, …)
-  - 30+ libraries covered (jQuery, Vue, React, Bootstrap, Lodash, Swiper, …)
-  - Real CVE database with exact version ranges and exploit‑signature patterns
-  - Merges duplicate findings and selects the best file URL for PoC
-  - Final clean‑up: unknown fallback findings merged into known libraries
-  - Built‑in PoC commands (JS console + curl)
-  - Async, secure (SSL enforced), connection pooling, automatic retries
+Improvements in v4.0:
+  - Fixed HTTP header parsing (correctly reads Server / X-Powered-By)
+  - npm version strings are cleaned (^, ~, >=, etc.) before parsing
+  - best_url now falls back to first available URL (preserves PoC)
+  - CVE database tagged with last‑verified date
+  - Robust merging of unknown fallbacks into known libraries
 """
 
 import asyncio
@@ -28,10 +26,10 @@ from packaging.version import Version, InvalidVersion
 # ──────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────────────────────
-USER_AGENT = "Bravo6-LibAudit/3.3"
+USER_AGENT = "Bravo6-LibAudit/4.0"
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 MAX_FILE_BYTES = 1_048_576          # 1 MB per script
-MAX_SCRIPT_URLS = 40                # max external scripts to fetch
+MAX_SCRIPT_URLS = 40
 MAX_CONCURRENT_FETCHES = 8
 
 TRUSTED_CDNS = {
@@ -40,15 +38,14 @@ TRUSTED_CDNS = {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Version extraction patterns
+# Version patterns
 # ──────────────────────────────────────────────────────────────────────────────
 _VERSION = r"(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)"
 
-# URL patterns (script src)
 LIB_URL = {
     "jquery":           re.compile(r"jquery[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "jquery-ui":        re.compile(r"jquery[.\-]?ui[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
-    "jquery-ui-alt":    re.compile(r"jquery/ui/.*?\.js\?.*v?" + _VERSION, re.I),  # catch jquery/ui/core.min.js
+    "jquery-ui-alt":    re.compile(r"jquery/ui/.*?\.js\?.*v?" + _VERSION, re.I),
     "bootstrap":        re.compile(r"bootstrap[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "angularjs":        re.compile(r"angular[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "lodash":           re.compile(r"lodash[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
@@ -73,7 +70,6 @@ LIB_URL = {
     "elementor":        re.compile(r"elementor[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
 }
 
-# In‑content patterns (script bodies, inline)
 LIB_CONTENT = {
     "jquery":           re.compile(r"(?:jQuery\s+v?" + _VERSION + r"|jquery\.fn\.jquery\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
     "jquery-ui":        re.compile(r"jQuery UI\s+v?" + _VERSION, re.I),
@@ -100,6 +96,9 @@ META_GENERATOR = {
     "drupal":    re.compile(r"Drupal\s+" + _VERSION, re.I),
     "laravel":   re.compile(r"Laravel\s+v?" + _VERSION, re.I),
 }
+
+# Headers to inspect for version info
+HEADER_NAMES = ["Server", "X-Powered-By", "X-Generator"]
 
 HEADER_PATTERNS = {
     "php":      re.compile(r"PHP/(\d+\.\d+\.\d+)"),
@@ -143,7 +142,7 @@ CSS_LINKS = {
 VERSION_FALLBACK = re.compile(r'(?:window\.)?(?:__VERSION__|\.version)\s*=\s*["\']' + _VERSION + r'["\']', re.I)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Real CVE Database (with active signature patterns)
+# Real CVE Database (Last verified: 2025-10)
 # ──────────────────────────────────────────────────────────────────────────────
 VULNERABILITIES = {
     "jquery": [
@@ -205,7 +204,9 @@ def _normalize_url(url: str) -> str:
 
 def _safe_version(v: str) -> Optional[Version]:
     try:
-        return Version(v)
+        # Clean npm semver prefixes
+        cleaned = re.sub(r'^[\^~>=<]', '', v.strip())
+        return Version(cleaned)
     except InvalidVersion:
         return None
 
@@ -237,11 +238,11 @@ async def _fetch_script(session, url: str, sem: asyncio.Semaphore, retries=2) ->
     return None
 
 def _best_url(urls: List[str], lib: str) -> Optional[str]:
-    """Pick the URL that contains the library name; otherwise return None."""
+    """Returns URL containing library name; fallback to first available."""
     for url in urls:
         if lib.lower() in url.lower():
             return url
-    return None
+    return urls[0] if urls else None   # fallback – preserves PoC
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Main audit
@@ -268,22 +269,24 @@ async def run(url: str) -> Dict[str, Any]:
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # 1. Meta generator tags
+            # 1. Meta generator
             for meta in soup.find_all("meta"):
                 content = meta.get("content", "")
                 extracted = _unified_version_extraction(content, META_GENERATOR)
                 for lib, ver in extracted.items():
                     all_findings.append({"library": lib, "version": ver, "source": "meta"})
 
-            # 2. HTTP headers
-            for hdr_name, pat in HEADER_PATTERNS.items():
-                val = resp_headers.get(hdr_name)
-                if val:
-                    m = pat.search(val)
+            # 2. HTTP headers – iterate over real headers (Server, X-Powered-By, …)
+            for hdr_name in HEADER_NAMES:
+                hdr_val = resp_headers.get(hdr_name, "")
+                if not hdr_val:
+                    continue
+                for lib, pat in HEADER_PATTERNS.items():
+                    m = pat.search(hdr_val)
                     if m:
-                        all_findings.append({"library": hdr_name, "version": m.group(1), "source": "header"})
+                        all_findings.append({"library": lib, "version": m.group(1), "source": "header"})
 
-            # 3. Cookies (presence only, no version)
+            # 3. Cookies
             set_cookie = resp_headers.get("Set-Cookie", "")
             for lib, hint in COOKIE_HINTS.items():
                 if hint.lower() in set_cookie.lower():
@@ -298,7 +301,6 @@ async def run(url: str) -> Dict[str, Any]:
                     script_urls.append(abs_url)
                     extracted_url = _unified_version_extraction(abs_url, LIB_URL)
                     for lib, ver in extracted_url.items():
-                        # Merge alternate jQuery UI pattern
                         if lib == "jquery-ui-alt":
                             lib = "jquery-ui"
                         all_findings.append({"library": lib, "version": ver, "source": "script_src", "url": abs_url})
@@ -311,15 +313,12 @@ async def run(url: str) -> Dict[str, Any]:
                 if data:
                     text = data.decode("utf-8", errors="replace")
                     script_contents[url] = text
-                    # versions from content
                     content_versions = _unified_version_extraction(text, LIB_CONTENT)
                     for lib, ver in content_versions.items():
                         all_findings.append({"library": lib, "version": ver, "source": "script_content", "url": url})
-                    # global variables
                     for lib, pat in GLOBAL_VAR.items():
                         if pat.search(text):
                             all_findings.append({"library": lib, "version": None, "source": "global_var", "url": url})
-                    # fallback version detection
                     fallback = VERSION_FALLBACK.search(text)
                     if fallback:
                         all_findings.append({"library": "unknown", "version": fallback.group(1), "source": "fallback", "url": url})
@@ -350,14 +349,16 @@ async def run(url: str) -> Dict[str, Any]:
                     pkg = json.loads(pkg_data)
                     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
                     for lib, ver in deps.items():
-                        all_findings.append({"library": lib, "version": ver, "source": "package.json"})
+                        # Clean version string (semver range)
+                        cleaned = re.sub(r'^[\^~>=<]', '', ver.strip())
+                        all_findings.append({"library": lib, "version": cleaned, "source": "package.json"})
                 except:
                     pass
 
     except Exception as e:
         return {"test_name": "frontend_libs_audit", "status": "error", "title": f"Error: {e}"}
 
-    # ── Merge duplicate findings (by library + version) with best URL ──────
+    # Merge duplicate findings (library, version) with best URL
     merged = {}
     for f in all_findings:
         lib = f["library"]
@@ -374,38 +375,34 @@ async def run(url: str) -> Dict[str, Any]:
             if url and url not in merged[key]["urls"]:
                 merged[key]["urls"].append(url)
 
-    # ── Clean up: merge "unknown" entries into known library if same version + URL ──
+    # Merge unknown fallbacks into known libraries (same version, overlapping URLs)
     unknown_keys = [(lib, ver) for (lib, ver) in merged.keys() if lib == "unknown"]
     for ulib, uver in unknown_keys:
-        unknown_entry = merged[(ulib, uver)]
+        unknown_entry = merged.get((ulib, uver))
+        if not unknown_entry:
+            continue
         unknown_urls = set(unknown_entry.get("urls", []))
         if not unknown_urls:
             continue
-        # Find a known library entry with the same version and overlapping URLs
         for (klib, kver), kentry in merged.items():
             if klib == "unknown" or kver != uver:
                 continue
             known_urls = set(kentry.get("urls", []))
             if known_urls & unknown_urls:
-                # Merge unknown into known
                 for src in unknown_entry["sources"]:
                     if src not in kentry["sources"]:
                         kentry["sources"].append(src)
-                # Remove unknown entry
-                del merged[(ulib, uver)]
+                merged.pop((ulib, uver), None)
                 break
 
-    # Assign best URL for each entry
+    # Assign best URL
     for entry in merged.values():
         urls = entry.get("urls", [])
-        if urls:
-            entry["url"] = _best_url(urls, entry["library"])
-        else:
-            entry["url"] = None
+        entry["url"] = _best_url(urls, entry["library"]) if urls else None
 
     findings = list(merged.values())
 
-    # ── Vulnerability assessment with active signature check ───────────────
+    # Vulnerability assessment with signature check
     evidence = []
     vuln_count = 0
     for entry in findings:
@@ -435,14 +432,13 @@ async def run(url: str) -> Dict[str, Any]:
 
         # Active signature verification
         sig_present = False
-        script_text = None
         if entry.get("url") and entry["url"] in script_contents:
             script_text = script_contents[entry["url"]]
             sig_present = bool(re.search(matched["sig"], script_text, re.IGNORECASE | re.DOTALL))
 
-        confidence = 95 if sig_present else 70 if script_text else 50
+        confidence = 95 if sig_present else 70 if entry.get("url") else 50
         cve_link = f"https://nvd.nist.gov/vuln/detail/{matched['cve']}"
-        curl_cmd = f"curl -s {entry['url']} -o vulnerable-{lib}-{ver_str}.js" if entry.get("url") else "No direct file URL available (version detected but file not confirmed)."
+        curl_cmd = f"curl -s {entry['url']} -o vulnerable-{lib}-{ver_str}.js" if entry.get("url") else "No direct file URL available"
 
         evidence.append({
             "library": lib,
