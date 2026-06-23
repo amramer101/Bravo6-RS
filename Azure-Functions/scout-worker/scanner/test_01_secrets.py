@@ -8,9 +8,13 @@ test_01_secrets.py – Bravo6 Ultimate Secrets Hunter (v5.0 Final)
   * Cloudflare token: requires 'cloudflare'/'cf_' in context, pattern refined
   * Vercel token: context must mention 'vercel', pattern tightened
   * Twilio & Algolia now have distinct prefixes (SK/AC for Twilio)
+  * High‑entropy ignored for encrypted-slate, csrf, nonce, analytics
 - atob/fromCharCode decoded secrets marked with decoded_from attribute
 - Secure defaults (ssl=True), connection limits, detailed logging
-- Real CVE-like vulnerability mapping (simulated with real IDs)
+- Detects Firebase config objects (apiKey + projectId)
+- Detects AWS4-HMAC-SHA256 and x-amz- headers
+- Forbidden sensitive files (403/401) reported with generic 403 check
+- Soft 404 pages ignored
 """
 
 import asyncio
@@ -43,6 +47,9 @@ SENSITIVE_PATHS = [
     "/.git/config", "/config/secrets.yml"
 ]
 
+# Generic non‑existent test path to check if server returns 403 for everything
+GENERIC_403_TEST_PATH = "/Bravo6-Nonexistent-Test-404"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # False‑positive filters (extended)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -61,6 +68,12 @@ KNOWN_TEST_PREFIXES = (
 )
 CONTEXT_KEYWORDS = ("key", "secret", "token", "auth", "credential",
                     "password", "api", "access")
+
+# Exclusion for high‑entropy fallback (avoid false positives like encrypted-slate)
+HIGH_ENTROPY_EXCLUDES = re.compile(
+    r'(encrypted.slate|csrf|nonce|analytics|tracking|gtag|google_tag)',
+    re.IGNORECASE
+)
 
 def _looks_like_placeholder(value: str) -> bool:
     if not value:
@@ -107,6 +120,17 @@ def _shannon_entropy(data: str) -> float:
         p = count / length
         ent -= p * math.log2(p)
     return ent
+
+# Soft 404 detection
+def _is_soft_404(html: str) -> bool:
+    """Return True if the page looks like a generic Not Found page."""
+    if not html:
+        return False
+    if re.search(r'<title>(?:404|Not\s+Found)</title>', html, re.IGNORECASE):
+        return True
+    if re.search(r'<h1>404</h1>|<p>The page you requested was not found</p>', html, re.IGNORECASE):
+        return True
+    return False
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Active Verification Functions (read‑only, with retry & custom User‑Agent)
@@ -201,7 +225,6 @@ VERIFIERS = {
     "SendGrid API Key":      _verify_sendgrid,
     "Mailgun API Key":       _verify_mailgun,
     "MapBox API Key":        _verify_mapbox,
-    # All others: None
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -235,21 +258,24 @@ SECRET_PATTERNS = [
     # Vercel – requires 'vercel' context (checked later)
     ("Vercel Token",            re.compile(r'[a-zA-Z0-9]{24}\.[a-zA-Z0-9_]{60,70}'), 0),
     # Cloudflare – requires 'cloudflare'/'cf_' context (checked later)
-    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0),  # refined: allowed underscores and dashes
+    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0),
     # MapBox
     ("MapBox API Key",          re.compile(r'(pk|sk)\.eyJ1Ijoi[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+'), 0),
-    # Google / Firebase (both same format)
+    # Google / Firebase
     ("Google API Key",          re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0),
     ("Firebase API Key",        re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0),
-    # Twilio – distinct prefix (SK/AC)
+    # Twilio
     ("Twilio Auth Token",       re.compile(r'SK[0-9a-fA-F]{32}'), 0),
     ("Twilio Account SID",      re.compile(r'AC[0-9a-fA-F]{32}'), 0),
-    # Algolia – Application ID + API Key (both 32‑char alnum)
-    ("Algolia Application ID",  re.compile(r'[A-Za-z0-9]{10}'), 0),  # placeholders, better to catch later
-    ("Algolia API Key",         re.compile(r'[A-Za-z0-9]{32}'), 0),  # context: algolia
+    # Algolia
+    ("Algolia Application ID",  re.compile(r'[A-Za-z0-9]{10}'), 0),
+    ("Algolia API Key",         re.compile(r'[A-Za-z0-9]{32}'), 0),
     # AWS
     ("AWS Access Key ID",       re.compile(r'AKIA[0-9A-Z]{16}'), 0),
     ("AWS Secret Access Key",   re.compile(r'(?i)aws.{0,20}secret.{0,20}["\']([A-Za-z0-9/+=]{40})["\']'), 1),
+    # AWS4 signing
+    ("AWS4-HMAC-SHA256",        re.compile(r'AWS4-HMAC-SHA256\s+Credential=([A-Z0-9]{16})/[0-9]+/[a-z0-9-]+/[a-z0-9]+/aws4_request'), 1),
+    ("AWS Signed Header",       re.compile(r'x-amz-[a-z0-9-]+:\s*([A-Za-z0-9+/=]{30,})'), 1),
     # Private Key
     ("Private Key",             re.compile(r'-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'), 0),
     # Database Connection
@@ -258,6 +284,12 @@ SECRET_PATTERNS = [
     ("Bearer Token",            re.compile(r'Bearer\s+([A-Za-z0-9\-_\.]+)'), 1),
     ("JWT Token",               re.compile(r'eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+'), 0),
 ]
+
+# Firebase config object (apiKey + projectId together)
+FIREBASE_CONFIG = re.compile(
+    r'apiKey\s*:\s*["\'](AIza[0-9A-Za-z\-_]{35})["\'][^}]*projectId\s*:\s*["\']([a-z0-9-]+)["\']',
+    re.DOTALL
+)
 
 # Entropy fallback (high entropy strings in credential context)
 ENTROPY_CANDIDATE = re.compile(r'["\'`]([A-Za-z0-9+/_\-=]{40,})["\'`]')
@@ -305,6 +337,8 @@ def _poc_command(secret_type: str, key: str, url: str = "") -> str:
         if "Secret" in secret_type:
             return f"aws sts get-caller-identity --secret-access-key {key} (needs Access Key)"
         return f"aws sts get-caller-identity --access-key-id {key} (needs Secret Key)"
+    if "AWS4" in secret_type:
+        return f"AWS4 signing key: {key}. Needs secret access key for full verification."
     return f"Manual verification for {secret_type}."
 
 def _risk_description(secret_type: str, verified: bool, note: str = "") -> str:
@@ -315,10 +349,9 @@ def _risk_description(secret_type: str, verified: bool, note: str = "") -> str:
     return f"High‑confidence pattern for {secret_type}; manual verification needed."
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Deobfuscation
+# Deobfuscation – enhanced to return method used
 # ──────────────────────────────────────────────────────────────────────────────
 def _try_decode_atob(text: str) -> Tuple[str, bool]:
-    """Returns (new text, whether decoding happened)."""
     atob_pattern = re.compile(r'atob\s*\(\s*(["\'])((?:(?!\1).)*)\1\s*\)', re.IGNORECASE)
     decoded_parts = []
     for m in atob_pattern.finditer(text):
@@ -346,18 +379,24 @@ def _decode_string_fromcharcode(js: str) -> Tuple[str, bool]:
         return js + "\n/* DECODED fromCharCode */\n" + "\n".join(decoded_parts), True
     return js, False
 
-def _deobfuscate(js_code: str) -> Tuple[str, bool]:
-    """Returns (deobfuscated text, whether any decoding occurred)."""
+def _deobfuscate(js_code: str) -> Tuple[str, bool, Optional[str]]:
+    """Returns (deobfuscated text, was_decoded, method)."""
     js, changed1 = _try_decode_atob(js_code)
     js, changed2 = _decode_string_fromcharcode(js)
-    return js, (changed1 or changed2)
+    methods = []
+    if changed1:
+        methods.append("atob")
+    if changed2:
+        methods.append("fromCharCode")
+    method = ", ".join(methods) if methods else None
+    return js, (changed1 or changed2), method
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Scanning core (single content block)
 # ──────────────────────────────────────────────────────────────────────────────
 async def _scan_content(content: str, location_fn, session: aiohttp.ClientSession,
                         is_script: bool, semaphore: asyncio.Semaphore,
-                        decoded_hint: bool = False) -> List[dict]:
+                        decoded_method: Optional[str] = None) -> List[dict]:
     findings = []
     matched_spans = []
     aws_access_keys: Dict[str, dict] = {}
@@ -383,7 +422,6 @@ async def _scan_content(content: str, location_fn, session: aiohttp.ClientSessio
 
             # ── Additional context‑based filters ──
             if label == "Cloudflare API Token":
-                # Must have 'cloudflare' or 'cf_' within 40 chars
                 ctx = content[max(0, start-40):start] + content[end:end+40]
                 if not re.search(r'(cloudflare|cf_)', ctx, re.IGNORECASE):
                     continue
@@ -400,7 +438,7 @@ async def _scan_content(content: str, location_fn, session: aiohttp.ClientSessio
                     continue
 
             # Generic high‑entropy requirements for ambiguous patterns
-            if _shannon_entropy(value) < 4.0 and label not in ("AWS Access Key ID",):
+            if _shannon_entropy(value) < 4.0 and label not in ("AWS Access Key ID", "AWS4-HMAC-SHA256", "AWS Signed Header"):
                 continue
 
             # ── AWS pair handling ──
@@ -429,7 +467,7 @@ async def _scan_content(content: str, location_fn, session: aiohttp.ClientSessio
             else:
                 verify_note = "No active verification for this secret type."
 
-            confidence = 100 if verified else 80 if label in ("Bearer Token", "JWT Token", "Database Connection", "Private Key", "AWS Secret Access Key", "AWS Access Key ID", "Heroku API Key", "Cloudflare API Token", "Vercel Token", "Supabase Key", "Docker Token", "npm Token") else 60
+            confidence = 100 if verified else 80 if label in ("Bearer Token", "JWT Token", "Database Connection", "Private Key", "AWS Secret Access Key", "AWS Access Key ID", "Heroku API Key", "Cloudflare API Token", "Vercel Token", "Supabase Key", "Docker Token", "npm Token", "AWS4-HMAC-SHA256", "AWS Signed Header") else 60
             severity = "critical" if verified else "high" if confidence >= 80 else "medium"
 
             line_no = _line_number(content, start)
@@ -449,8 +487,8 @@ async def _scan_content(content: str, location_fn, session: aiohttp.ClientSessio
             }
             if verify_response:
                 evidence["verification_response"] = verify_response[:300]
-            if decoded_hint:
-                evidence["decoded_from"] = "deobfuscation"
+            if decoded_method:
+                evidence["decoded_from"] = decoded_method
 
             findings.append(evidence)
             matched_spans.append((start, end))
@@ -473,6 +511,28 @@ async def _scan_content(content: str, location_fn, session: aiohttp.ClientSessio
                     })
                     break
 
+    # ── Firebase config detection ──
+    for match in FIREBASE_CONFIG.finditer(content):
+        apikey = match.group(1)
+        project_id = match.group(2)
+        start, end = match.start(), match.end()
+        if any(start < e and end > s for s, e in matched_spans):
+            continue
+        if not any(f["type"] == "Firebase API Key" and f["value_masked"] == _mask(apikey) for f in findings):
+            line_no = _line_number(content, start)
+            findings.append({
+                "type": "Firebase Configuration",
+                "location": location_fn(line_no),
+                "value_masked": f"apiKey={_mask(apikey)}, projectId={project_id}",
+                "verified": False,
+                "confidence": 70,
+                "severity": "medium",
+                "poc": f"Use Firebase SDK with project ID '{project_id}' to test access.",
+                "risk": "Firebase config exposed – may allow unauthorised access to Firestore/Storage.",
+                "context": _extract_context(content, start, end),
+            })
+        matched_spans.append((start, end))
+
     # ── Entropy fallback ──
     for match in ENTROPY_CANDIDATE.finditer(content):
         start, end = match.start(), match.end()
@@ -484,6 +544,10 @@ async def _scan_content(content: str, location_fn, session: aiohttp.ClientSessio
         if _shannon_entropy(candidate) < 5.0:
             continue
         if not ENTROPY_CONTEXT.search(content[max(0, start-30):start]):
+            continue
+        # Skip high‑entropy strings in excluded contexts (encrypted-slate, csrf, etc.)
+        ctx_window = content[max(0, start-50):start] + content[end:end+50]
+        if HIGH_ENTROPY_EXCLUDES.search(ctx_window):
             continue
         line_no = _line_number(content, start)
         findings.append({
@@ -541,12 +605,24 @@ def _find_risky_files(html, base_url):
                 abs_url = urljoin(base_url, val.strip())
                 if any(abs_url.endswith(ext) for ext in (".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) or "secret" in abs_url.lower():
                     risky.add(abs_url)
-    # also regex scan
+    # regex scan
     for m in re.finditer(r'https?://[^\s"\'<>]+', html):
         u = m.group(0)
         if any(u.endswith(ext) for ext in (".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) or "secret" in u.lower():
             risky.add(u)
     return list(risky)[:10]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Generic 403 test: if the server returns 403 for a non‑existent path, skip all 403
+# findings (to avoid false positives from servers that forbid everything).
+# ──────────────────────────────────────────────────────────────────────────────
+async def _server_returns_403_for_everything(session, base_url):
+    test_url = urljoin(base_url, GENERIC_403_TEST_PATH)
+    try:
+        _, status, _ = await _fetch_text(session, test_url, max_bytes=1024, timeout=5)
+        return status == 403
+    except:
+        return False
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Main entry point
@@ -570,14 +646,17 @@ async def run(url: str) -> Dict[str, Any]:
             if not html:
                 return {"test_name": "secrets_detection", "status": "warning", "title": "Could not fetch target", "evidence": []}
 
+            # Test if server returns 403 for non‑existent path
+            generic_403 = await _server_returns_403_for_everything(session, target)
+
             ext_urls, inline_scripts = _extract_scripts(html, target)
 
             # Scan inline scripts
             for idx, script in enumerate(inline_scripts):
                 resources_scanned += 1
-                deobf, was_decoded = _deobfuscate(script)
+                deobf, was_decoded, method = _deobfuscate(script)
                 loc_fn = lambda ln, i=idx: f"Inline script #{i+1} line {ln}"
-                f = await _scan_content(deobf, loc_fn, session, True, sem, decoded_hint=was_decoded)
+                f = await _scan_content(deobf, loc_fn, session, True, sem, decoded_method=method)
                 findings.extend(f)
 
             # Fetch and scan external JS
@@ -592,9 +671,9 @@ async def run(url: str) -> Dict[str, Any]:
                 resources_scanned += 1
                 scanned_urls.append(ext_urls[i])
                 filename = urlparse(ext_urls[i]).path.split("/")[-1] or "external.js"
-                deobf, was_decoded = _deobfuscate(js_content)
+                deobf, was_decoded, method = _deobfuscate(js_content)
                 loc_fn = lambda ln, fn=filename: f"{fn} line {ln}"
-                f = await _scan_content(deobf, loc_fn, session, True, sem, decoded_hint=was_decoded)
+                f = await _scan_content(deobf, loc_fn, session, True, sem, decoded_method=method)
                 findings.extend(f)
 
             # Scan raw HTML
@@ -607,8 +686,28 @@ async def run(url: str) -> Dict[str, Any]:
                 risky_urls.append(urljoin(target, path))
             risky_urls = list(set(risky_urls))
             for file_url in risky_urls:
-                content, status, _ = await _fetch_text(session, file_url, max_bytes=100*1024)
-                if content and status == 200:
+                content, status, error = await _fetch_text(session, file_url, max_bytes=100*1024)
+                if status == 403 or status == 401:
+                    # If server returns 403 for random path, skip all 403 findings
+                    if status == 403 and generic_403:
+                        continue
+                    filename = urlparse(file_url).path  # full path like "/.git/config"
+                    findings.append({
+                        "type": "Forbidden Sensitive File",
+                        "location": f"{filename} (HTTP {status})",
+                        "value_masked": file_url,
+                        "verified": False,
+                        "confidence": 70 if status == 403 else 60,
+                        "severity": "low",
+                        "poc": f"Check if file is accessible: {file_url}",
+                        "risk": f"Sensitive configuration file appears to exist but is forbidden (HTTP {status}).",
+                        "context": "",
+                    })
+                    resources_scanned += 1
+                    scanned_urls.append(file_url)
+                elif content and status == 200:
+                    if _is_soft_404(content):
+                        continue   # Ignore soft 404 pages
                     resources_scanned += 1
                     scanned_urls.append(file_url)
                     filename = urlparse(file_url).path.split("/")[-1] or "config"

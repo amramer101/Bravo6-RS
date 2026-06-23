@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-test_06_info_disclosure.py – Bravo6 Ultimate Info Disclosure Scanner (v8.4 – Polished)
+test_06_info_disclosure.py – Bravo6 Ultimate Info Disclosure Scanner (v8.5 – Final)
 ================================================================================
-Key fixes & enhancements:
-- _is_sensitive_content now returns False by default (stops false positives).
-- Added modern sensitive paths (.well-known, Firebase, Supabase, Vercel, Amplify).
-- Reduced backup name generation (fewer patterns, 3 years) to limit requests.
-- Optional entropy analysis for JS strings (detect unknown high-entropy secrets).
-- Basic error logging to stderr for debugging.
-- All strings/comments in English only.
+- _is_sensitive_content returns False by default (minimizes false positives).
+- Reduced backup name generation (fewer patterns) to limit requests.
+- JS entropy threshold raised to 5.0 (reduces noise from high-entropy strings).
+- Modern sensitive paths added (.well-known, Firebase, Supabase, Vercel, Amplify).
+- All core features: smart wordlist, soft 404, API enumeration, GraphQL check,
+  source map detection, leaked credentials, cloud bucket listing, etc.
+- Unified JSON output with scoring, context, and summary statistics.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ from bs4 import BeautifulSoup, Comment
 
 # ── Constants ──────────────────────────────────────────────────────────────
 SCANNER_NAME = "info_disclosure"
-USER_AGENT = "Bravo6-InfoDisclosure/8.4"
+USER_AGENT = "Bravo6-InfoDisclosure/8.5"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 HEAD_TIMEOUT = aiohttp.ClientTimeout(total=5)
 MAX_CONCURRENT = 8
@@ -81,12 +81,10 @@ async def retry_async(coro, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE
     raise last_exc
 
 def _log_error(msg: str):
-    """Print error to stderr for debugging."""
     print(f"[{SCANNER_NAME}] ERROR: {msg}", file=sys.stderr)
 
 # ── Shannon Entropy ────────────────────────────────────────────────────────
 def _entropy(s: str) -> float:
-    """Calculate Shannon entropy of a string. Higher values indicate randomness."""
     if not s:
         return 0.0
     prob = [float(s.count(c)) / len(s) for c in set(s)]
@@ -344,7 +342,6 @@ def _generate_backup_names(domain: str) -> List[str]:
     """Generate a reduced set of backup filenames to avoid excessive probing."""
     names = []
     base = domain.split('.')[0]
-    # Fewer patterns
     patterns = [
         f"{domain}", f"{base}", f"{base}_backup", f"backup_{base}",
         f"{base}-backup", f"db", f"database",
@@ -354,7 +351,6 @@ def _generate_backup_names(domain: str) -> List[str]:
     for pattern in patterns:
         for ext in BACKUP_EXTS:
             names.append(f"{pattern}{ext}")
-    # Date-based backups (only today's date)
     for ext in BACKUP_EXTS:
         names.append(f"{domain}_backup_{datetime.now().strftime('%Y%m%d')}{ext}")
     return names
@@ -472,11 +468,10 @@ async def _check_js_leaked_credentials(session, base_url, rate_limiter, findings
                         poc=f"Inspect {js_url}",
                         category="js"
                     ))
-                # Entropy check for any long strings that look random
-                # Find all quoted strings longer than 20 characters
+                # Entropy check for long strings (raised threshold to 5.0 to reduce noise)
                 for match in re.finditer(r'["\']([a-zA-Z0-9_\-+/=]{20,})["\']', content):
                     candidate = match.group(1)
-                    if _entropy(candidate) > 4.5:  # high randomness threshold
+                    if _entropy(candidate) > 5.0:   # was 4.5, raised to suppress false positives
                         findings.append(_make_finding(
                             title="High-entropy string detected (possible API key)",
                             description=f"High-entropy string: {candidate}",
