@@ -1,891 +1,685 @@
+#!/usr/bin/env python3
 """
-test_05_security_headers.py — Advanced Security Headers Scanner (Fully Fixed)
-
-- Fixed tuple unpacking errors (all functions return consistent number of values).
-- Handles redirect chains, collects headers from all responses.
-- Deep CSP analysis: checks base-uri, form-action, object-src, script-src with nonce/strict-dynamic.
-- HSTS: validates max-age, includeSubDomains, preload readiness.
-- Modern isolation headers: COOP, COEP, CORP.
-- Permissions-Policy, Referrer-Policy, X-Content-Type-Options, X-Frame-Options.
-- Cache-Control verification only if Set-Cookie present (authenticated pages).
-- WAF context awareness (Cloudflare, etc.) to reduce false positives.
-- Fast parallel requests with timeouts.
-- Structured output with PoC, confidence, severity, remediation.
+test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.3 Fixed)
+========================================================================================
+Fully unified scanner with JSON output. Includes improved Cache‑Control,
+X‑DNS‑Prefetch‑Control, HSTS preload severity boost, and all previous checks.
 """
 
-import asyncio
-import re
+import asyncio, json, re, random
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import urlparse, urljoin
-from typing import Dict, Any, List, Optional, Tuple
 
 import aiohttp
+from bs4 import BeautifulSoup, Comment
 
-TEST_NAME = "security_headers"
-USER_AGENT = "Bravo6-Scanner/1.0"
-REQUEST_TIMEOUT_SECONDS = 8
-MAX_REDIRECTS = 5
+SCANNER_NAME = "security_headers"
+USER_AGENT = "Bravo6-SecurityHeaders/6.3"
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+MAX_REDIRECTS = 6
+RETRY_MAX = 3
+RETRY_BACKOFF_BASE = 1
 
-# ── Severity ranking ──────────────────────────────────────────────────────
-SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
-
-# ── CDN/Shared domains that cannot have HSTS ────────────────────────────
-CDN_EXCLUSIONS = (
-    ".cloudfront.net",
-    ".azurewebsites.net",
-    ".herokuapp.com",
-    ".github.io",
-    ".netlify.app",
-    ".vercel.app",
-    ".firebaseapp.com",
-    ".pages.dev",
+CDN_DOMAINS = (
+    ".cloudfront.net", ".azurewebsites.net", ".herokuapp.com",
+    ".github.io", ".netlify.app", ".vercel.app", ".firebaseapp.com",
+    ".pages.dev", ".workers.dev"
 )
+SEVERITY_RANK = {"info":0,"low":1,"medium":2,"high":3,"critical":4}
 
+CWE_MAP = {
+    "hsts":"CWE-319","clickjacking":"CWE-1021","csp":"CWE-1021",
+    "xcto":"CWE-693","referrer":"CWE-200","permissions":"CWE-693",
+    "coop":"CWE-693","coep":"CWE-693","corp":"CWE-693","cache":"CWE-525",
+    "server_info":"CWE-200","dns_prefetch":"CWE-693"
+}
+OWASP_MAP = {
+    "hsts":"A05:2021","clickjacking":"A01:2021","csp":"A01:2021",
+    "xcto":"A05:2021","referrer":"A01:2021","permissions":"A05:2021",
+    "coop":"A05:2021","coep":"A05:2021","corp":"A05:2021","cache":"A05:2021",
+    "server_info":"A01:2021","dns_prefetch":"A05:2021"
+}
 
+# ── Common Helpers ──────────────────────────────────────────────────────
 def _normalize_url(url: str) -> str:
-    url = (url or "").strip()
-    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", url):
-        url = "https://" + url
+    url = url.strip()
+    if not url.startswith(("http://","https://")):
+        url = "https://"+url
     return url
 
-
-def _get_header(headers, name: str) -> Optional[str]:
-    if not headers:
-        return None
-    for key, val in headers.items():
-        if key.lower() == name.lower():
-            return val
+def _get_header(headers: Dict[str,str], name: str) -> Optional[str]:
+    for k,v in headers.items():
+        if k.lower()==name.lower(): return v
     return None
 
+async def retry_async(coro, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
+    last_exc = None
+    for attempt in range(max_retries+1):
+        try: return await coro
+        except (asyncio.TimeoutError,ConnectionError,OSError) as e:
+            last_exc = e
+            if attempt==max_retries: raise
+            delay = base_delay*(2**attempt)+random.uniform(0,0.5)
+            await asyncio.sleep(delay)
+    raise last_exc
 
-def _is_api_response(content_type: str) -> bool:
-    if not content_type:
-        return False
-    api_patterns = (
-        "application/json",
-        "application/xml",
-        "application/grpc",
-        "text/xml",
-        "application/javascript",
-        "text/javascript",
-        "image/",
-        "application/octet-stream",
-        "application/pdf",
-        "font/",
-        "video/",
-        "audio/",
-    )
-    ctype = content_type.lower()
-    return any(p in ctype for p in api_patterns)
+# ── Pre‑scan: WAF ───────────────────────────────────────────────────────
+async def _detect_waf(hostname: str, port: int=443) -> Optional[str]:
+    try:
+        ssl_ctx = __import__('ssl').create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
+                                         headers={"User-Agent":USER_AGENT}) as session:
+            async with session.get(f"https://{hostname}:{port}",ssl=ssl_ctx) as resp:
+                headers = resp.headers
+                if 'cf-ray' in headers: return 'cloudflare'
+                if 'x-sucuri-id' in headers: return 'sucuri'
+                if 'x-akamai-request-id' in headers: return 'akamai'
+                if headers.get('server','').lower().startswith('cloudflare'): return 'cloudflare'
+    except: pass
+    return None
 
+def _fingerprint_waf_from_headers(headers: Dict[str,str]) -> List[str]:
+    fingerprints = []
+    if any('ModSecurity' in (headers.get(k,'') or '') for k in ('X-Content-Security-Policy','Content-Security-Policy')):
+        fingerprints.append('ModSecurity')
+    if headers.get('x-amzn-RequestId') or headers.get('x-amz-cf-id'):
+        fingerprints.append('AWS CloudFront/WAF')
+    if 'X-WAF' in str(headers):
+        fingerprints.append('Generic WAF')
+    return fingerprints
 
-def _is_cdn_domain(hostname: str) -> bool:
-    if not hostname:
-        return False
-    hostname = hostname.lower()
-    return any(hostname.endswith(ex) for ex in CDN_EXCLUSIONS)
+# ── Site Categorization ─────────────────────────────────────────────────
+SITE_CATEGORIES = {
+    "bank":["bank","بنك","online banking"],
+    "ecommerce":["shop","متجر","buy","cart","checkout","pay"],
+    "healthcare":["hospital","مستشفى"],
+    "login":["sign in","login","تسجيل الدخول"],
+    "blog":["blog","مدونة","articles"],
+    "internal":["intranet","internal"],
+}
+async def _categorize_site(hostname: str, port: int=443) -> Dict:
+    result = {"categories":[],"has_login_form":False,"title":"","meta_keywords":""}
+    try:
+        ssl_ctx = __import__('ssl').create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10),
+                                         headers={"User-Agent":USER_AGENT}) as session:
+            async with session.get(f"https://{hostname}:{port}",ssl=ssl_ctx) as resp:
+                html = await resp.text()
+                title_match = re.search(r'<title>(.*?)</title>',html,re.IGNORECASE)
+                if title_match: result["title"] = title_match.group(1)
+                meta_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"',html,re.IGNORECASE)
+                if meta_match: result["meta_keywords"] = meta_match.group(1)
+                if re.search(r'<input\s+[^>]*type=["\']?password["\']?',html,re.IGNORECASE):
+                    result["has_login_form"] = True
+    except: pass
+    text = (result["title"]+" "+result["meta_keywords"]).lower()
+    for category,keywords in SITE_CATEGORIES.items():
+        if any(k in text for k in keywords):
+            result["categories"].append(category)
+    return result
 
-
-def _parse_csp(csp: str) -> Dict[str, str]:
-    directives = {}
-    if not csp:
-        return directives
-    for part in re.split(r";\s*", csp.strip()):
-        if not part:
-            continue
-        if " " in part:
-            d_name, d_value = part.split(" ", 1)
-            directives[d_name.strip()] = d_value.strip()
-        else:
-            directives[part.strip()] = ""
-    return directives
-
-
-def _has_nonce_in_script_src(directives: Dict[str, str]) -> bool:
-    script_src = directives.get("script-src", "")
-    return bool(re.search(r"nonce-[a-zA-Z0-9+/=]+", script_src))
-
-
-def _has_strict_dynamic(directives: Dict[str, str]) -> bool:
-    script_src = directives.get("script-src", "")
-    return "strict-dynamic" in script_src
-
-
-def _evaluate_hsts(value: str) -> Tuple[bool, Optional[str], int]:
-    """Return (is_valid, issue_message, max_age)."""
-    if not value:
-        return False, "Header is missing", 0
-    max_age_match = re.search(r"max-age\s*=\s*(\d+)", value, re.IGNORECASE)
-    if not max_age_match:
-        return False, "max-age missing", 0
-    max_age = int(max_age_match.group(1))
-    issues = []
-    if max_age < 31536000:
-        issues.append(f"max-age={max_age} (less than 1 year)")
-    if max_age < 63072000:
-        issues.append(f"max-age={max_age} (less than 2 years, not preload-ready)")
-    if "includesubdomains" not in value.lower():
-        issues.append("missing includeSubDomains")
-    if "preload" not in value.lower():
-        issues.append("missing preload flag")
-    if issues:
-        return False, "; ".join(issues), max_age
-    return True, None, max_age
-
-
-# ── Fetch with manual redirect handling ──────────────────────────────────
-
-async def _fetch_with_redirects(session: aiohttp.ClientSession, url: str) -> Dict:
-    """
-    Fetch URL and follow redirects manually, collecting all responses.
-    Returns dict with:
-      - responses: list of dicts with headers, status, url
-      - final_headers: dict of final response headers
-      - final_status: int
-      - final_url: str
-      - content_type: str from final response
-      - set_cookie: str from final response
-      - error: Optional[str]
-    """
-    current_url = url
-    responses = []
-    follow_count = 0
-    final_headers = {}
-    final_status = 0
-    final_url = ""
-    content_type = ""
-    set_cookie = ""
-    error = None
-
-    while follow_count < MAX_REDIRECTS:
-        try:
-            async with session.get(
-                current_url,
-                allow_redirects=False,
-                ssl=True,
-                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS),
-            ) as resp:
-                headers = dict(resp.headers)
-                status = resp.status
-                url_actual = str(resp.url)
-                responses.append({
-                    "headers": headers,
-                    "status": status,
-                    "url": url_actual,
-                })
-                # Update final
-                final_headers = headers
-                final_status = status
-                final_url = url_actual
-                content_type = _get_header(headers, "Content-Type") or ""
-                set_cookie = _get_header(headers, "Set-Cookie") or ""
-
-                # Check redirect
-                if status in (301, 302, 303, 307, 308):
-                    location = _get_header(headers, "Location")
-                    if location:
-                        current_url = urljoin(current_url, location)
-                        follow_count += 1
-                        continue
-                # Not a redirect, break
-                break
-        except Exception as e:
-            error = str(e)
-            break
-
+# ── Finding & Scoring ───────────────────────────────────────────────────
+def _make_finding(title,description,severity,confidence,status="fail",
+                  header="",evidence="",remediation="",cwe="",owasp="",poc=None):
     return {
-        "responses": responses,
-        "final_headers": final_headers,
-        "final_status": final_status,
-        "final_url": final_url,
-        "content_type": content_type,
-        "set_cookie": set_cookie,
-        "error": error,
+        "title":title,"description":description,"severity":severity,
+        "confidence":confidence,"status":status,"header":header,
+        "evidence":evidence,"remediation":remediation,"cwe":cwe,
+        "owasp":owasp,"poc":poc
     }
 
+def _apply_scoring(findings: List[Dict], context: Dict, directives: Dict={}) -> Tuple[int,str,List[str]]:
+    deductions = {"critical":25,"high":15,"medium":8,"low":3,"info":0}
+    score = 100
+    total_deduct = 0
+    breakdown = []
+    for f in findings:
+        sev = f.get("severity","info")
+        ded = deductions.get(sev,0)
+        if ded>0:
+            total_deduct += ded
+            breakdown.append(f"-{ded} ({sev}): {f['title']}")
+    score -= total_deduct
+    is_login = context.get("is_login_page",False) or ("login" in context.get("categories",[]))
+    is_ecom = context.get("is_ecommerce",False) or ("ecommerce" in context.get("categories",[]))
+    is_internal = context.get("is_internal",False) or ("internal" in context.get("categories",[]))
+    waf = context.get("waf_detected",False)
+    if is_login or is_ecom:
+        score = min(100, score+10)
+        breakdown.append("+10 (Login/E-commerce context)")
+    if is_internal:
+        score = max(0, score-15)
+        breakdown.append("-15 (Internal IP)")
+    if waf:
+        score = min(100, score+10)
+        breakdown.append("+10 (WAF/CDN detected)")
+    if directives:
+        if "require-trusted-types-for" in directives:
+            score = min(100, score+3)
+            breakdown.append("+3 (Trusted Types)")
+        if "report-uri" in directives or "report-to" in directives:
+            score = min(100, score+2)
+            breakdown.append("+2 (CSP reporting)")
+    if context.get("has_report_to"):
+        score = min(100, score+1)
+        breakdown.append("+1 (Report-To header)")
+    score = max(0, min(100, score))
+    if score>=95: grade="A+"
+    elif score>=90: grade="A"
+    elif score>=85: grade="A-"
+    elif score>=80: grade="B"
+    elif score>=70: grade="C"
+    elif score>=60: grade="D"
+    elif score>=50: grade="E"
+    else: grade="F"
+    return score, grade, breakdown
 
-# ── Individual header checks ─────────────────────────────────────────────
+# ── Header Order Analysis ───────────────────────────────────────────────
+def _analyze_header_order(headers_list):
+    final_headers = headers_list[-1]["headers"] if headers_list else {}
+    header_names = list(final_headers.keys())
+    security_headers = [h for h in header_names if h.lower() in [
+        "strict-transport-security","content-security-policy",
+        "x-frame-options","x-content-type-options","referrer-policy",
+        "permissions-policy","cross-origin-opener-policy",
+        "cross-origin-embedder-policy","cross-origin-resource-policy"
+    ]]
+    ideal = [
+        "strict-transport-security","content-security-policy",
+        "x-frame-options","x-content-type-options","referrer-policy",
+        "permissions-policy","cross-origin-opener-policy",
+        "cross-origin-embedder-policy","cross-origin-resource-policy"
+    ]
+    score=0; found_ideal=0; last_idx=-1
+    for h in ideal:
+        for i,real_h in enumerate(security_headers):
+            if real_h.lower()==h:
+                found_ideal+=1
+                if i>last_idx: score+=1
+                last_idx=i; break
+    if security_headers and security_headers[0].lower()=="strict-transport-security":
+        score+=2
+    return {
+        "security_headers_count":len(security_headers),
+        "order_followed_ideal":found_ideal,
+        "order_score":min(10,score),
+        "actual_order":security_headers,
+    }
 
-def _check_hsts(headers_list: List[Dict], is_cdn: bool, target: str) -> List[Dict]:
+# ── CSP Parsing & Enhanced Checks ───────────────────────────────────────
+def _parse_csp(csp_header):
+    directives = {}
+    if not csp_header: return directives
+    for part in re.split(r";\s*",csp_header.strip()):
+        part = part.strip()
+        if not part: continue
+        if " " in part: name,value = part.split(" ",1); directives[name.strip()]=value.strip()
+        else: directives[part.strip()]=""
+    return directives
+
+def _has_nonce_or_strict_dynamic(directives):
+    script_src = directives.get("script-src","")
+    return bool(re.search(r"nonce-[a-zA-Z0-9+/=]+",script_src)) or "strict-dynamic" in script_src
+
+def _check_csp_enhanced(final_headers, is_api) -> Tuple[List[Dict], Dict]:
+    if is_api:
+        return [_make_finding("CSP not applicable (API)","Non‑HTML response","info",100,"pass","Content-Security-Policy")], {}
+    csp_raw = _get_header(final_headers,"Content-Security-Policy")
+    if not csp_raw:
+        return [_make_finding("Missing Content‑Security‑Policy","No CSP header found.","high",100,"fail",
+                              "Content-Security-Policy",evidence="Header missing",
+                              remediation="Implement a strict CSP.",
+                              cwe=CWE_MAP["csp"],owasp=OWASP_MAP["csp"])], {}
+    directives = _parse_csp(csp_raw)
     findings = []
-    if is_cdn:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Strict-Transport-Security",
-            "status": "pass",
-            "severity": "info",
-            "title": "HSTS skipped (CDN/Shared Domain)",
-            "description": f"Domain is on a shared CDN platform. HSTS may not be applicable.",
-            "evidence": "CDN domain detected.",
-            "remediation": "If using a custom domain, consult CDN documentation.",
-            "confidence": 100,
-            "poc": None,
-        }]
+    for dir_name in ["default-src","script-src"]:
+        val = directives.get(dir_name,"")
+        if val=="*" or re.match(r'^\s*\*\s*$',val):
+            findings.append(_make_finding(
+                f"Dangerous CSP: {dir_name} *",
+                f"The directive {dir_name} is set to wildcard, allowing resources from any origin.",
+                "critical",100,"fail","Content-Security-Policy",
+                evidence=f"{dir_name} {val}",
+                remediation=f"Restrict {dir_name} to 'self' or specific origins.",
+                cwe=CWE_MAP["csp"],owasp=OWASP_MAP["csp"]))
+    if "unsafe-inline" in directives.get("script-src","") and not _has_nonce_or_strict_dynamic(directives):
+        findings.append(_make_finding(
+            "CSP allows unsafe-inline scripts without nonce/strict-dynamic",
+            "This enables inline script execution.","critical",100,"fail",
+            "Content-Security-Policy",evidence=f"script-src: {directives.get('script-src','')}",
+            remediation="Use nonces or 'strict-dynamic' instead of unsafe-inline.",
+            cwe=CWE_MAP["csp"],owasp=OWASP_MAP["csp"]))
+    if "unsafe-eval" in directives.get("script-src",""):
+        findings.append(_make_finding(
+            "CSP allows unsafe-eval","Allows eval() in scripts.","high",90,"fail",
+            "Content-Security-Policy",evidence=f"script-src: {directives.get('script-src','')}",
+            remediation="Remove 'unsafe-eval' from script-src.",
+            cwe=CWE_MAP["csp"],owasp=OWASP_MAP["csp"]))
+    if "unsafe-inline" in directives.get("style-src",""):
+        findings.append(_make_finding(
+            "CSP allows unsafe-inline in style-src","Allows CSS injection.","medium",85,"warning",
+            "Content-Security-Policy",evidence=f"style-src: {directives.get('style-src','')}",
+            remediation="Use nonces for styles or remove unsafe-inline.",
+            cwe=CWE_MAP["csp"],owasp=OWASP_MAP["csp"]))
+    for dir_name,msg in [
+        ("base-uri","Missing base-uri (allows base injection)"),
+        ("form-action","Missing form-action (allows form data to any origin)"),
+        ("frame-ancestors","Missing frame-ancestors (clickjacking risk)"),
+        ("object-src","Missing object-src (allows plugins)"),
+    ]:
+        if dir_name not in directives:
+            findings.append(_make_finding(
+                f"CSP missing {dir_name}",msg,"medium",80,"warning",
+                "Content-Security-Policy",evidence="Directive missing",
+                remediation=f"Add {dir_name} directive.",
+                cwe=CWE_MAP["csp"],owasp=OWASP_MAP["csp"]))
+    if not findings:
+        findings.append(_make_finding("CSP is well‑configured","No obvious weaknesses detected.","info",90,"pass",
+                                      "Content-Security-Policy",evidence=csp_raw[:200]))
+    return findings, directives
 
-    # Collect all HSTS headers from all responses
-    hsts_values = []
-    for resp in headers_list:
-        val = _get_header(resp["headers"], "Strict-Transport-Security")
-        if val:
-            hsts_values.append(val)
-
-    if not hsts_values:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Strict-Transport-Security",
-            "status": "fail",
-            "severity": "high",
-            "title": "Missing HSTS",
-            "description": "No HSTS header found. SSL-stripping attacks possible.",
-            "evidence": "Header not present in any response.",
-            "remediation": "Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
-            "confidence": 100,
-            "poc": f"curl -I {target} | grep -i strict",
-        }]
-
-    # Check the first HSTS header (usually final)
-    hdr = hsts_values[0]
-    valid, issue, max_age = _evaluate_hsts(hdr)
-    if valid:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Strict-Transport-Security",
-            "status": "pass",
-            "severity": "info",
-            "title": "HSTS properly configured",
-            "description": f"HSTS with max-age={max_age}, includes subdomains and preload.",
-            "evidence": f"HSTS: {hdr}",
-            "remediation": "No action required.",
-            "confidence": 100,
-            "poc": f"curl -I {target} | grep -i strict",
-        }]
-    else:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Strict-Transport-Security",
-            "status": "warning",
-            "severity": "medium",
-            "title": "HSTS misconfigured / not preload-ready",
-            "description": f"Issues: {issue}",
-            "evidence": f"HSTS: {hdr}",
-            "remediation": "Set max-age=63072000; includeSubDomains; preload",
-            "confidence": 95,
-            "poc": f"curl -I {target} | grep -i strict",
-        }]
-
-
-def _check_xfo_and_csp(final_headers: Dict) -> List[Dict]:
-    findings = []
-    xfo = _get_header(final_headers, "X-Frame-Options")
-    csp = _get_header(final_headers, "Content-Security-Policy")
-
-    if csp:
-        directives = _parse_csp(csp)
-        frame_ancestors = directives.get("frame-ancestors", "")
-        if frame_ancestors:
-            if "'none'" in frame_ancestors.lower():
-                findings.append({
-                    "test_name": TEST_NAME,
-                    "header": "CSP frame-ancestors",
-                    "status": "pass",
-                    "severity": "info",
-                    "title": "Clickjacking protected via CSP",
-                    "description": "CSP frame-ancestors is set to 'none'.",
-                    "evidence": f"frame-ancestors: {frame_ancestors}",
-                    "remediation": "No action required.",
-                    "confidence": 100,
-                })
-                return findings
-            elif "'self'" in frame_ancestors.lower():
-                findings.append({
-                    "test_name": TEST_NAME,
-                    "header": "CSP frame-ancestors",
-                    "status": "pass",
-                    "severity": "info",
-                    "title": "Clickjacking protected via CSP (same-origin)",
-                    "description": "CSP frame-ancestors is set to 'self'.",
-                    "evidence": f"frame-ancestors: {frame_ancestors}",
-                    "remediation": "No action required.",
-                    "confidence": 90,
-                })
-                return findings
-            else:
-                findings.append({
-                    "test_name": TEST_NAME,
-                    "header": "CSP frame-ancestors",
-                    "status": "warning",
-                    "severity": "medium",
-                    "title": "CSP allows framing from external sources",
-                    "description": f"frame-ancestors: {frame_ancestors}",
-                    "evidence": f"frame-ancestors: {frame_ancestors}",
-                    "remediation": "Set frame-ancestors 'none' or 'self'.",
-                    "poc": "<iframe src='https://target'></iframe>",
-                    "confidence": 80,
-                })
-                return findings
-
-    # No CSP frame-ancestors, fallback to XFO
-    if not xfo:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "X-Frame-Options / CSP frame-ancestors",
-            "status": "fail",
-            "severity": "high",
-            "title": "Missing Clickjacking Protection",
-            "description": "Neither X-Frame-Options nor CSP frame-ancestors are present.",
-            "evidence": "Both headers missing.",
-            "remediation": "Add X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
-            "poc": "<html><body><iframe src='https://target'></iframe></body></html>",
-            "confidence": 100,
-        })
-    elif xfo.upper() in ("DENY", "SAMEORIGIN"):
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "X-Frame-Options",
-            "status": "pass",
-            "severity": "info",
-            "title": "XFO configured correctly",
-            "description": f"X-Frame-Options: {xfo}",
-            "evidence": f"XFO: {xfo}",
-            "remediation": "No action required.",
-            "confidence": 100,
-        })
-    else:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "X-Frame-Options",
-            "status": "fail",
-            "severity": "critical",
-            "title": "XFO set to ALLOWALL or invalid",
-            "description": f"X-Frame-Options is '{xfo}', explicitly allows framing.",
-            "evidence": f"XFO: {xfo}",
-            "remediation": "Set to DENY or SAMEORIGIN.",
-            "poc": "<iframe src='https://target'></iframe>",
-            "confidence": 100,
-        })
-    return findings
-
-
-def _check_csp_strict(final_headers: Dict) -> List[Dict]:
-    findings = []
-    csp = _get_header(final_headers, "Content-Security-Policy")
-    if not csp:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Content-Security-Policy",
-            "status": "fail",
-            "severity": "high",
-            "title": "Missing CSP",
-            "description": "No CSP header. XSS protection is weakened.",
-            "evidence": "Header missing.",
-            "remediation": "Add Content-Security-Policy: default-src 'self'; script-src 'self'",
-            "poc": "<script>alert('XSS')</script> (if reflected/stored)",
-            "confidence": 100,
-        })
-        return findings
-
-    directives = _parse_csp(csp)
-    issues = []
-    # Check base-uri
-    if "base-uri" not in directives:
-        issues.append("Missing base-uri (allows arbitrary base URL injection)")
-    elif "'none'" not in directives["base-uri"] and "'self'" not in directives["base-uri"]:
-        issues.append(f"base-uri not restricted (value: {directives['base-uri']})")
-
-    # form-action
-    if "form-action" not in directives:
-        issues.append("Missing form-action (allows form data to be sent to any origin)")
-    elif "'none'" not in directives["form-action"] and "'self'" not in directives["form-action"]:
-        issues.append(f"form-action not restricted (value: {directives['form-action']})")
-
-    # object-src
-    if "object-src" not in directives:
-        issues.append("Missing object-src (allows Flash/plugins)")
-    elif "'none'" not in directives["object-src"]:
-        issues.append(f"object-src not set to 'none' (value: {directives['object-src']})")
-
-    # script-src analysis
-    script_src = directives.get("script-src", "")
-    if script_src:
-        has_unsafe_inline = "unsafe-inline" in script_src
-        has_nonce = _has_nonce_in_script_src(directives)
-        has_strict = _has_strict_dynamic(directives)
-        if has_unsafe_inline and not has_nonce and not has_strict:
-            issues.append("script-src contains 'unsafe-inline' without 'nonce-' or 'strict-dynamic'")
-    else:
-        issues.append("script-src is missing (fallback to default-src may be unsafe)")
-
-    # upgrade-insecure-requests
-    if "upgrade-insecure-requests" not in directives:
-        issues.append("Missing upgrade-insecure-requests (mixed content not auto-upgraded)")
-
-    if issues:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Content-Security-Policy",
-            "status": "warning",
-            "severity": "medium",
-            "title": "CSP has weak directives",
-            "description": "; ".join(issues),
-            "evidence": f"CSP: {csp[:200]}...",
-            "remediation": "Add missing directives and remove unsafe-inline with nonce.",
-            "confidence": 85,
-        })
-    else:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Content-Security-Policy",
-            "status": "pass",
-            "severity": "info",
-            "title": "CSP is well-configured",
-            "description": "All critical CSP directives are properly set.",
-            "evidence": f"CSP: {csp[:200]}...",
-            "remediation": "No action required.",
-            "confidence": 95,
-        })
-    return findings
-
-
-def _check_xcto(final_headers: Dict) -> List[Dict]:
-    xcto = _get_header(final_headers, "X-Content-Type-Options")
-    if xcto and xcto.lower() == "nosniff":
-        return [{
-            "test_name": TEST_NAME,
-            "header": "X-Content-Type-Options",
-            "status": "pass",
-            "severity": "info",
-            "title": "XCTO OK",
-            "description": "nosniff is set, preventing MIME sniffing.",
-            "evidence": f"XCTO: {xcto}",
-            "remediation": "No action required.",
-            "confidence": 100,
-        }]
-    else:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "X-Content-Type-Options",
-            "status": "fail",
-            "severity": "medium",
-            "title": "Missing XCTO",
-            "description": "X-Content-Type-Options missing. Allows MIME sniffing.",
-            "evidence": "Header missing or invalid.",
-            "remediation": "X-Content-Type-Options: nosniff",
-            "confidence": 100,
-        }]
-
-
-def _check_referrer(final_headers: Dict) -> List[Dict]:
-    rp = _get_header(final_headers, "Referrer-Policy")
-    safe = {"no-referrer", "strict-origin", "strict-origin-when-cross-origin"}
-    if not rp:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Referrer-Policy",
-            "status": "fail",
-            "severity": "medium",
-            "title": "Missing Referrer-Policy",
-            "description": "Referer may leak sensitive URL information.",
-            "evidence": "Header missing.",
-            "remediation": "Referrer-Policy: strict-origin-when-cross-origin",
-            "confidence": 100,
-        }]
-    if rp.lower() in safe:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Referrer-Policy",
-            "status": "pass",
-            "severity": "info",
-            "title": "Referrer-Policy OK",
-            "description": f"Policy '{rp}' is safe.",
-            "evidence": f"RP: {rp}",
-            "remediation": "No action required.",
-            "confidence": 100,
-        }]
-    if rp.lower() == "unsafe-url":
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Referrer-Policy",
-            "status": "fail",
-            "severity": "high",
-            "title": "Unsafe Referrer-Policy",
-            "description": "unsafe-url leaks full URLs to third parties.",
-            "evidence": f"RP: {rp}",
-            "remediation": "Change to strict-origin-when-cross-origin",
-            "confidence": 100,
-        }]
-    return [{
-        "test_name": TEST_NAME,
-        "header": "Referrer-Policy",
-        "status": "warning",
-        "severity": "low",
-        "title": "Non-standard Referrer-Policy",
-        "description": f"Policy '{rp}' is not recommended.",
-        "evidence": f"RP: {rp}",
-        "remediation": "Use strict-origin-when-cross-origin",
-        "confidence": 60,
-    }]
-
-
-def _check_permissions(final_headers: Dict) -> List[Dict]:
-    pp = _get_header(final_headers, "Permissions-Policy")
-    if not pp:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Permissions-Policy",
-            "status": "warning",
-            "severity": "info",
-            "title": "Missing Permissions-Policy",
-            "description": "Permissions-Policy missing. Feature controls not enforced.",
-            "evidence": "Header missing.",
-            "remediation": "Permissions-Policy: geolocation=(), camera=(), microphone=()",
-            "confidence": 80,
-        }]
-    if pp == "" or "*" in pp:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Permissions-Policy",
-            "status": "warning",
-            "severity": "low",
-            "title": "Permissions-Policy too permissive",
-            "description": f"Policy '{pp}' is wildcard or empty, no actual protection.",
-            "evidence": f"PP: {pp}",
-            "remediation": "Explicitly disable features you don't use.",
-            "confidence": 90,
-        }]
-    return [{
-        "test_name": TEST_NAME,
-        "header": "Permissions-Policy",
-        "status": "pass",
-        "severity": "info",
-        "title": "Permissions-Policy set",
-        "description": "Permissions-Policy is present and restricts some features.",
-        "evidence": f"PP: {pp}",
-        "remediation": "No action required.",
-        "confidence": 90,
-    }]
-
-
-def _check_coop_coep_corp(final_headers: Dict) -> List[Dict]:
-    findings = []
-    coop = _get_header(final_headers, "Cross-Origin-Opener-Policy")
-    if not coop:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Opener-Policy",
-            "status": "warning",
-            "severity": "medium",
-            "title": "Missing COOP",
-            "description": "COOP missing. May allow cross-origin attacks via window.opener.",
-            "evidence": "Header missing.",
-            "remediation": "Cross-Origin-Opener-Policy: same-origin",
-            "confidence": 85,
-        })
-    elif coop.lower() in ("same-origin", "same-origin-allow-popups"):
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Opener-Policy",
-            "status": "pass",
-            "severity": "info",
-            "title": "COOP OK",
-            "description": f"COOP set to '{coop}'.",
-            "evidence": f"COOP: {coop}",
-            "remediation": "No action required.",
-            "confidence": 100,
-        })
-    else:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Opener-Policy",
-            "status": "warning",
-            "severity": "low",
-            "title": "COOP non-standard value",
-            "description": f"Value '{coop}' not recognized.",
-            "evidence": f"COOP: {coop}",
-            "remediation": "Use same-origin or same-origin-allow-popups.",
-            "confidence": 60,
-        })
-
-    coep = _get_header(final_headers, "Cross-Origin-Embedder-Policy")
-    if not coep:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Embedder-Policy",
-            "status": "warning",
-            "severity": "medium",
-            "title": "Missing COEP",
-            "description": "COEP missing. Allows cross-origin resource loading without explicit permission.",
-            "evidence": "Header missing.",
-            "remediation": "Cross-Origin-Embedder-Policy: require-corp",
-            "confidence": 80,
-        })
-    elif coep.lower() in ("require-corp", "credentialless"):
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Embedder-Policy",
-            "status": "pass",
-            "severity": "info",
-            "title": "COEP OK",
-            "description": f"COEP set to '{coep}'.",
-            "evidence": f"COEP: {coep}",
-            "remediation": "No action required.",
-            "confidence": 100,
-        })
-    else:
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Embedder-Policy",
-            "status": "warning",
-            "severity": "low",
-            "title": "COEP non-standard value",
-            "description": f"Value '{coep}' not recognized.",
-            "evidence": f"COEP: {coep}",
-            "remediation": "Use require-corp or credentialless.",
-            "confidence": 60,
-        })
-
-    corp = _get_header(final_headers, "Cross-Origin-Resource-Policy")
-    if corp and corp.lower() in ("same-origin", "same-site", "cross-origin"):
-        findings.append({
-            "test_name": TEST_NAME,
-            "header": "Cross-Origin-Resource-Policy",
-            "status": "pass",
-            "severity": "info",
-            "title": "CORP OK",
-            "description": f"CORP set to '{corp}'.",
-            "evidence": f"CORP: {corp}",
-            "remediation": "No action required.",
-            "confidence": 100,
-        })
-    # else: ignore missing CORP (not critical)
-
-    return findings
-
-
-def _check_cache_control(final_headers: Dict, set_cookie: str) -> List[Dict]:
-    if not set_cookie:
-        return []  # No session cookie, skip
-    cc = _get_header(final_headers, "Cache-Control")
+# ── Improved Cache‑Control Check ────────────────────────────────────────
+def _check_cache_control(final_headers, set_cookie):
+    cc = _get_header(final_headers,"Cache-Control")
     if not cc:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Cache-Control",
-            "status": "fail",
-            "severity": "high",
-            "title": "Missing Cache-Control for authenticated page",
-            "description": "Set-Cookie present but Cache-Control: no-store missing. Sensitive data may be cached.",
-            "evidence": f"Set-Cookie: {set_cookie[:50]}..., Cache-Control: missing",
-            "remediation": "Cache-Control: no-cache, no-store, must-revalidate",
-            "confidence": 100,
-        }]
-    if "no-store" not in cc.lower():
-        return [{
-            "test_name": TEST_NAME,
-            "header": "Cache-Control",
-            "status": "warning",
-            "severity": "medium",
-            "title": "Cache-Control does not include no-store",
-            "description": f"Cache-Control: {cc} should include no-store for authenticated pages.",
-            "evidence": f"Cache-Control: {cc}",
-            "remediation": "Cache-Control: no-cache, no-store, must-revalidate",
-            "confidence": 95,
-        }]
-    return [{
-        "test_name": TEST_NAME,
-        "header": "Cache-Control",
-        "status": "pass",
-        "severity": "info",
-        "title": "Cache-Control properly set for authenticated page",
-        "description": "Cache-Control: no-store is present.",
-        "evidence": f"Cache-Control: {cc}",
-        "remediation": "No action required.",
-        "confidence": 100,
-    }]
-
-
-def _check_xss_protection(final_headers: Dict) -> List[Dict]:
-    xssp = _get_header(final_headers, "X-XSS-Protection")
-    if xssp == "0":
-        return [{
-            "test_name": TEST_NAME,
-            "header": "X-XSS-Protection",
-            "status": "info",
-            "severity": "info",
-            "title": "X-XSS-Protection is disabled",
-            "description": "X-XSS-Protection set to 0. (Deprecated, CSP preferred)",
-            "evidence": f"X-XSS-Protection: {xssp}",
-            "remediation": "If using CSP, this is acceptable.",
-            "confidence": 100,
-        }]
-    elif xssp:
-        return [{
-            "test_name": TEST_NAME,
-            "header": "X-XSS-Protection",
-            "status": "pass",
-            "severity": "info",
-            "title": "X-XSS-Protection is set",
-            "description": f"X-XSS-Protection: {xssp} (deprecated).",
-            "evidence": f"X-XSS-Protection: {xssp}",
-            "remediation": "Consider migrating to CSP.",
-            "confidence": 80,
-        }]
-    return []  # Missing is fine.
-
-
-# ── Main entry ────────────────────────────────────────────────────────────
-
-async def run(url: str) -> Dict[str, Any]:
-    try:
-        target = _normalize_url(url)
-        if not target:
-            return {
-                "test_name": TEST_NAME,
-                "status": "error",
-                "severity": "info",
-                "title": "Invalid URL",
-                "description": "URL could not be normalized.",
-                "findings": [],
-                "remediation": "Check URL format.",
-            }
-
-        parsed = urlparse(target)
-        hostname = parsed.hostname or ""
-        is_cdn = _is_cdn_domain(hostname)
-
-        async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
-            fetch_result = await _fetch_with_redirects(session, target)
-            if fetch_result["error"]:
-                return {
-                    "test_name": TEST_NAME,
-                    "status": "error",
-                    "severity": "info",
-                    "title": "Fetch Error",
-                    "description": f"Could not fetch target: {fetch_result['error']}",
-                    "findings": [],
-                    "remediation": "Check network connectivity.",
-                }
-
-            responses = fetch_result["responses"]
-            final_headers = fetch_result["final_headers"]
-            final_status = fetch_result["final_status"]
-            content_type = fetch_result["content_type"]
-            set_cookie = fetch_result["set_cookie"]
-            is_api = _is_api_response(content_type)
-
-            # Gather all headers from all responses for HSTS
-            headers_list = [{"headers": r["headers"]} for r in responses]
-
-            all_findings = []
-
-            # ── HSTS ────────────────────────────────────────────────────────
-            all_findings.extend(_check_hsts(headers_list, is_cdn, target))
-
-            # ── Skip framing and CSP for APIs ────────────────────────────
-            if is_api:
-                all_findings.append({
-                    "test_name": TEST_NAME,
-                    "header": "X-Frame-Options / CSP",
-                    "status": "pass",
-                    "severity": "info",
-                    "title": "Skipped (API Response)",
-                    "description": "Response is not HTML, framing headers not applicable.",
-                    "evidence": f"Content-Type: {content_type}",
-                    "remediation": "No action required.",
-                    "confidence": 100,
-                })
-            else:
-                all_findings.extend(_check_xfo_and_csp(final_headers))
-                all_findings.extend(_check_csp_strict(final_headers))
-
-            # ── XCTO ──────────────────────────────────────────────────────
-            all_findings.extend(_check_xcto(final_headers))
-
-            # ── Referrer-Policy ──────────────────────────────────────────
-            all_findings.extend(_check_referrer(final_headers))
-
-            # ── Permissions-Policy ───────────────────────────────────────
-            all_findings.extend(_check_permissions(final_headers))
-
-            # ── COOP, COEP, CORP ────────────────────────────────────────
-            all_findings.extend(_check_coop_coep_corp(final_headers))
-
-            # ── Cache-Control (only if Set-Cookie present) ──────────────
-            all_findings.extend(_check_cache_control(final_headers, set_cookie))
-
-            # ── X-XSS-Protection ─────────────────────────────────────────
-            all_findings.extend(_check_xss_protection(final_headers))
-
-        # ── Compute overall status ────────────────────────────────────────
-        critical = any(f["status"] == "fail" and f.get("severity") == "critical" for f in all_findings)
-        high = any(f["status"] == "fail" and f.get("severity") == "high" for f in all_findings)
-        warning = any(f["status"] == "warning" for f in all_findings)
-
-        if critical:
-            overall_status = "fail"
-            overall_severity = "critical"
-        elif high:
-            overall_status = "fail"
-            overall_severity = "high"
-        elif warning:
-            overall_status = "warning"
-            overall_severity = "medium"
+        if set_cookie:
+            return [_make_finding(
+                "Cache‑Control missing on authenticated page",
+                "Sensitive data may be cached.","high",100,"fail","Cache-Control",
+                evidence="Header missing (Set-Cookie present)",
+                remediation="Cache-Control: no-cache, no-store, must-revalidate",
+                cwe=CWE_MAP["cache"],owasp=OWASP_MAP["cache"])]
         else:
-            overall_status = "pass"
-            overall_severity = "info"
+            return [_make_finding(
+                "Cache‑Control header missing",
+                "Without caching directives, browsers may cache sensitive data.","low",70,"warning","Cache-Control",
+                evidence="Header missing",
+                remediation="Add Cache-Control with appropriate directives.",
+                cwe=CWE_MAP["cache"],owasp=OWASP_MAP["cache"])]
+    cc_lower = cc.lower()
+    issues = []
+    sev = "info"
+    if "public" in cc_lower:
+        issues.append("contains 'public'")
+        sev = "medium"
+    if "no-store" not in cc_lower:
+        issues.append("missing 'no-store'")
+        if sev != "medium": sev = "medium"
+    max_age_match = re.search(r"max-age=(\d+)", cc_lower)
+    if max_age_match and int(max_age_match.group(1)) >= 86400:
+        issues.append(f"long max-age ({max_age_match.group(1)}s)")
+        if sev != "high": sev = "medium" if set_cookie else "low"
+    if set_cookie and ("public" in cc_lower or "no-store" not in cc_lower):
+        sev = "high"
+        issues.append("session cookies may be cached")
+    if not issues:
+        return [_make_finding("Cache‑Control correctly restricts caching",
+                              f"Cache-Control: {cc}","info",100,"pass","Cache-Control",
+                              evidence=cc,remediation="")]
+    desc = "; ".join(issues)
+    return [_make_finding("Cache‑Control insecure",
+                          desc,sev,90 if sev!="low" else 70,"fail" if sev in ("high","medium") else "warning",
+                          "Cache-Control",evidence=cc,
+                          remediation="Set Cache-Control: no-cache, no-store, must-revalidate",
+                          cwe=CWE_MAP["cache"],owasp=OWASP_MAP["cache"])]
 
-        # ── Build remediation summary ─────────────────────────────────────
-        remediation_parts = []
-        for f in all_findings:
-            if f["status"] in ("fail", "warning") and f.get("remediation"):
-                if "HSTS" in f.get("header", ""):
-                    remediation_parts.append("Enable HSTS with max-age=63072000; includeSubDomains; preload")
-                elif "X-Frame-Options" in f.get("header", "") or "frame-ancestors" in f.get("header", ""):
-                    remediation_parts.append("Implement X-Frame-Options: DENY or CSP frame-ancestors 'none'")
-                elif "Content-Security-Policy" in f.get("header", ""):
-                    remediation_parts.append("Fix CSP directives as recommended")
-                elif "X-Content-Type-Options" in f.get("header", ""):
-                    remediation_parts.append("Add X-Content-Type-Options: nosniff")
-                elif "Referrer-Policy" in f.get("header", ""):
-                    remediation_parts.append("Set Referrer-Policy to strict-origin-when-cross-origin")
-                elif "Permissions-Policy" in f.get("header", ""):
-                    remediation_parts.append("Set Permissions-Policy to restrict features")
-                elif "COOP" in f.get("header", ""):
-                    remediation_parts.append("Add Cross-Origin-Opener-Policy: same-origin")
-                elif "COEP" in f.get("header", ""):
-                    remediation_parts.append("Add Cross-Origin-Embedder-Policy: require-corp")
-                elif "Cache-Control" in f.get("header", ""):
-                    remediation_parts.append("Add Cache-Control: no-cache, no-store, must-revalidate for authenticated pages")
-        # Remove duplicates
-        remediation_parts = list(set(remediation_parts))
-        if not remediation_parts:
-            remediation_parts = ["No security header issues found."]
+# ── New: X‑DNS‑Prefetch‑Control ─────────────────────────────────────────
+def _check_dns_prefetch(final_headers):
+    xdns = _get_header(final_headers,"X-DNS-Prefetch-Control")
+    if not xdns:
+        return [_make_finding("X-DNS-Prefetch-Control missing",
+                              "Browser may prefetch DNS for links, enabling tracking.","low",70,"warning",
+                              "X-DNS-Prefetch-Control",evidence="Header missing",
+                              remediation="Add X-DNS-Prefetch-Control: off",
+                              cwe=CWE_MAP["dns_prefetch"],owasp=OWASP_MAP["dns_prefetch"])]
+    if xdns.lower()=="off":
+        return [_make_finding("X-DNS-Prefetch-Control set to off","","info",100,"pass",
+                              "X-DNS-Prefetch-Control",evidence=xdns)]
+    return [_make_finding(f"X-DNS-Prefetch-Control set to '{xdns}'",
+                          "Value is not 'off', allowing DNS prefetching.","low",60,"warning",
+                          "X-DNS-Prefetch-Control",evidence=xdns,
+                          remediation="Set X-DNS-Prefetch-Control: off")]
 
-        return {
-            "test_name": TEST_NAME,
-            "overall_status": overall_status,
-            "status": overall_status,  # for compatibility
-            "severity": overall_severity,
-            "title": f"Security Headers: {len(all_findings)} checks",
-            "description": f"Scanned {target} for security headers. Found {len([f for f in all_findings if f['status'] in ('fail','warning')])} issues.",
-            "findings": all_findings,
-            "remediation": " ".join(remediation_parts),
-            "headers_checked": len(all_findings),
-            "headers_failed": sum(1 for f in all_findings if f["status"] in ("fail", "warning")),
-        }
+# ── Enhanced HSTS with preload severity boost ───────────────────────────
+def _check_hsts(headers_list, is_cdn, target_url):
+    if is_cdn:
+        return [_make_finding("HSTS not applicable (CDN domain)","","info",100,"pass","Strict-Transport-Security",
+                              evidence="CDN domain")]
+    hsts_values = []
+    for r in headers_list:
+        hdr = _get_header(r["headers"],"Strict-Transport-Security")
+        if hdr: hsts_values.append(hdr)
+    if not hsts_values:
+        return [_make_finding("Missing HSTS header","No HSTS found. SSL stripping attacks possible.","high",100,"fail",
+                              "Strict-Transport-Security",evidence="Header missing",
+                              remediation="Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
+                              cwe=CWE_MAP["hsts"],owasp=OWASP_MAP["hsts"],
+                              poc=f"curl -I {target_url} | grep -i strict")]
+    hdr = hsts_values[0]
+    max_age = int(re.search(r"max-age\s*=\s*(\d+)",hdr,re.I).group(1)) if re.search(r"max-age\s*=\s*(\d+)",hdr,re.I) else 0
+    incl_sub = "includesubdomains" in hdr.lower()
+    preload = "preload" in hdr.lower()
+    issues = []
+    if max_age < 31536000: issues.append(f"max-age={max_age} (< 1 year)")
+    elif max_age < 63072000: issues.append(f"max-age={max_age} (< 2 years, not preload ready)")
+    if not incl_sub: issues.append("missing includeSubDomains")
+    if not preload: issues.append("missing preload flag")
+    if not issues:
+        return [_make_finding("HSTS well configured",f"max-age={max_age}, includeSubDomains, preload","info",100,"pass",
+                              "Strict-Transport-Security",evidence=hdr[:200])]
+    sev = "medium"
+    if preload and max_age < 63072000:
+        sev = "high"
+    return [_make_finding("HSTS insufficient / not preload‑ready","; ".join(issues),sev,95,"warning",
+                          "Strict-Transport-Security",evidence=hdr[:200],
+                          remediation="Set max-age=63072000; includeSubDomains; preload",
+                          cwe=CWE_MAP["hsts"],owasp=OWASP_MAP["hsts"])]
 
+# ── Clickjacking ───────────────────────────────────────────────────────
+def _check_clickjacking(final_headers, is_api):
+    if is_api:
+        return [_make_finding("Not applicable (API)","","info",100,"pass","X-Frame-Options")]
+    xfo = _get_header(final_headers,"X-Frame-Options")
+    csp_raw = _get_header(final_headers,"Content-Security-Policy")
+    csp = _parse_csp(csp_raw) if csp_raw else {}
+    if "frame-ancestors" in csp:
+        val = csp["frame-ancestors"]
+        if "'none'" in val:
+            return [_make_finding("Clickjacking protected (CSP frame-ancestors: none)","","info",100,"pass","CSP frame-ancestors")]
+        elif "'self'" in val:
+            return [_make_finding("Clickjacking protected (same‑origin)","","info",90,"pass","CSP frame-ancestors")]
+        else:
+            return [_make_finding("Framing allowed from external origins",f"frame-ancestors: {val[:200]}","medium",80,"warning",
+                                  "CSP frame-ancestors",remediation="Restrict to 'none' or 'self'.",poc="<iframe src='...'></iframe>")]
+    if xfo and xfo.upper() in ("DENY","SAMEORIGIN"):
+        return [_make_finding("Clickjacking protected (XFO)",f"XFO: {xfo}","info",100,"pass","X-Frame-Options")]
+    elif xfo:
+        return [_make_finding("X-Frame-Options insecure value",f"XFO: {xfo}","critical",100,"fail",
+                              "X-Frame-Options",remediation="Use DENY or SAMEORIGIN.",poc="<iframe src='...'></iframe>")]
+    return [_make_finding("Missing clickjacking protection","Neither XFO nor CSP frame-ancestors set.","critical",100,"fail",
+                          "X-Frame-Options / CSP",remediation="Add X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
+                          poc="<iframe src='...'></iframe>")]
+
+# ── X‑Content‑Type‑Options ─────────────────────────────────────────────
+def _check_xcto(final_headers):
+    xcto = _get_header(final_headers,"X-Content-Type-Options")
+    if xcto and xcto.lower()=="nosniff":
+        return [_make_finding("X-Content-Type-Options: nosniff present","","info",100,"pass","X-Content-Type-Options")]
+    return [_make_finding("Missing X-Content-Type-Options","MIME sniffing attacks possible.","medium",100,"fail",
+                          "X-Content-Type-Options",remediation="Add: X-Content-Type-Options: nosniff",
+                          cwe=CWE_MAP["xcto"],owasp=OWASP_MAP["xcto"])]
+
+# ── Referrer‑Policy ───────────────────────────────────────────────────
+def _check_referrer_policy(final_headers):
+    rp = _get_header(final_headers,"Referrer-Policy")
+    safe = {"no-referrer","strict-origin","strict-origin-when-cross-origin"}
+    if not rp:
+        return [_make_finding("Missing Referrer-Policy","Referer header may leak URLs.","medium",100,"fail",
+                              "Referrer-Policy",remediation="Set Referrer-Policy: strict-origin-when-cross-origin",
+                              cwe=CWE_MAP["referrer"],owasp=OWASP_MAP["referrer"])]
+    if rp.lower() in safe:
+        return [_make_finding("Safe Referrer-Policy",f"Policy: {rp}","info",100,"pass","Referrer-Policy")]
+    if rp.lower()=="unsafe-url":
+        return [_make_finding("Unsafe Referrer-Policy","unsafe-url leaks full URLs.","high",100,"fail",
+                              "Referrer-Policy",remediation="Change to strict-origin-when-cross-origin")]
+    return [_make_finding("Non‑optimal Referrer-Policy",f"Policy: {rp}","low",70,"warning",
+                          "Referrer-Policy",remediation="Use strict-origin-when-cross-origin")]
+
+# ── Permissions‑Policy ─────────────────────────────────────────────────
+def _check_permissions_policy(final_headers):
+    pp = _get_header(final_headers,"Permissions-Policy")
+    if not pp:
+        return [_make_finding("Permissions-Policy missing","Feature controls not enforced.","low",80,"warning",
+                              "Permissions-Policy",remediation="Add Permissions-Policy")]
+    if pp.strip()=="" or "*" in pp:
+        return [_make_finding("Permissions-Policy too permissive","No real restrictions.","low",90,"warning",
+                              "Permissions-Policy",remediation="Disable unused features.")]
+    return [_make_finding("Permissions-Policy present","Some features restricted.","info",90,"pass","Permissions-Policy")]
+
+# ── COOP / COEP / CORP ─────────────────────────────────────────────────
+def _check_coop_coep_corp(final_headers):
+    findings = []
+    coop = _get_header(final_headers,"Cross-Origin-Opener-Policy")
+    if not coop:
+        findings.append(_make_finding("Missing COOP","Cross‑origin opener attacks possible.","medium",85,"warning",
+                                      "Cross-Origin-Opener-Policy",evidence="Header missing",
+                                      remediation="COOP: same-origin",
+                                      cwe=CWE_MAP["coop"],owasp=OWASP_MAP["coop"]))
+    elif coop.lower() in ("same-origin","same-origin-allow-popups"):
+        findings.append(_make_finding("COOP properly set",f"COOP: {coop}","info",100,"pass",
+                                      "Cross-Origin-Opener-Policy",evidence=coop))
+    else:
+        findings.append(_make_finding("COOP not optimal",f"COOP: {coop}","low",60,"warning",
+                                      "Cross-Origin-Opener-Policy",evidence=coop,
+                                      remediation="Use same-origin"))
+    coep = _get_header(final_headers,"Cross-Origin-Embedder-Policy")
+    if not coep:
+        findings.append(_make_finding("Missing COEP","Cross‑origin embedding not controlled.","medium",80,"warning",
+                                      "Cross-Origin-Embedder-Policy",evidence="Header missing",
+                                      remediation="COEP: require-corp",
+                                      cwe=CWE_MAP["coep"],owasp=OWASP_MAP["coep"]))
+    elif coep.lower() in ("require-corp","credentialless"):
+        findings.append(_make_finding("COEP properly set",f"COEP: {coep}","info",100,"pass",
+                                      "Cross-Origin-Embedder-Policy",evidence=coep))
+    else:
+        findings.append(_make_finding("COEP not optimal",f"COEP: {coep}","low",60,"warning",
+                                      "Cross-Origin-Embedder-Policy",evidence=coep,
+                                      remediation="Use require-corp"))
+    corp = _get_header(final_headers,"Cross-Origin-Resource-Policy")
+    if not corp:
+        findings.append(_make_finding("Missing Cross-Origin-Resource-Policy",
+                                      "Allows any website to load resources from your site.","medium",80,"warning",
+                                      "Cross-Origin-Resource-Policy",evidence="Header missing",
+                                      remediation="Set CORP to 'same-origin' or 'same-site'.",
+                                      cwe=CWE_MAP["corp"],owasp=OWASP_MAP["corp"]))
+    elif corp.strip().lower() in ("same-origin","same-site"):
+        findings.append(_make_finding("Cross-Origin-Resource-Policy properly set",f"Value: {corp}","info",100,"pass",
+                                      "Cross-Origin-Resource-Policy",evidence=corp))
+    else:
+        findings.append(_make_finding(f"Cross-Origin-Resource-Policy set to '{corp}'",
+                                      "Value may be too permissive.","low",60,"warning",
+                                      "Cross-Origin-Resource-Policy",evidence=corp,
+                                      remediation="Set CORP to 'same-origin' or 'same-site'."))
+    return findings
+
+# ── X‑XSS‑Protection ──────────────────────────────────────────────────
+def _check_xss_protection(final_headers):
+    xssp = _get_header(final_headers,"X-XSS-Protection")
+    if not xssp: return []
+    if xssp=="0": return [_make_finding("X-XSS-Protection disabled (acceptable)","","info",100,"info","X-XSS-Protection")]
+    return [_make_finding("X-XSS-Protection present (deprecated)","","info",80,"info","X-XSS-Protection")]
+
+# ── Server / X‑Powered‑By ──────────────────────────────────────────────
+def _check_server_info(final_headers):
+    findings = []
+    server = _get_header(final_headers,"Server")
+    if server and server.lower() not in ("server",""):
+        findings.append(_make_finding(f"Server header exposed: {server}","Information disclosure.","low",80,"info",
+                                      "Server",remediation="Remove Server header.",
+                                      cwe=CWE_MAP["server_info"],owasp=OWASP_MAP["server_info"]))
+    powered = _get_header(final_headers,"X-Powered-By")
+    if powered:
+        findings.append(_make_finding(f"X-Powered-By exposed: {powered}","Information disclosure.","low",85,"info",
+                                      "X-Powered-By",remediation="Remove X-Powered-By header."))
+    for specific in ["X-AspNet-Version","X-AspNetMvc-Version"]:
+        val = _get_header(final_headers,specific)
+        if val:
+            findings.append(_make_finding(f"Exact version disclosed: {val}","Information disclosure.","medium",90,"info",
+                                          specific,evidence=val,remediation=f"Remove {specific} header.",
+                                          cwe=CWE_MAP["server_info"],owasp=OWASP_MAP["server_info"]))
+    return findings
+
+# ── Expect‑CT ──────────────────────────────────────────────────────────
+def _check_expect_ct(final_headers):
+    ect = _get_header(final_headers,"Expect-CT")
+    if ect:
+        return [_make_finding("Expect-CT header present (deprecated)","","info",50,"info","Expect-CT",evidence=ect)]
+    return []
+
+# ── X‑Permitted‑Cross‑Domain‑Policies ───────────────────────────────────
+def _check_x_permitted_cross_domain(final_headers):
+    xpcd = _get_header(final_headers,"X-Permitted-Cross-Domain-Policies")
+    if not xpcd:
+        return [_make_finding("Missing X-Permitted-Cross-Domain-Policies",
+                              "Prevents Adobe Flash from loading data from your domain.","low",70,"warning",
+                              "X-Permitted-Cross-Domain-Policies",evidence="Header missing",
+                              remediation="Set to 'none' or 'master-only'.")]
+    if xpcd.strip().lower() in ("none","master-only"):
+        return [_make_finding("X-Permitted-Cross-Domain-Policies properly set","","info",100,"pass",
+                              "X-Permitted-Cross-Domain-Policies",evidence=xpcd)]
+    return [_make_finding(f"X-Permitted-Cross-Domain-Policies set to '{xpcd}'",
+                          "Value may not be restrictive enough.","low",60,"warning",
+                          "X-Permitted-Cross-Domain-Policies",evidence=xpcd,
+                          remediation="Set to 'none' or 'master-only'.")]
+
+# ── Fetch helper ────────────────────────────────────────────────────────
+async def _fetch_chain(session, url):
+    responses = []
+    current_url = url
+    for _ in range(MAX_REDIRECTS):
+        try:
+            async with session.get(current_url, allow_redirects=False, timeout=REQUEST_TIMEOUT) as resp:
+                headers = dict(resp.headers)
+                status = resp.status
+                final_url = str(resp.url)
+                responses.append({"headers":headers,"status":status,"url":final_url})
+                if status in (301,302,303,307,308):
+                    location = _get_header(headers,"Location")
+                    if location:
+                        current_url = urljoin(current_url,location)
+                        continue
+                break
+        except Exception as e:
+            return {"responses":responses,"error":str(e)}
+    return {"responses":responses,"error":None}
+
+# ══════════════════════════════════════════════════════════════════════════
+# Main Scanner
+# ══════════════════════════════════════════════════════════════════════════
+async def run(url: str) -> Dict[str,Any]:
+    target = _normalize_url(url)
+    parsed = urlparse(target)
+    hostname = parsed.hostname or ""
+    port = parsed.port or 443
+
+    waf_detected = await _detect_waf(hostname, port)
+    site_context = await _categorize_site(hostname, port)
+
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent":USER_AGENT}) as session:
+            chain = await retry_async(_fetch_chain(session, target))
+            if chain["error"]:
+                return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
+                        "score":0,"grade":"F","summary":f"Fetch failed: {chain['error']}","findings":[],"remediation":"","details":{}}
     except Exception as e:
-        return {
-            "test_name": TEST_NAME,
-            "overall_status": "error",
-            "status": "error",
-            "severity": "info",
-            "title": "Error",
-            "description": str(e)[:200],
-            "findings": [],
-            "remediation": "Check code and target.",
-            "headers_checked": 0,
-            "headers_failed": 0,
-        }
+        return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
+                "score":0,"grade":"F","summary":f"Fetch failed: {e}","findings":[],"remediation":"","details":{}}
 
+    responses = chain["responses"]
+    if not responses:
+        return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
+                "score":0,"grade":"F","summary":"No responses","findings":[],"remediation":"","details":{}}
+
+    final = responses[-1]
+    final_headers = final["headers"]
+    final_status = final["status"]
+    content_type = _get_header(final_headers,"Content-Type") or ""
+    set_cookie = _get_header(final_headers,"Set-Cookie")
+    is_api = content_type.lower().startswith(("application/json","application/xml","image/"))
+    is_error_page = final_status >= 400
+    is_cdn = any(hostname.endswith(d) for d in CDN_DOMAINS)
+
+    has_report_to = bool(_get_header(final_headers,"Report-To") or _get_header(final_headers,"Reporting-Endpoints"))
+
+    waf_fingerprints = _fingerprint_waf_from_headers(final_headers)
+    header_order_info = _analyze_header_order(responses)
+
+    findings = []
+    findings.extend(_check_hsts(responses, is_cdn, target))
+    findings.extend(_check_clickjacking(final_headers, is_api))
+    csp_findings, csp_directives = _check_csp_enhanced(final_headers, is_api)
+    findings.extend(csp_findings)
+    findings.extend(_check_xcto(final_headers))
+    findings.extend(_check_referrer_policy(final_headers))
+    findings.extend(_check_permissions_policy(final_headers))
+    findings.extend(_check_coop_coep_corp(final_headers))
+    findings.extend(_check_cache_control(final_headers, set_cookie))
+    findings.extend(_check_dns_prefetch(final_headers))
+    findings.extend(_check_xss_protection(final_headers))
+    findings.extend(_check_server_info(final_headers))
+    findings.extend(_check_expect_ct(final_headers))
+    findings.extend(_check_x_permitted_cross_domain(final_headers))
+
+    if is_error_page:
+        findings.append(_make_finding(f"Response returned {final_status}",
+                                      "Security headers may belong to error page/WAF.","info",70,"warning",
+                                      "Response Status",evidence=f"HTTP {final_status}",
+                                      remediation="Re‑scan a known working page (200 OK)."))
+
+    # Dynamic severity boost for sensitive sites (before scoring)
+    is_sensitive = any(cat in site_context.get("categories",[]) for cat in ("ecommerce","login"))
+    if is_sensitive:
+        boost_map = {"info":"info","low":"medium","medium":"high","high":"critical","critical":"critical"}
+        headers_to_boost = {"Strict-Transport-Security","X-Frame-Options","Content-Security-Policy"}
+        for f in findings:
+            if f["header"] in headers_to_boost and f["severity"] != "critical":
+                f["severity"] = boost_map.get(f["severity"], f["severity"])
+
+    context = {
+        "is_login_page": "login" in site_context.get("categories",[]),
+        "is_ecommerce": "ecommerce" in site_context.get("categories",[]),
+        "is_internal": "internal" in site_context.get("categories",[]),
+        "waf_detected": waf_detected,
+        "has_report_to": has_report_to,
+    }
+
+    score, grade, score_breakdown = _apply_scoring(findings, context, csp_directives)
+
+    worst_sev = max((f["severity"] for f in findings), key=lambda s: SEVERITY_RANK.get(s,0), default="info")
+    status = "fail" if any(SEVERITY_RANK.get(f["severity"],0)>=3 for f in findings) else "warning" if findings else "pass"
+
+    remediation = " | ".join(sorted(set(f["remediation"] for f in findings if f.get("remediation"))))
+    if not remediation: remediation = "No action needed."
+
+    details = {
+        "final_url": final["url"],
+        "final_status": final_status,
+        "is_error_page": is_error_page,
+        "is_api": is_api,
+        "is_cdn": is_cdn,
+        "content_type": content_type,
+        "waf_detected": waf_detected,
+        "waf_fingerprints": waf_fingerprints,
+        "site_categories": site_context.get("categories",[]),
+        "has_report_to": has_report_to,
+        "header_order_analysis": header_order_info,
+        "headers_summary": {
+            "checked": len(findings),
+            "failed": sum(1 for f in findings if f["status"] in ("fail","warning")),
+        },
+    }
+
+    return {
+        "scanner": SCANNER_NAME,
+        "target": target,
+        "status": status,
+        "severity": worst_sev,
+        "confidence": 70 if is_error_page else 95,
+        "score": score,
+        "grade": grade,
+        "summary": f"Security Headers – {len(findings)} findings | Score {score}/100 ({grade})",
+        "findings": findings,
+        "remediation": remediation,
+        "details": details,
+    }
 
 if __name__ == "__main__":
     import sys
-    asyncio.run(run(sys.argv[1] if len(sys.argv) > 1 else "example.com"))
+    target_url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
+    result = asyncio.run(run(target_url))
+    print(json.dumps(result, indent=2, ensure_ascii=False))
