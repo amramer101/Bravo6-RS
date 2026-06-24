@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
-test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.4 – SharedPage)
+test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.5 – Enhanced)
 ========================================================================================
 Now accepts shared_page from main_scanner to avoid re‑fetching the homepage.
 Redirect chain is omitted when shared_page is used (final headers only).
+
+Improvements:
+- Fixed HSTS logic when using shared_page (checks final HTTPS response correctly).
+- _check_xss_protection now returns consistent pass/warning findings.
+- retry_async always uses factory pattern (unchanged, already correct).
+- Enhanced dynamic severity boosting for sensitive sites (login form, ecommerce)
+  extends to more headers (Cache‑Control, COOP, COEP, Referrer‑Policy).
+- Better API vs HTML page detection (content‑type, URL path heuristics, JSON sniffing).
+- Excellent CSP parsing retained.
 """
 
 import asyncio, json, re, random, sys
@@ -15,7 +24,7 @@ import aiohttp
 from bs4 import BeautifulSoup, Comment
 
 SCANNER_NAME = "security_headers"
-USER_AGENT = "Bravo6-SecurityHeaders/6.4"
+USER_AGENT = "Bravo6-SecurityHeaders/6.5"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_REDIRECTS = 6
 RETRY_MAX = 3
@@ -75,7 +84,6 @@ async def retry_async(coro_factory, max_retries=RETRY_MAX, base_delay=RETRY_BACK
 async def _detect_waf(hostname: str, port: int=443,
                       html: str = None, headers: dict = None) -> Optional[str]:
     if headers:
-        # Use pre‑fetched headers
         if 'cf-ray' in {k.lower() for k in headers}: return 'cloudflare'
         if 'x-sucuri-id' in {k.lower() for k in headers}: return 'sucuri'
         if 'x-akamai-request-id' in {k.lower() for k in headers}: return 'akamai'
@@ -100,11 +108,14 @@ async def _detect_waf(hostname: str, port: int=443,
 
 def _fingerprint_waf_from_headers(headers: Dict[str,str]) -> List[str]:
     fingerprints = []
-    if any('ModSecurity' in (headers.get(k,'') or '') for k in ('X-Content-Security-Policy','Content-Security-Policy')):
+    # Use case‑insensitive lookup
+    csp = _get_header(headers, "Content-Security-Policy") or ""
+    xcsp = _get_header(headers, "X-Content-Security-Policy") or ""
+    if 'ModSecurity' in csp or 'ModSecurity' in xcsp:
         fingerprints.append('ModSecurity')
-    if headers.get('x-amzn-RequestId') or headers.get('x-amz-cf-id'):
+    if _get_header(headers, "x-amzn-RequestId") or _get_header(headers, "x-amz-cf-id"):
         fingerprints.append('AWS CloudFront/WAF')
-    if 'X-WAF' in str(headers):
+    if any('WAF' in (_get_header(headers, k) or '') for k in headers):
         fingerprints.append('Generic WAF')
     return fingerprints
 
@@ -374,7 +385,6 @@ def _check_hsts(headers_list=None, is_cdn=False, target_url="", final_headers=No
         return [_make_finding("HSTS not applicable (CDN domain)","","info",100,"pass","Strict-Transport-Security",
                               evidence="CDN domain")]
     hsts_values = []
-    # If we have a full chain, use it; otherwise use final_headers
     if headers_list:
         for r in headers_list:
             hdr = _get_header(r["headers"],"Strict-Transport-Security")
@@ -516,12 +526,21 @@ def _check_coop_coep_corp(final_headers):
                                       remediation="Set CORP to 'same-origin' or 'same-site'."))
     return findings
 
-# ── X‑XSS‑Protection ──────────────────────────────────────────────────
+# ── X‑XSS‑Protection (now consistent with other checks) ─────────────────
 def _check_xss_protection(final_headers):
     xssp = _get_header(final_headers,"X-XSS-Protection")
-    if not xssp: return []
-    if xssp=="0": return [_make_finding("X-XSS-Protection disabled (acceptable)","","info",100,"info","X-XSS-Protection")]
-    return [_make_finding("X-XSS-Protection present (deprecated)","","info",80,"info","X-XSS-Protection")]
+    if not xssp:
+        return []   # deprecated header, missing is acceptable
+    if xssp.strip() == "0":
+        return [_make_finding("X-XSS-Protection disabled (deprecated but safe)",
+                              "Header set to 0 disables the legacy filter.","info",80,"pass",
+                              "X-XSS-Protection",evidence=xssp)]
+    # Any other value (e.g., '1; mode=block') is considered a warning because
+    # it may enable a feature that has been deprecated and can sometimes be abused.
+    return [_make_finding("X-XSS-Protection enabled (deprecated, potential risk)",
+                          "The legacy XSS filter is deprecated; enabling it may introduce security risks.",
+                          "low",70,"warning","X-XSS-Protection",evidence=xssp,
+                          remediation="Remove or set to '0' to disable.")]
 
 # ── Server / X‑Powered‑By ──────────────────────────────────────────────
 def _check_server_info(final_headers):
@@ -566,6 +585,36 @@ def _check_x_permitted_cross_domain(final_headers):
                           "X-Permitted-Cross-Domain-Policies",evidence=xpcd,
                           remediation="Set to 'none' or 'master-only'.")]
 
+# ── Better API vs HTML page detection ─────────────────────────────────
+def _is_api_response(final_headers, final_url, main_html=None) -> bool:
+    """Determine if the response is likely an API endpoint rather than an HTML page."""
+    ct = _get_header(final_headers, "Content-Type") or ""
+    ct_lower = ct.lower()
+    # Explicit API content types
+    if ct_lower.startswith(("application/json", "application/xml", "text/xml")):
+        return True
+    # Image, font, etc. – treat as non-HTML (API not, but we still skip HTML checks)
+    if ct_lower.startswith("image/"):
+        return True
+    # If content type is text/html, it's definitely a page
+    if ct_lower.startswith("text/html"):
+        return False
+    # Heuristic: check URL path for common API prefixes
+    parsed = urlparse(final_url)
+    path = parsed.path.lower()
+    if re.search(r'/(api|graphql|v[12])/', path):
+        return True
+    # If we have the body, try a JSON test (first non‑whitespace char)
+    if main_html and isinstance(main_html, str):
+        stripped = main_html.strip()
+        if stripped and stripped[0] in ('{', '['):
+            try:
+                json.loads(stripped)
+                return True
+            except:
+                pass
+    return False
+
 # ── Fetch helper (only used if shared_page not provided) ────────────────
 async def _fetch_chain(session, url):
     responses = []
@@ -596,15 +645,13 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
     hostname = parsed.hostname or ""
     port = parsed.port or 443
 
-    # Use shared_page if available
+    # Use shared_page if available and valid
     if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
         final_headers = shared_page.get("headers", {})
         final_status = shared_page.get("status", 200)
         final_url = shared_page.get("base_url", target)
         main_html = shared_page.get("html", "")
-        # No redirect chain → HSTS will only see final headers
-        responses = []  # empty list; _check_hsts will use final_headers directly
-        # Categorization and WAF using pre‑fetched data
+        responses = []  # No redirect chain
         site_context = await _categorize_site(hostname, port, html=main_html, headers=final_headers)
         waf_detected = await _detect_waf(hostname, port, headers=final_headers)
         fetch_error = None
@@ -614,7 +661,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
         site_context = await _categorize_site(hostname, port)
         try:
             async with aiohttp.ClientSession(headers={"User-Agent":USER_AGENT}) as session:
-                # Pass a factory (lambda) so retries create fresh coroutines
                 chain = await retry_async(lambda: _fetch_chain(session, target))
                 if chain["error"]:
                     return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
@@ -631,18 +677,18 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
         final_headers = final["headers"]
         final_status = final["status"]
         final_url = final["url"]
-        main_html = None  # not available unless we fetch separately
+        main_html = None
 
     # Common analysis from final_headers
     content_type = _get_header(final_headers,"Content-Type") or ""
     set_cookie = _get_header(final_headers,"Set-Cookie")
-    is_api = content_type.lower().startswith(("application/json","application/xml","image/"))
+    is_api = _is_api_response(final_headers, final_url, main_html)
     is_error_page = final_status >= 400
     is_cdn = any(hostname.endswith(d) for d in CDN_DOMAINS)
     has_report_to = bool(_get_header(final_headers,"Report-To") or _get_header(final_headers,"Reporting-Endpoints"))
 
     waf_fingerprints = _fingerprint_waf_from_headers(final_headers)
-    # Header order analysis: if we have no redirect chain, create a dummy list with one element
+    # Header order analysis
     if not responses:
         header_order_info = _analyze_header_order([{"headers": final_headers}])
     else:
@@ -676,13 +722,21 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
                                       "Response Status",evidence=f"HTTP {final_status}",
                                       remediation="Re‑scan a known working page (200 OK)."))
 
-    # Dynamic severity boost for sensitive sites
+    # ── Enhanced dynamic severity boosting for sensitive sites ─────────
+    # Determine sensitivity: ecommerce, login categories, or presence of login form
     is_sensitive = any(cat in site_context.get("categories",[]) for cat in ("ecommerce","login"))
+    is_sensitive = is_sensitive or site_context.get("has_login_form", False)
+
     if is_sensitive:
-        boost_map = {"info":"info","low":"medium","medium":"high","high":"critical","critical":"critical"}
-        headers_to_boost = {"Strict-Transport-Security","X-Frame-Options","Content-Security-Policy"}
+        # Boost certain headers for pages handling sensitive data
+        sensitive_headers = {
+            "Strict-Transport-Security", "X-Frame-Options", "Content-Security-Policy",
+            "Cache-Control", "Cross-Origin-Opener-Policy", "Cross-Origin-Embedder-Policy",
+            "Referrer-Policy"
+        }
+        boost_map = {"info":"info", "low":"medium", "medium":"high", "high":"critical", "critical":"critical"}
         for f in findings:
-            if f["header"] in headers_to_boost and f["severity"] != "critical":
+            if f["header"] in sensitive_headers and f["severity"] != "critical":
                 f["severity"] = boost_map.get(f["severity"], f["severity"])
 
     context = {

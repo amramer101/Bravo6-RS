@@ -1,37 +1,53 @@
 #!/usr/bin/env python3
 """
-test_06_info_disclosure.py – Bravo6 Info Disclosure Scanner (v8.7 – Optimized for Azure Functions)
+test_06_info_disclosure.py – Bravo6 Info Disclosure Scanner (v12.0 – Noise‑Elimination Edition)
 ================================================================================================
-- FULLY utilizes shared_page from main_scanner: no duplicate fetches for site categorization,
-  WAF detection, technology fingerprinting, JS analysis.
-- Safe concurrency & rate for Azure Functions (2 GB RAM): 8 concurrent, 10 req/s.
-- Reuses BeautifulSoup object when available.
-- All previous improvements (403 blanket detection, CVE DB, entropy exclusion, etc.).
+- Zero noise from false "Forbidden file" findings: generic 403 bodies are completely ignored
+  at the per‑path level; blanket blocks produce a single aggregate info finding.
+- Extension‑based aggregation threshold reduced to 5; low‑sensitivity 403s inside the same
+  directory prefix are aggregated when >3.
+- Directory listing detection now verifies that the body:
+    • actually contains listing indicators (Index of /, Parent Directory, ...)
+    • is NOT the homepage
+    • contains file links (<a href=…>)
+- Path traversal detection additionally checks that the response differs from both the
+  homepage and the original directory’s body.
+- JS library vulnerability detection uses an extra confirmation pattern map;
+  generic signatures (e.g. 'animate') no longer trigger findings unless library‑specific
+  indicators are present – dramatically cuts duplicate JS false positives.
+- Soft‑404 detection strengthened with explicit 404‑phrase matching.
+- All other features (shared page, JS cache, tech fingerprinting, API enumeration,
+  cloud buckets) kept intact.
 """
 
 import asyncio
 import json
 import math
+import os
 import random
 import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Set
+from typing import Dict, List, Optional, Any, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup, Comment
 
-# ── Constants (tuned for Azure Functions) ─────────────────────────────────
+# ── Constants ──────────────────────────────────────────────────────────────
 SCANNER_NAME = "info_disclosure"
-USER_AGENT = "Bravo6-InfoDisclosure/8.7"
+USER_AGENT = "Bravo6-InfoDisclosure/12.0"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 HEAD_TIMEOUT = aiohttp.ClientTimeout(total=5)
-MAX_CONCURRENT = 8                 # مناسب لـ Azure 2GB
+MAX_CONCURRENT = 8
 RETRY_MAX = 3
 RETRY_BACKOFF_BASE = 1
-PATH_RATE = 10                     # 10 طلبات/ثانية
+PATH_RATE = 10
+
+# Aggregation thresholds (tightened)
+EXT_AGGREGATION_THRESHOLD = 5
+DIR_AGGREGATION_THRESHOLD = 3
 
 CWE_MAP = {
     "sensitive_file": "CWE-538",
@@ -67,11 +83,12 @@ def _get_header(headers: Dict[str, str], name: str) -> Optional[str]:
             return val
     return None
 
-async def retry_async(coro, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
+async def retry_async(func, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
+    """Factory pattern: func is a callable returning an awaitable."""
     last_exc = None
     for attempt in range(max_retries + 1):
         try:
-            return await coro
+            return await func()
         except (asyncio.TimeoutError, ConnectionError, OSError) as e:
             last_exc = e
             if attempt == max_retries:
@@ -90,10 +107,27 @@ def _entropy(s: str) -> float:
     prob = [float(s.count(c)) / len(s) for c in set(s)]
     return -sum(p * math.log2(p) for p in prob)
 
-# ── WAF Detection (now accepts optional html/headers) ──────────────────────
+# ── Version comparison ─────────────────────────────────────────────────────
+def _parse_version(version_str: str) -> Tuple[int, ...]:
+    parts = re.split(r'[.-]', version_str)
+    return tuple(int(p) for p in parts if p.isdigit())
+
+def _version_in_range(version: str, min_ver: Optional[str], max_ver: Optional[str]) -> bool:
+    if not version:
+        return False
+    try:
+        v = _parse_version(version)
+        if min_ver and v < _parse_version(min_ver):
+            return False
+        if max_ver and v >= _parse_version(max_ver):
+            return False
+        return True
+    except Exception:
+        return False
+
+# ── WAF Detection ─────────────────────────────────────────────────────────
 async def _detect_waf(hostname: str, port: int = 443,
                       html: str = None, headers: dict = None) -> Optional[str]:
-    # If headers are provided, check them directly without a request
     if headers:
         if 'cf-ray' in {k.lower() for k in headers}:
             return 'cloudflare'
@@ -103,19 +137,14 @@ async def _detect_waf(hostname: str, port: int = 443,
             return 'akamai'
         if headers.get('server', '').lower().startswith('cloudflare'):
             return 'cloudflare'
-        # If we have headers but no match, we can still return None.
-        # We do not need to make an extra request.
         return None
 
-    # Fallback: make a request (only if no pre‑fetched headers)
     try:
         ssl_ctx = __import__('ssl').create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=8),
-            headers={"User-Agent": USER_AGENT}
-        ) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
+                                         headers={"User-Agent": USER_AGENT}) as session:
             async with session.get(f"https://{hostname}:{port}", ssl=ssl_ctx) as resp:
                 headers = resp.headers
                 if 'cf-ray' in headers: return 'cloudflare'
@@ -126,7 +155,7 @@ async def _detect_waf(hostname: str, port: int = 443,
         _log_error(f"WAF detection failed: {e}")
     return None
 
-# ── Site Categorization (now accepts optional html/headers) ────────────────
+# ── Site Categorization ───────────────────────────────────────────────────
 SITE_CATEGORIES = {
     "bank": ["bank", "online banking"],
     "ecommerce": ["shop", "store", "buy", "cart", "checkout", "shopping", "amazon", "ebay", "etsy", "aliexpress"],
@@ -149,11 +178,9 @@ async def _categorize_site(hostname: str, port: int = 443,
         "is_api": False,
     }
 
-    # If we have pre‑fetched HTML, use it directly (no request)
     if html:
         text = html
     else:
-        # Fallback: fetch
         try:
             ssl_ctx = __import__('ssl').create_default_context()
             ssl_ctx.check_hostname = False
@@ -166,7 +193,6 @@ async def _categorize_site(hostname: str, port: int = 443,
             _log_error(f"Site categorization failed: {e}")
             return result
 
-    # Analyse the HTML (either from shared_page or freshly fetched)
     title_match = re.search(r'<title>(.*?)</title>', text, re.IGNORECASE)
     if title_match: result["title"] = title_match.group(1)
     meta_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"', text, re.IGNORECASE)
@@ -211,7 +237,7 @@ def _make_finding(
         "category": category,
     }
 
-# ── Risk Scoring Engine ────────────────────────────────────────────────────
+# ── Risk Scoring ───────────────────────────────────────────────────────────
 def calculate_score_v2(findings: List[Dict], context: Dict, waf_detected: bool) -> int:
     base = 100
     deductions = 0
@@ -286,6 +312,13 @@ BASE_SENSITIVE_PATHS = [
     ".well-known/security.txt", ".well-known/openid-configuration",
     "firebase.json", "supabase.json", "vercel.json", "amplify.yml",
     "aws-exports.js", "google-services.json",
+    "Dockerfile", "docker-compose.yml", ".gitlab-ci.yml", ".travis.yml",
+    "Jenkinsfile", ".github/workflows/", ".circleci/config.yml",
+    "Gemfile.lock", "yarn.lock", "pnpm-lock.yaml",
+    "server.js", "app.js", "main.py", "manage.py",
+    "db.sqlite3", "storage/logs/laravel.log",
+    ".next/", "out/", "staticfiles/",
+    "id_rsa", "id_rsa.pub", "authorized_keys",
 ]
 
 BACKUP_EXTS = [".zip", ".tar.gz", ".sql", ".bak", ".tar"]
@@ -316,6 +349,12 @@ TECH_SPECIFIC_PATHS = {
         "WEB-INF/web.xml", "WEB-INF/classes/", "actuator/health",
         "actuator/env", "swagger-ui.html",
     ],
+    "Flask": [
+        "app.py", "config.py", "requirements.txt", "instance/",
+    ],
+    "Ruby": [
+        "Gemfile", "config/database.yml", "config/secrets.yml",
+    ],
 }
 
 API_ENDPOINTS = [
@@ -326,17 +365,24 @@ API_ENDPOINTS = [
     "/graphql/console", "/swagger-resources", "/v2/api-docs",
 ]
 
-# ── Load CVE DB ───────────────────────────────────────────────
+# ── CVE DB ────────────────────────────────────────────────────────────────
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CVE_DB_PATH = os.path.join(SCRIPT_DIR, "cve_db.json")
+
 try:
-    with open("cve_db.json", "r", encoding="utf-8") as f:
+    with open(CVE_DB_PATH, "r", encoding="utf-8") as f:
         CVE_DB = json.load(f)
 except Exception:
     CVE_DB = {}
-    _log_error("Could not load cve_db.json – CVE detection disabled.")
+    _log_error(f"Could not load {CVE_DB_PATH} – CVE detection disabled.")
 
 # ── Soft 404 Detection ────────────────────────────────────────────────────
 def _is_soft_404(body: str, homepage_body: str) -> bool:
-    if not body or not homepage_body:
+    if not body:
+        return False
+    if re.search(r'(404\s*(Not Found|Page Not Found)|File not found|Page not found|Not Found)', body, re.IGNORECASE):
+        return True
+    if not homepage_body:
         return False
     if abs(len(body) - len(homepage_body)) <= max(len(homepage_body) * 0.1, 100):
         if body[:500] == homepage_body[:500]:
@@ -349,7 +395,7 @@ def _is_soft_404(body: str, homepage_body: str) -> bool:
                 return True
     return False
 
-# ── Leaky Bucket Rate Limiter ──────────────────────────────────────────────
+# ── Rate Limiters ──────────────────────────────────────────────────────────
 class LeakyBucketLimiter:
     def __init__(self, rate: float = PATH_RATE):
         self.min_interval = 1.0 / rate
@@ -358,13 +404,12 @@ class LeakyBucketLimiter:
 
     async def wait(self):
         async with self._lock:
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             wait_time = self.last_request + self.min_interval - now
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
             self.last_request = max(now, self.last_request + self.min_interval)
 
-# ── Rate Limiter (JS/API) ──────────────────────────────────────────────────
 class RateLimiter:
     def __init__(self, max_concurrent=8, min_delay=0.05, max_delay=0.2):
         self.sem = asyncio.Semaphore(max_concurrent)
@@ -403,28 +448,106 @@ def _generate_backup_names(domain: str) -> List[str]:
         names.append(f"{domain}_backup_{datetime.now().strftime('%Y%m%d')}{ext}")
     return names
 
-# ── JS domains to exclude from entropy analysis ────────────────────────────
+# ── JS exclusion list ──────────────────────────────────────────────────────
 ENTROPY_EXCLUDE_DOMAINS = [
     "googletagmanager.com", "google-analytics.com", "facebook.net",
     "cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com",
     "polyfill.io", "static.cloudflareinsights.com",
 ]
 
-# ── JS Vulnerability Checker ─────────────────────────────────────────────
+# ── JS Library confirmation patterns (reduce false positives) ─────────────
+LIB_CONFIRMATION = {
+    "jquery": [r'jquery', r'jQuery'],
+    "jquery-ui": [r'jquery-ui', r'jQuery UI'],
+    "lodash": [r'lodash', r'\_\.'],
+    "moment": [r'moment\.js', r'moment\('],
+    "angular": [r'angular\.module', r'ng-app'],
+    "vue": [r'Vue\.', r'createApp'],
+    "react": [r'React\.', r'react-dom'],
+    "bootstrap": [r'bootstrap\.js', r'data-toggle'],
+    "animate": [r'\.animate\s*\(', r'\.velocity', r'animate\.css'],
+}
+
+def _library_present(lib_name: str, content: str) -> bool:
+    """Check if the content contains at least one of the library's characteristic patterns."""
+    patterns = LIB_CONFIRMATION.get(lib_name.lower())
+    if patterns is None:
+        return True  # unknown library, trust the signature
+    return any(re.search(p, content, re.IGNORECASE) for p in patterns)
+
+# ── JS Vulnerability Checker ──────────────────────────────────────────────
 def _check_js_library_vulns(content: str, js_url: str, findings: List[Dict]):
     if not CVE_DB:
         return
     for lib, vulns in CVE_DB.items():
         for vuln in vulns:
-            if re.search(vuln["sig"], content):
+            sig = vuln.get("sig")
+            if not sig or not re.search(sig, content):
+                continue
+
+            # Extra confirmation: if the library's own patterns are absent, skip
+            if not _library_present(lib, content):
+                continue
+
+            version_pattern = vuln.get("version_pattern")
+            min_ver = vuln.get("min_version")
+            max_ver = vuln.get("max_version")
+            version_match = None
+
+            if version_pattern:
+                m = re.search(version_pattern, content)
+                if m:
+                    version_match = m.group(1) if m.lastindex else m.group(0)
+                else:
+                    findings.append(_make_finding(
+                        title=f"Vulnerable JS library: {lib} ({vuln['cve']}) (version unknown)",
+                        description=vuln["desc"] + " (could not determine version, flagging with low confidence)",
+                        severity=vuln["severity"],
+                        confidence=35,
+                        location=js_url,
+                        evidence=f"Signature: {sig}",
+                        remediation=f"Upgrade {lib} to {vuln.get('patch', 'latest')} or later.",
+                        cwe="CWE-1104",
+                        category="js"
+                    ))
+                    continue
+
+            if version_match and min_ver and max_ver:
+                if _version_in_range(version_match, min_ver, max_ver):
+                    findings.append(_make_finding(
+                        title=f"Vulnerable JS library: {lib} {version_match} ({vuln['cve']})",
+                        description=vuln["desc"],
+                        severity=vuln["severity"],
+                        confidence=85,
+                        location=js_url,
+                        evidence=f"Detected version {version_match} (vulnerable range {min_ver} - {max_ver})",
+                        remediation=f"Upgrade {lib} to {vuln.get('patch', 'latest')} or later.",
+                        cwe="CWE-1104",
+                        category="js"
+                    ))
+                else:
+                    pass
+            elif min_ver and max_ver and not version_match:
                 findings.append(_make_finding(
-                    title=f"Vulnerable JS library: {lib} ({vuln['cve']})",
+                    title=f"Potential vulnerable JS library: {lib} ({vuln['cve']}) (version not extracted)",
+                    description=vuln["desc"] + " (version extraction failed, possibly vulnerable)",
+                    severity=vuln["severity"],
+                    confidence=40,
+                    location=js_url,
+                    evidence=f"Signature: {sig}",
+                    remediation=f"Verify {lib} version manually; upgrade to {vuln.get('patch', 'latest')} if needed.",
+                    cwe="CWE-1104",
+                    category="js"
+                ))
+            else:
+                findings.append(_make_finding(
+                    title=f"Vulnerable JS library: {lib} ({vuln['cve']}) (unverified version)",
                     description=vuln["desc"],
                     severity=vuln["severity"],
-                    confidence=70,
+                    confidence=55,
                     location=js_url,
-                    evidence=f"Signature: {vuln['sig']}",
-                    remediation=f"Upgrade {lib} to {vuln['patch']} or later.",
+                    evidence=f"Signature: {sig}",
+                    remediation=f"Upgrade {lib} to {vuln.get('patch', 'latest')} or later.",
                     cwe="CWE-1104",
                     category="js"
                 ))
@@ -448,6 +571,18 @@ BROAD_SECRET_PATTERN = re.compile(
     r'(?:api[_-]?key|apikey|secret|password|token|auth)\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{8,})["\']?',
     re.IGNORECASE
 )
+
+async def _fetch_js_cached(session, url: str, rate_limiter, js_cache: Dict[str, Optional[str]]) -> Optional[str]:
+    if url in js_cache:
+        return js_cache[url]
+    resp = await rate_limiter.probe(session, url, 'GET')
+    if resp and resp.status == 200:
+        content = await resp.text(errors='replace')
+        js_cache[url] = content
+        return content
+    else:
+        js_cache[url] = None
+        return None
 
 async def _check_js_source_maps(session, base_url, html: str, rate_limiter, findings):
     if not html:
@@ -493,7 +628,8 @@ async def _check_js_source_maps(session, base_url, html: str, rate_limiter, find
     except Exception as e:
         _log_error(f"JS source map check failed: {e}")
 
-async def _check_js_leaked_credentials(session, base_url, html: str, rate_limiter, findings):
+async def _check_js_leaked_credentials(session, base_url, html: str, rate_limiter, findings,
+                                       js_cache: Dict[str, Optional[str]]):
     if not html:
         return
     try:
@@ -503,60 +639,61 @@ async def _check_js_leaked_credentials(session, base_url, html: str, rate_limite
             full = urljoin(base_url, script["src"])
             js_urls.add(full)
         for js_url in js_urls:
-            resp_js = await rate_limiter.probe(session, js_url, 'GET')
-            if resp_js and resp_js.status == 200:
-                content = await resp_js.text(errors='replace')
-                # High‑confidence secrets
-                for pat in HIGH_CONFIDENCE_SECRET_PATTERNS:
-                    matches = re.findall(pat, content)
-                    for m in matches:
-                        findings.append(_make_finding(
-                            title="Hardcoded credential / API key in JavaScript",
-                            description=f"High-confidence secret found: {m}",
-                            severity="critical", confidence=95,
-                            location=js_url, evidence=f"Matched: {m}",
-                            remediation="Remove all secrets from client-side code.",
-                            cwe="CWE-798", owasp="A07:2021",
-                            poc=f"Inspect {js_url}",
-                            category="js"
-                        ))
-                broad_matches = BROAD_SECRET_PATTERN.findall(content)
-                for match in broad_matches:
-                    val = match[0] if isinstance(match, tuple) else match
-                    if any(safe in val.lower() for safe in JS_SAFE_TOKENS):
-                        continue
-                    if any(kw in val.lower() for kw in JS_CODE_KEYWORDS):
-                        continue
-                    if len(val) < 40:
-                        continue
+            content = await _fetch_js_cached(session, js_url, rate_limiter, js_cache)
+            if not content:
+                continue
+
+            for pat in HIGH_CONFIDENCE_SECRET_PATTERNS:
+                for m in re.findall(pat, content):
                     findings.append(_make_finding(
-                        title="Potential credential in JavaScript",
-                        description=f"Broad pattern matched: {val}",
-                        severity="medium", confidence=50,
-                        location=js_url, evidence=f"Secret: {val}",
-                        remediation="Review code for hardcoded secrets.",
+                        title="Hardcoded credential / API key in JavaScript",
+                        description=f"High-confidence secret found: {m}",
+                        severity="critical", confidence=95,
+                        location=js_url, evidence=f"Matched: {m}",
+                        remediation="Remove all secrets from client-side code.",
                         cwe="CWE-798", owasp="A07:2021",
                         poc=f"Inspect {js_url}",
                         category="js"
                     ))
-                # Entropy check (exclude known domains)
-                parsed = urlparse(js_url)
-                if not any(domain in parsed.netloc for domain in ENTROPY_EXCLUDE_DOMAINS):
-                    for match in re.finditer(r'["\']([a-zA-Z0-9_\-+/=]{20,})["\']', content):
-                        candidate = match.group(1)
-                        if _entropy(candidate) > 5.0:
-                            findings.append(_make_finding(
-                                title="High-entropy string detected (possible API key)",
-                                description=f"High-entropy string: {candidate}",
-                                severity="medium", confidence=60,
-                                location=js_url, evidence=f"Entropy: {_entropy(candidate):.2f}",
-                                remediation="Verify if this is a hardcoded secret.",
-                                cwe="CWE-798", owasp="A07:2021",
-                                poc=f"Inspect {js_url}",
-                                category="js"
-                            ))
-                # Check for vulnerable JS libraries
-                _check_js_library_vulns(content, js_url, findings)
+            for match in BROAD_SECRET_PATTERN.finditer(content):
+                val = match.group(1)
+                if any(safe in val.lower() for safe in JS_SAFE_TOKENS):
+                    continue
+                if any(kw in val.lower() for kw in JS_CODE_KEYWORDS):
+                    continue
+                if len(val) < 40:
+                    continue
+                findings.append(_make_finding(
+                    title="Potential credential in JavaScript",
+                    description=f"Broad pattern matched: {val}",
+                    severity="medium", confidence=50,
+                    location=js_url, evidence=f"Secret: {val}",
+                    remediation="Review code for hardcoded secrets.",
+                    cwe="CWE-798", owasp="A07:2021",
+                    poc=f"Inspect {js_url}",
+                    category="js"
+                ))
+            parsed = urlparse(js_url)
+            if not any(domain in parsed.netloc for domain in ENTROPY_EXCLUDE_DOMAINS):
+                for match in re.finditer(r'["\']([a-zA-Z0-9_\-+/=]{20,})["\']', content):
+                    candidate = match.group(1)
+                    if _entropy(candidate) > 5.0:
+                        start = max(0, match.start() - 200)
+                        context_window = content[start:match.end() + 50]
+                        if not re.search(r'(api[_\s]?key|secret|token|auth|password|private[_\s]?key)',
+                                         context_window, re.IGNORECASE):
+                            continue
+                        findings.append(_make_finding(
+                            title="High-entropy string detected (possible API key)",
+                            description=f"High-entropy string: {candidate}",
+                            severity="medium", confidence=60,
+                            location=js_url, evidence=f"Entropy: {_entropy(candidate):.2f}",
+                            remediation="Verify if this is a hardcoded secret.",
+                            cwe="CWE-798", owasp="A07:2021",
+                            poc=f"Inspect {js_url}",
+                            category="js"
+                        ))
+            _check_js_library_vulns(content, js_url, findings)
     except Exception as e:
         _log_error(f"JS leaked credential check failed: {e}")
 
@@ -659,16 +796,31 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                 category="api"
             ))
 
-# ── Forbidden file sensitivity upgrade ──────────────────────────────────────
-def _is_highly_sensitive_path(path: str) -> str:
+# ══════════════════════════════════════════════════════════════════════════════
+# Forbidden File Sensitivity and Aggregation Logic
+# ══════════════════════════════════════════════════════════════════════════════
+HIGH_SENSITIVE_PATHS = [
+    "/.git/head", "/.env", "/wp-config.php", "/config.php", "/database.sql",
+    "/dump.sql", "/db.sql", "/credentials.json", "/secrets.", "/private.key",
+    "/id_rsa", "/id_rsa.pub", "/.pem", "/.htpasswd", "/config/database.yml",
+    "/config/secrets.yml", "/.env.backup",
+]
+
+MEDIUM_SENSITIVE_PATHS = [
+    ".sql", ".bak", "/backup", "/error.log", "/debug.log", "/.DS_Store",
+    "/web.config", "/composer.json", "/package.json", "/Gemfile.lock",
+    "/yarn.lock", "/config", "/settings.py", "/.env.example",
+]
+
+def _forbidden_sensitivity(path: str) -> Tuple[str, int]:
     path_lower = path.lower()
-    ultra = ['.git/head', '.env', 'wp-config.php', 'wp-config']
-    if any(u in path_lower for u in ultra):
-        return "high"
-    high = ['.env', 'backup', 'dump', '.sql', 'config.php', 'web.config', 'error.log', '.ds_store']
-    if any(h in path_lower for h in high):
-        return "medium"
-    return "low"
+    for high_pat in HIGH_SENSITIVE_PATHS:
+        if high_pat in path_lower:
+            return ("high", 90)
+    for med_pat in MEDIUM_SENSITIVE_PATHS:
+        if med_pat in path_lower:
+            return ("medium", 80)
+    return ("low", 60)
 
 def _detect_wordpress_from_findings(findings: List[Dict]) -> bool:
     for f in findings:
@@ -677,8 +829,8 @@ def _detect_wordpress_from_findings(findings: List[Dict]) -> bool:
             return True
     return False
 
-# ── Fetch generic 403 body (extension‑aware) ───────────────────────────────
-async def _fetch_generic_403_body(session, base_url: str, limiter: LeakyBucketLimiter, ext: str = ".html") -> Optional[str]:
+async def _fetch_generic_403_body(session, base_url: str, limiter: LeakyBucketLimiter,
+                                   ext: str = ".html") -> Optional[str]:
     random_path = f"/nonexistent-{random.randint(10000,99999)}{ext}"
     url = urljoin(base_url, random_path)
     await limiter.wait()
@@ -698,6 +850,16 @@ async def _fetch_body(session, url: str) -> Optional[str]:
     except Exception as e:
         _log_error(f"Failed to fetch body for {url}: {e}")
     return None
+
+def _body_matches_generic(body: str, generic_body: Optional[str]) -> bool:
+    if not generic_body or not body:
+        return False
+    b_stripped = body.strip()
+    g_stripped = generic_body.strip()
+    if abs(len(b_stripped) - len(g_stripped)) <= max(len(g_stripped) * 0.1, 50):
+        if b_stripped == g_stripped:
+            return True
+    return False
 
 def _is_robots_sensitive(body: str) -> bool:
     sensitive_patterns = [r'admin', r'backup', r'config', r'\.git', r'\.env', r'wp-admin', r'login', r'dashboard']
@@ -733,8 +895,41 @@ def _is_sensitive_content(path: str, body: str) -> bool:
         return True
     return False
 
+def _is_directory_listing(body: str, homepage_body: str) -> bool:
+    """Real directory listing check – must contain listing indicators,
+       must NOT be the homepage, and must contain file links."""
+    if not body or not homepage_body:
+        return False
+    listing_indicators = [
+        "Index of /", "Parent Directory", "<title>Index of",
+        '<h1>Index of', "Directory Listing"
+    ]
+    if not any(ind in body for ind in listing_indicators):
+        return False
+    # Must not be the same as homepage
+    if body.strip() == homepage_body.strip():
+        return False
+    if body[:500] == homepage_body[:500] and len(body) == len(homepage_body):
+        return False
+    # Must contain at least one file link
+    if not re.search(r'<a\s+href="[^"]*"[^>]*>', body, re.IGNORECASE):
+        return False
+    return True
+
+def _is_real_path_traversal(body: str, homepage_body: str, orig_dir_body: Optional[str]) -> bool:
+    """Confirm that the body is truly a path traversal result and not the homepage."""
+    if not body or not homepage_body:
+        return False
+    if body[:500] == homepage_body[:500]:
+        return False
+    if orig_dir_body and body[:300] == orig_dir_body[:300]:
+        return False
+    if "Parent Directory" in body or "Index of" in body:
+        return True
+    return False
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Main Scanner – FULLY SHARED PAGE
+# Main Scanner
 # ══════════════════════════════════════════════════════════════════════════════
 async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     target = _normalize_url(url)
@@ -748,26 +943,24 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     tech_stack: Set[str] = set()
     rate_limiter = RateLimiter(max_concurrent=MAX_CONCURRENT)
 
-    # ── Use shared_page or fetch once ──────────────────────────────────────
+    # ── Shared page or fresh fetch ───────────────────────────────────────
     if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
         main_body = shared_page["html"]
         main_headers = shared_page["headers"]
-        # Optionally reuse soup if available (saves parsing time)
         soup = shared_page.get("soup")
         if soup is None:
             soup = BeautifulSoup(main_body, "html.parser")
-        # Site categorization & WAF detection directly from shared data
         site_context = await _categorize_site(hostname, port, html=main_body, headers=main_headers)
         waf_detected = await _detect_waf(hostname, port, headers=main_headers)
+        js_cache = shared_page.get("js_cache", {})
     else:
-        # Fallback: fetch everything ourselves (kept for standalone use)
         connector = aiohttp.TCPConnector(ssl=True, limit=MAX_CONCURRENT + 5)
         async with aiohttp.ClientSession(
             timeout=REQUEST_TIMEOUT,
             headers={"User-Agent": USER_AGENT},
             connector=connector
         ) as session:
-            main_resp = await retry_async(rate_limiter.probe(session, target, 'GET'))
+            main_resp = await retry_async(lambda: rate_limiter.probe(session, target, 'GET'))
             if main_resp is None or main_resp.status != 200:
                 return {
                     "scanner": SCANNER_NAME,
@@ -787,8 +980,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             soup = BeautifulSoup(main_body, "html.parser")
             site_context = await _categorize_site(hostname, port, html=main_body, headers=main_headers)
             waf_detected = await _detect_waf(hostname, port, headers=main_headers)
-        # Note: session from fallback is closed here; we'll open a new one for the rest.
-        # In the shared_page path we can directly proceed with a new session below.
+            js_cache = {}
 
     site_context["is_api"] = hostname.startswith("api.") or "/api/" in parsed.path
 
@@ -799,7 +991,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             connector=aiohttp.TCPConnector(ssl=True, limit=MAX_CONCURRENT + 10)
         ) as session:
 
-            # ── Passive technology fingerprint ────────────────────────────
+            # ── Passive technology fingerprint ──────────────────────────
             for header_name, patterns in HEADER_FINGERPRINTS.items():
                 val = _get_header(main_headers, header_name)
                 if val:
@@ -841,9 +1033,8 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         category="config"
                     ))
 
-            # ── HTML meta / comments (using soup already built) ────────────
+            # ── HTML meta / comments ────────────────────────────────────
             if main_body:
-                # Reuse soup if already created, else parse
                 if soup is None:
                     soup = BeautifulSoup(main_body, "html.parser")
                 for meta in soup.find_all("meta", attrs={"name": "generator"}):
@@ -884,7 +1075,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             category="passive"
                         ))
 
-            # Build smart wordlist
+            # Build wordlist
             all_paths = set(BASE_SENSITIVE_PATHS)
             for bn in _generate_backup_names(domain):
                 all_paths.add(bn)
@@ -902,112 +1093,195 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 if body:
                     generic_403_by_ext[ext] = body
 
-            # Probe paths
-            homepage_length = len(main_body) if main_body else 0
-            sem = asyncio.Semaphore(MAX_CONCURRENT)
-            raw_403_findings = []
+            forbidden_candidates = []
+            raw_403_by_ext = []
 
             async def probe_path(path):
-                await path_limiter.wait()
-                async with sem:
-                    full_url = urljoin(base_url, path)
-                    try:
-                        async with session.head(full_url, timeout=HEAD_TIMEOUT, allow_redirects=True) as head_resp:
-                            status = head_resp.status
-                    except Exception:
-                        return
-                    if status == 200:
-                        body = await _fetch_body(session, full_url)
-                        if body:
-                            if main_body and _is_soft_404(body, main_body):
-                                return
-                            if path == "robots.txt":
-                                if _is_robots_sensitive(body):
-                                    findings.append(_make_finding(
-                                        title="robots.txt exposes sensitive paths",
-                                        description="robots.txt contains disallowed admin/backup paths.",
-                                        severity="medium", confidence=90,
-                                        location=path, evidence=body[:200],
-                                        remediation="Review robots.txt and remove sensitive entries.",
-                                        category="config"
-                                    ))
-                                return
-                            if path == "sitemap.xml":
-                                if "<urlset" not in body and "<sitemapindex" not in body:
-                                    findings.append(_make_finding(
-                                        title="Suspicious sitemap.xml",
-                                        description="File exists but lacks standard sitemap structure.",
-                                        severity="low", confidence=50,
-                                        location=path, evidence=body[:300],
-                                        remediation="Check if this file is intentionally exposed.",
-                                        category="config"
-                                    ))
-                                return
-                            if _is_sensitive_content(path, body):
-                                sev, conf, risk = "critical", 100, "Sensitive file exposed and verified."
-                            else:
-                                sev, conf, risk = "info", 50, "File exists but content does not match expected sensitive pattern."
-                            findings.append(_make_finding(
-                                title=f"Exposed file: {path}",
-                                description=risk,
-                                severity=sev, confidence=conf,
-                                location=path, evidence=body[:300],
-                                remediation="Restrict access or remove file.",
-                                cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
-                                owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
-                                poc=f"curl {full_url}",
-                                category="active"
-                            ))
-                    elif status == 403:
-                        if generic_403_html:
-                            body = await _fetch_body(session, full_url)
-                            if body and body.strip() == generic_403_html.strip():
-                                return
-                        path_ext = None
-                        for ext in BACKUP_EXTS:
-                            if path.endswith(ext):
-                                path_ext = ext
-                                break
-                        if path_ext and path_ext in generic_403_by_ext:
-                            body = await _fetch_body(session, full_url)
-                            if body and body.strip() == generic_403_by_ext[path_ext].strip():
-                                raw_403_findings.append({"path": path, "ext": path_ext, "body": body})
-                                return
-                        sev = _is_highly_sensitive_path(path)
+                full_url = urljoin(base_url, path)
+                head_resp = await rate_limiter.probe(session, full_url, 'HEAD')
+                if head_resp is None:
+                    return
+                status = head_resp.status
+                if status == 200:
+                    body = await _fetch_body(session, full_url)
+                    if body:
+                        if main_body and _is_soft_404(body, main_body):
+                            return
+                        if path == "robots.txt":
+                            if _is_robots_sensitive(body):
+                                findings.append(_make_finding(
+                                    title="robots.txt exposes sensitive paths",
+                                    description="robots.txt contains disallowed admin/backup paths.",
+                                    severity="medium", confidence=90,
+                                    location=path, evidence=body[:200],
+                                    remediation="Review robots.txt and remove sensitive entries.",
+                                    category="config"
+                                ))
+                            return
+                        if path == "sitemap.xml":
+                            if "<urlset" not in body and "<sitemapindex" not in body:
+                                findings.append(_make_finding(
+                                    title="Suspicious sitemap.xml",
+                                    description="File exists but lacks standard sitemap structure.",
+                                    severity="low", confidence=50,
+                                    location=path, evidence=body[:300],
+                                    remediation="Check if this file is intentionally exposed.",
+                                    category="config"
+                                ))
+                            return
+                        if _is_sensitive_content(path, body):
+                            sev, conf, risk = "critical", 100, "Sensitive file exposed and verified."
+                        else:
+                            sev, conf, risk = "info", 50, "File exists but content does not match expected sensitive pattern."
                         findings.append(_make_finding(
-                            title=f"Forbidden file: {path}",
-                            description="File exists but is protected." + (" (highly sensitive)" if sev in ("high","medium") else ""),
-                            severity=sev, confidence=80,
-                            location=path,
-                            remediation="Ensure protection is adequate.",
+                            title=f"Exposed file: {path}",
+                            description=risk,
+                            severity=sev, confidence=conf,
+                            location=path, evidence=body[:300],
+                            remediation="Restrict access or remove file.",
+                            cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
+                            owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
+                            poc=f"curl {full_url}",
                             category="active"
                         ))
+                elif status == 403:
+                    ext_for_body = None
+                    for e in BACKUP_EXTS:
+                        if path.endswith(e):
+                            ext_for_body = e
+                            break
+                    generic_body = generic_403_by_ext.get(ext_for_body) if ext_for_body else generic_403_html
+                    if generic_body:
+                        body = await _fetch_body(session, full_url)
+                        if body and _body_matches_generic(body, generic_body):
+                            raw_403_by_ext.append({"path": path, "ext": ext_for_body or "unknown"})
+                            return  # totally ignore individual reporting
+                    # Not a generic block → classify
+                    sev, conf = _forbidden_sensitivity(path)
+                    ext_agg = ext_for_body
+                    if not ext_agg:
+                        ext_agg = '.' + path.rsplit('.', 1)[-1] if '.' in path else path
+                    forbidden_candidates.append({
+                        "path": path,
+                        "ext": ext_agg,
+                        "severity": sev,
+                        "confidence": conf,
+                    })
 
             tasks = [probe_path(p) for p in all_paths]
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Aggregate blanket 403 blocks
+            # ── Post-process forbidden candidates ────────────────────────
+            # Aggregate by extension
             ext_groups = defaultdict(list)
-            for item in raw_403_findings:
-                ext_groups[item["ext"]].append(item["path"])
-            for ext, paths in ext_groups.items():
-                if len(paths) > 0:
-                    findings.append(_make_finding(
-                        title=f"Server blocks access to {ext} files",
-                        description=f"The server returns 403 Forbidden for {len(paths)} {ext} paths, suggesting a blanket restriction rather than individual file presence.",
-                        severity="info", confidence=90,
-                        location=f"Multiple paths (*{ext})",
-                        evidence=f"First few: {', '.join(paths[:5])}",
-                        remediation="Verify that backup files are not accidentally exposed; otherwise this is a normal security measure.",
-                        category="passive"
-                    ))
+            for cand in forbidden_candidates:
+                ext_groups[cand["ext"]].append(cand)
 
-            # Directory listing & traversal
+            for ext, cands in ext_groups.items():
+                if len(cands) > EXT_AGGREGATION_THRESHOLD:
+                    high_cands = [c for c in cands if c["severity"] == "high"]
+                    other_cands = [c for c in cands if c["severity"] != "high"]
+                    for c in high_cands:
+                        findings.append(_make_finding(
+                            title=f"Protected sensitive file: {c['path']}",
+                            description="Highly sensitive file exists but is protected (403).",
+                            severity=c["severity"],
+                            confidence=c["confidence"],
+                            location=c["path"],
+                            remediation="Ensure strong access controls are in place.",
+                            cwe="CWE-538",
+                            owasp="A01:2021",
+                            category="config"
+                        ))
+                    if other_cands:
+                        paths = [c["path"] for c in other_cands]
+                        findings.append(_make_finding(
+                            title=f"Multiple {ext} files are blocked (403)",
+                            description=f"{len(other_cands)} {ext} paths return 403, suggesting blanket restriction. "
+                                        f"Examples: {', '.join(paths[:5])}",
+                            severity="info",
+                            confidence=90,
+                            location=f"Multiple paths (*{ext})",
+                            evidence=f"{len(other_cands)} blocked files",
+                            remediation="Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+                            category="config"
+                        ))
+                    for c in cands:
+                        if c in forbidden_candidates:
+                            forbidden_candidates.remove(c)
+
+            # Aggregate by directory prefix (low severity only)
+            dir_groups = defaultdict(list)
+            for cand in forbidden_candidates:
+                if cand["severity"] == "low":
+                    first_dir = cand["path"].split('/')[0] if '/' in cand["path"] else ""
+                    dir_groups[first_dir].append(cand)
+
+            for dir_name, cands in dir_groups.items():
+                if len(cands) > DIR_AGGREGATION_THRESHOLD:
+                    paths = [c["path"] for c in cands]
+                    findings.append(_make_finding(
+                        title=f"Directory {dir_name}/ is protected (403) for multiple files",
+                        description=f"{len(paths)} low‑sensitivity files in /{dir_name} return 403, indicating blanket protection.",
+                        severity="info",
+                        confidence=85,
+                        location=f"/{dir_name}/",
+                        evidence=f"Examples: {', '.join(paths[:5])}",
+                        remediation="This is likely intended, but verify that sensitive files are not accidentally exposed.",
+                        category="config"
+                    ))
+                    for c in cands:
+                        if c in forbidden_candidates:
+                            forbidden_candidates.remove(c)
+
+            # Report remaining individually
+            for cand in forbidden_candidates:
+                sev, conf = cand["severity"], cand["confidence"]
+                if sev == "high":
+                    title = f"Protected sensitive file: {cand['path']}"
+                elif sev == "medium":
+                    title = f"Protected file: {cand['path']}"
+                else:
+                    title = f"Forbidden file: {cand['path']}"
+                findings.append(_make_finding(
+                    title=title,
+                    description="File exists but returns 403 Forbidden.",
+                    severity=sev,
+                    confidence=conf,
+                    location=cand["path"],
+                    remediation="Ensure proper access controls are in place.",
+                    cwe="CWE-538",
+                    owasp="A01:2021",
+                    category="config"
+                ))
+
+            # Aggregate extension-based blanket blocks (generic 403)
+            ext_block_groups = defaultdict(list)
+            for item in raw_403_by_ext:
+                ext_block_groups[item["ext"]].append(item["path"])
+            for ext, paths in ext_block_groups.items():
+                findings.append(_make_finding(
+                    title=f"Server blocks access to {ext} files",
+                    description=f"The server returns 403 Forbidden for all {ext} paths (blanket block).",
+                    severity="info", confidence=90,
+                    location=f"Multiple paths (*{ext})",
+                    evidence=f"First few: {', '.join(paths[:5])}",
+                    remediation="Verify that backup files are not accidentally exposed; otherwise this is a normal security measure.",
+                    category="config"
+                ))
+
+            # ── Directory listing & traversal (with enhanced checks) ────
             dir_paths = ["/assets/", "/static/", "/uploads/", "/files/", "/images/", "/css/", "/js/"]
-            for d in dir_paths:
-                full = urljoin(base_url, d)
-                body = await _fetch_body(session, full)
-                if body and ("Index of /" in body or "Parent Directory" in body):
+            dir_urls = [urljoin(base_url, d) for d in dir_paths]
+            trav_urls = [urljoin(base_url, d + "../") for d in dir_paths]
+
+            dir_bodies, trav_bodies = await asyncio.gather(
+                asyncio.gather(*[_fetch_body(session, url) for url in dir_urls]),
+                asyncio.gather(*[_fetch_body(session, url) for url in trav_urls])
+            )
+
+            for d, body, tbody in zip(dir_paths, dir_bodies, trav_bodies):
+                if body and _is_directory_listing(body, main_body):
                     findings.append(_make_finding(
                         title=f"Directory listing enabled: {d}",
                         description="Directory listing allows attackers to see file structure.",
@@ -1015,19 +1289,17 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         location=d, evidence=body[:200],
                         remediation="Disable directory listing.",
                         cwe=CWE_MAP["dir_listing"], owasp=OWASP_MAP["dir_listing"],
-                        poc=f"curl {full}",
+                        poc=f"curl {urljoin(base_url, d)}",
                         category="active"
                     ))
-                traversal = urljoin(base_url, d + "../")
-                tbody = await _fetch_body(session, traversal)
-                if tbody and ("Index of /" in tbody) and tbody != body:
+                if tbody and _is_real_path_traversal(tbody, main_body, body):
                     findings.append(_make_finding(
                         title="Path traversal possible",
                         description="Parent directory accessible.",
                         severity="critical", confidence=95,
-                        location=traversal, evidence=tbody[:200],
+                        location=d + "../", evidence=tbody[:200],
                         remediation="Configure web server to prevent directory traversal.",
-                        poc=f"curl {traversal}",
+                        poc=f"curl {urljoin(base_url, d + '../')}",
                         category="active"
                     ))
 
@@ -1048,10 +1320,10 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         category="active"
                     ))
 
-            # Other advanced scans (pass the HTML we already have)
+            # Advanced scans
             await _check_interesting_files_from_headers(session, base_url, main_headers, findings)
             await _check_js_source_maps(session, base_url, main_body, rate_limiter, findings)
-            await _check_js_leaked_credentials(session, base_url, main_body, rate_limiter, findings)
+            await _check_js_leaked_credentials(session, base_url, main_body, rate_limiter, findings, js_cache)
             await _enumerate_api_endpoints(session, base_url, rate_limiter, findings)
 
     except Exception as e:
@@ -1074,7 +1346,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     if _detect_wordpress_from_findings(findings):
         tech_stack.add("WordPress")
 
-    # Deduplicate
     unique = []
     seen = set()
     for f in findings:
