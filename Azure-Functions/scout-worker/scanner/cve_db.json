@@ -1,0 +1,115 @@
+{
+  "jquery": [
+    {"range": ["1.0.0", "3.5.0"], "cve": "CVE-2020-11022", "desc": "XSS via jQuery.html()", "severity": "high", "patch": "3.5.0", "sig": "(?:jQuery\\.htmlPrefilter|\\.htmlPrefilter\\s*[=:])"},
+    {"range": ["1.0.0", "3.4.0"], "cve": "CVE-2019-11358", "desc": "Prototype Pollution via $.extend()", "severity": "medium", "patch": "3.4.0", "sig": "(?:jQuery\\.extend|\\.extend\\s*[=:])"},
+    {"range": ["1.0.0", "1.12.0"], "cve": "CVE-2015-9251", "desc": "XSS via jQuery.htmlPrefilter()", "severity": "high", "patch": "1.12.0", "sig": "(?:jQuery\\.htmlPrefilter|\\.htmlPrefilter)"},
+    {"range": ["1.0.0", "1.9.0"], "cve": "CVE-2011-4969", "desc": "XSS via jQuery(strInput) without filtering", "severity": "medium", "patch": "1.9.0", "sig": "jQuery\\.parseHTML"}
+  ],
+  "jquery-ui": [
+    {"range": ["1.0.0", "1.12.1"], "cve": "CVE-2016-7103", "desc": "XSS in dialog closeText option", "severity": "medium", "patch": "1.12.1", "sig": "dialog.*closeText"},
+    {"range": ["1.0.0", "1.10.0"], "cve": "CVE-2010-5312", "desc": "XSS in dialog title option", "severity": "medium", "patch": "1.10.0", "sig": "dialog.*title"},
+    {"range": ["1.0.0", "1.12.0"], "cve": "CVE-2012-6662", "desc": "XSS in tooltip content", "severity": "medium", "patch": "1.12.0", "sig": "tooltip.*content"}
+  ],
+  "bootstrap": [
+    {"range": ["3.0.0", "3.4.1"], "cve": "CVE-2018-14040", "desc": "XSS in collapse data-parent", "severity": "high", "patch": "3.4.1", "sig": "data-parent"},
+    {"range": ["4.0.0", "4.3.1"], "cve": "CVE-2019-8331", "desc": "XSS in tooltip/popover data-template", "severity": "high", "patch": "4.3.1", "sig": "data-template"},
+    {"range": ["3.0.0", "3.4.0"], "cve": "CVE-2016-10735", "desc": "XSS via data-target in collapse", "severity": "high", "patch": "3.4.0", "sig": "data-target"},
+    {"range": ["4.0.0", "4.1.2"], "cve": "CVE-2018-20676", "desc": "XSS via data-html in tooltip", "severity": "medium", "patch": "4.1.2", "sig": "data-html"}
+  ],
+  "angularjs": [
+    {"range": ["1.0.0", "1.7.9"], "cve": "CVE-2019-10768", "desc": "Prototype Pollution via angular.merge()", "severity": "high", "patch": "1.7.9", "sig": "angular\\.merge"},
+    {"range": ["1.0.0", "1.7.8"], "cve": "CVE-2019-14863", "desc": "XSS via ngSanitize", "severity": "medium", "patch": "1.7.8", "sig": "ngSanitize"},
+    {"range": ["1.0.0", "1.6.9"], "cve": "CVE-2018-1000420", "desc": "XSS via SVG animations", "severity": "medium", "patch": "1.6.9", "sig": "animate"}
+  ],
+  "lodash": [
+    {"range": ["4.0.0", "4.17.21"], "cve": "CVE-2019-10744", "desc": "Prototype Pollution via _.defaultsDeep()", "severity": "critical", "patch": "4.17.21", "sig": "_\\.defaultsDeep"},
+    {"range": ["4.0.0", "4.17.20"], "cve": "CVE-2020-8203", "desc": "Prototype Pollution via _.merge()", "severity": "high", "patch": "4.17.20", "sig": "_\\.merge"},
+    {"range": ["4.0.0", "4.17.11"], "cve": "CVE-2018-3721", "desc": "Prototype Pollution via _.set()", "severity": "medium", "patch": "4.17.11", "sig": "_\\.set"},
+    {"range": ["4.0.0", "4.17.5"], "cve": "CVE-2018-16487", "desc": "Prototype Pollution via _.mergeWith()", "severity": "high", "patch": "4.17.5", "sig": "_\\.mergeWith"}
+  ],
+  "moment": [
+    {"range": ["2.0.0", "2.29.4"], "cve": "CVE-2022-24785", "desc": "Path traversal in moment.locale()", "severity": "high", "patch": "2.29.4", "sig": "moment\\.locale"},
+    {"range": ["2.0.0", "2.24.0"], "cve": "CVE-2019-10771", "desc": "ReDoS via moment.duration()", "severity": "medium", "patch": "2.24.0", "sig": "moment\\.duration"}
+  ],
+  "axios": [
+    {"range": ["0.1.0", "0.21.4"], "cve": "CVE-2021-3749", "desc": "ReDoS via URL parsing", "severity": "medium", "patch": "0.21.4", "sig": "axios\\.getUri"},
+    {"range": ["0.1.0", "0.19.0"], "cve": "CVE-2019-10744", "desc": "Prototype Pollution via merge (lodash dep)", "severity": "high", "patch": "0.19.0", "sig": "axios\\.defaults"}
+  ],
+  "vue": [
+    {"range": ["2.0.0", "2.6.12"], "cve": "CVE-2020-7733", "desc": "XSS via v-html", "severity": "high", "patch": "2.6.12", "sig": "v-html"},
+    {"range": ["2.0.0", "2.5.17"], "cve": "CVE-2018-6341", "desc": "XSS via SVG animation attributes", "severity": "medium", "patch": "2.5.17", "sig": "animate"}
+  ],
+  "react": [
+    {"range": ["16.0.0", "16.13.1"], "cve": "CVE-2020-1923", "desc": "XSS via dangerouslySetInnerHTML", "severity": "high", "patch": "16.13.1", "sig": "dangerouslySetInnerHTML"},
+    {"range": ["0.14.0", "15.6.2"], "cve": "CVE-2018-6341", "desc": "XSS in React DOM attribute names", "severity": "medium", "patch": "15.6.2", "sig": "dangerouslySetInnerHTML"}
+  ],
+  "socket.io": [
+    {"range": ["2.0.0", "2.4.0"], "cve": "CVE-2023-32695", "desc": "Denial of Service via large packets", "severity": "medium", "patch": "2.4.0", "sig": "Socket\\.prototype\\.emit"}
+  ],
+  "wordpress": [
+    {"range": ["5.0.0", "5.7.2"], "cve": "CVE-2021-29447", "desc": "XXE via media upload", "severity": "high", "patch": "5.7.2", "sig": "wp_upload_bits"},
+    {"range": ["4.7.0", "4.7.1"], "cve": "CVE-2017-5487", "desc": "User enumeration via REST API", "severity": "medium", "patch": "4.7.2", "sig": "wp-json/wp/v2/users"}
+  ],
+  "drupal": [
+    {"range": ["9.0.0", "9.2.0"], "cve": "CVE-2021-33829", "desc": "XSS via Twig", "severity": "high", "patch": "9.2.0", "sig": "twig"},
+    {"range": ["8.0.0", "8.6.10"], "cve": "CVE-2019-6340", "desc": "RCE via RESTful Web Services", "severity": "critical", "patch": "8.6.10", "sig": "rest"}
+  ],
+  "vite": [
+    {"range": ["2.0.0", "2.9.15"], "cve": "CVE-2022-35256", "desc": "SSR XSS in Vite dev server", "severity": "high", "patch": "2.9.15", "sig": "vite/dist/client"}
+  ],
+  "webpack": [
+    {"range": ["4.0.0", "4.46.0"], "cve": "CVE-2020-28469", "desc": "ReDoS via webpack's watchpack", "severity": "medium", "patch": "4.46.0", "sig": "watchpack"}
+  ],
+  "next": [
+    {"range": ["12.0.0", "12.0.9"], "cve": "CVE-2021-39178", "desc": "XSS via next/image", "severity": "high", "patch": "12.0.9", "sig": "next/image"},
+    {"range": ["9.5.0", "9.5.5"], "cve": "CVE-2020-15229", "desc": "Path traversal in next export", "severity": "high", "patch": "9.5.5", "sig": "next export"}
+  ],
+  "elementor": [
+    {"range": ["2.0.0", "3.1.4"], "cve": "CVE-2021-24276", "desc": "XSS via Elementor editor settings", "severity": "high", "patch": "3.1.4", "sig": "elementor-pro"},
+    {"range": ["2.0.0", "3.0.0"], "cve": "CVE-2020-13127", "desc": "SQL Injection via elementor-pro form widget", "severity": "critical", "patch": "3.0.0", "sig": "elementor_pro_forms"}
+  ],
+  "select2": [
+    {"range": ["4.0.0", "4.0.5"], "cve": "CVE-2016-10725", "desc": "XSS via template result", "severity": "medium", "patch": "4.0.5", "sig": "select2.*templateResult"}
+  ],
+  "font-awesome": [
+    {"range": ["5.0.0", "5.15.3"], "cve": "CVE-2021-34563", "desc": "CSS injection via icon names", "severity": "low", "patch": "5.15.3", "sig": "fa-[a-z]"}
+  ],
+  "popper": [
+    {"range": ["1.0.0", "1.16.1"], "cve": "CVE-2020-19752", "desc": "XSS in popper.js fallback", "severity": "high", "patch": "1.16.1", "sig": "Popper\\.Defaults"}
+  ],
+  "bootstrap-datepicker": [
+    {"range": ["1.0.0", "1.8.0"], "cve": "CVE-2018-1000888", "desc": "XSS via date format option", "severity": "medium", "patch": "1.8.0", "sig": "datepicker.*format"}
+  ],
+  "chart.js": [
+    {"range": ["1.0.0", "2.9.4"], "cve": "CVE-2019-19907", "desc": "XSS via tooltip label callback", "severity": "medium", "patch": "2.9.4", "sig": "tooltips.*callbacks"}
+  ],
+  "ember": [
+    {"range": ["1.0.0", "3.0.0"], "cve": "CVE-2018-1000086", "desc": "XSS via {{each}} helper", "severity": "medium", "patch": "3.0.0", "sig": "each.*helper"},
+    {"range": ["1.0.0", "2.18.1"], "cve": "CVE-2019-10743", "desc": "XSS via {{link-to}} helper", "severity": "medium", "patch": "2.18.1", "sig": "link-to"}
+  ],
+  "sweetalert2": [
+    {"range": ["1.0.0", "11.4.0"], "cve": "CVE-2022-25214", "desc": "XSS via title parameter", "severity": "high", "patch": "11.4.0", "sig": "Swal\\.fire"},
+    {"range": ["1.0.0", "11.3.0"], "cve": "CVE-2022-25213", "desc": "XSS via html parameter", "severity": "high", "patch": "11.3.0", "sig": "html.*Swal"}
+  ],
+  "three": [
+    {"range": ["0.100.0", "0.127.0"], "cve": "CVE-2020-15024", "desc": "XSS via TextGeometry", "severity": "medium", "patch": "0.127.0", "sig": "TextGeometry"},
+    {"range": ["0.100.0", "0.134.0"], "cve": "CVE-2021-32867", "desc": "ReDoS via OBJLoader", "severity": "medium", "patch": "0.134.0", "sig": "OBJLoader"}
+  ],
+  "d3": [
+    {"range": ["3.0.0", "5.15.0"], "cve": "CVE-2018-1000851", "desc": "XSS via d3.text()", "severity": "medium", "patch": "5.15.0", "sig": "d3\\.text"},
+    {"range": ["3.0.0", "5.12.0"], "cve": "CVE-2020-13528", "desc": "Prototype Pollution via d3.json()", "severity": "high", "patch": "5.12.0", "sig": "d3\\.json"}
+  ],
+  "mathjs": [
+    {"range": ["1.0.0", "7.5.1"], "cve": "CVE-2020-7672", "desc": "Prototype Pollution via deepExtend", "severity": "high", "patch": "7.5.1", "sig": "deepExtend"}
+  ],
+  "pdfjs-dist": [
+    {"range": ["2.0.0", "2.7.570"], "cve": "CVE-2020-6829", "desc": "XSS via crafted PDF", "severity": "high", "patch": "2.7.570", "sig": "pdfjs-dist/build/pdf"},
+    {"range": ["2.0.0", "2.1.266"], "cve": "CVE-2018-5158", "desc": "Arbitrary file read via PDF", "severity": "high", "patch": "2.1.266", "sig": "PDFJS"}
+  ],
+  "slicknav": [
+    {"range": ["1.0.0", "1.0.11"], "cve": "CVE-2021-32804", "desc": "XSS via label option", "severity": "medium", "patch": "1.0.11", "sig": "slicknav"}
+  ],
+  "swiper": [
+    {"range": ["3.0.0", "6.5.1"], "cve": "CVE-2021-23383", "desc": "XSS via slide content", "severity": "medium", "patch": "6.5.1", "sig": "Swiper"}
+  ]
+}

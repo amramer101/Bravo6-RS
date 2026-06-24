@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.3 Fixed)
+test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.4 – SharedPage)
 ========================================================================================
-Fully unified scanner with JSON output. Includes improved Cache‑Control,
-X‑DNS‑Prefetch‑Control, HSTS preload severity boost, and all previous checks.
+Now accepts shared_page from main_scanner to avoid re‑fetching the homepage.
+Redirect chain is omitted when shared_page is used (final headers only).
 """
 
-import asyncio, json, re, random
+import asyncio, json, re, random, sys
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import urlparse, urljoin
@@ -15,7 +15,7 @@ import aiohttp
 from bs4 import BeautifulSoup, Comment
 
 SCANNER_NAME = "security_headers"
-USER_AGENT = "Bravo6-SecurityHeaders/6.3"
+USER_AGENT = "Bravo6-SecurityHeaders/6.4"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_REDIRECTS = 6
 RETRY_MAX = 3
@@ -41,7 +41,7 @@ OWASP_MAP = {
     "server_info":"A01:2021","dns_prefetch":"A05:2021"
 }
 
-# ── Common Helpers ──────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 def _normalize_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://","https://")):
@@ -53,19 +53,35 @@ def _get_header(headers: Dict[str,str], name: str) -> Optional[str]:
         if k.lower()==name.lower(): return v
     return None
 
-async def retry_async(coro, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
+async def retry_async(coro_factory, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
+    """
+    Retry an async operation. Accepts a **callable** that returns a fresh coroutine
+    on each attempt (e.g., a lambda or partial). This avoids reusing an already‑awaited
+    coroutine object.
+    """
     last_exc = None
-    for attempt in range(max_retries+1):
-        try: return await coro
-        except (asyncio.TimeoutError,ConnectionError,OSError) as e:
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_factory()
+        except (asyncio.TimeoutError, ConnectionError, OSError) as e:
             last_exc = e
-            if attempt==max_retries: raise
-            delay = base_delay*(2**attempt)+random.uniform(0,0.5)
+            if attempt == max_retries:
+                raise
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
             await asyncio.sleep(delay)
     raise last_exc
 
-# ── Pre‑scan: WAF ───────────────────────────────────────────────────────
-async def _detect_waf(hostname: str, port: int=443) -> Optional[str]:
+# ── Pre‑scan: WAF (now accepts optional headers/html) ────────────────────
+async def _detect_waf(hostname: str, port: int=443,
+                      html: str = None, headers: dict = None) -> Optional[str]:
+    if headers:
+        # Use pre‑fetched headers
+        if 'cf-ray' in {k.lower() for k in headers}: return 'cloudflare'
+        if 'x-sucuri-id' in {k.lower() for k in headers}: return 'sucuri'
+        if 'x-akamai-request-id' in {k.lower() for k in headers}: return 'akamai'
+        if headers.get('server','').lower().startswith('cloudflare'): return 'cloudflare'
+        return None
+    # Fallback: make a request
     try:
         ssl_ctx = __import__('ssl').create_default_context()
         ssl_ctx.check_hostname = False
@@ -78,7 +94,8 @@ async def _detect_waf(hostname: str, port: int=443) -> Optional[str]:
                 if 'x-sucuri-id' in headers: return 'sucuri'
                 if 'x-akamai-request-id' in headers: return 'akamai'
                 if headers.get('server','').lower().startswith('cloudflare'): return 'cloudflare'
-    except: pass
+    except Exception as e:
+        print(f"[waf_detection] Error during fallback request: {e}", file=sys.stderr)
     return None
 
 def _fingerprint_waf_from_headers(headers: Dict[str,str]) -> List[str]:
@@ -91,7 +108,7 @@ def _fingerprint_waf_from_headers(headers: Dict[str,str]) -> List[str]:
         fingerprints.append('Generic WAF')
     return fingerprints
 
-# ── Site Categorization ─────────────────────────────────────────────────
+# ── Site Categorization (now accepts optional html) ──────────────────────
 SITE_CATEGORIES = {
     "bank":["bank","بنك","online banking"],
     "ecommerce":["shop","متجر","buy","cart","checkout","pay"],
@@ -100,26 +117,32 @@ SITE_CATEGORIES = {
     "blog":["blog","مدونة","articles"],
     "internal":["intranet","internal"],
 }
-async def _categorize_site(hostname: str, port: int=443) -> Dict:
+async def _categorize_site(hostname: str, port: int=443,
+                          html: str = None, headers: dict = None) -> Dict:
     result = {"categories":[],"has_login_form":False,"title":"","meta_keywords":""}
-    try:
-        ssl_ctx = __import__('ssl').create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10),
-                                         headers={"User-Agent":USER_AGENT}) as session:
-            async with session.get(f"https://{hostname}:{port}",ssl=ssl_ctx) as resp:
-                html = await resp.text()
-                title_match = re.search(r'<title>(.*?)</title>',html,re.IGNORECASE)
-                if title_match: result["title"] = title_match.group(1)
-                meta_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"',html,re.IGNORECASE)
-                if meta_match: result["meta_keywords"] = meta_match.group(1)
-                if re.search(r'<input\s+[^>]*type=["\']?password["\']?',html,re.IGNORECASE):
-                    result["has_login_form"] = True
-    except: pass
-    text = (result["title"]+" "+result["meta_keywords"]).lower()
+    if html:
+        text = html
+    else:
+        try:
+            ssl_ctx = __import__('ssl').create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10),
+                                             headers={"User-Agent":USER_AGENT}) as session:
+                async with session.get(f"https://{hostname}:{port}",ssl=ssl_ctx) as resp:
+                    text = await resp.text()
+        except Exception as e:
+            print(f"[categorize_site] Error fetching homepage: {e}", file=sys.stderr)
+            return result
+    title_match = re.search(r'<title>(.*?)</title>',text,re.IGNORECASE)
+    if title_match: result["title"] = title_match.group(1)
+    meta_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"',text,re.IGNORECASE)
+    if meta_match: result["meta_keywords"] = meta_match.group(1)
+    if re.search(r'<input\s+[^>]*type=["\']?password["\']?',text,re.IGNORECASE):
+        result["has_login_form"] = True
+    text_lower = (result["title"]+" "+result["meta_keywords"]).lower()
     for category,keywords in SITE_CATEGORIES.items():
-        if any(k in text for k in keywords):
+        if any(k in text_lower for k in keywords):
             result["categories"].append(category)
     return result
 
@@ -328,7 +351,7 @@ def _check_cache_control(final_headers, set_cookie):
                           remediation="Set Cache-Control: no-cache, no-store, must-revalidate",
                           cwe=CWE_MAP["cache"],owasp=OWASP_MAP["cache"])]
 
-# ── New: X‑DNS‑Prefetch‑Control ─────────────────────────────────────────
+# ── X‑DNS‑Prefetch‑Control ─────────────────────────────────────────────
 def _check_dns_prefetch(final_headers):
     xdns = _get_header(final_headers,"X-DNS-Prefetch-Control")
     if not xdns:
@@ -345,15 +368,21 @@ def _check_dns_prefetch(final_headers):
                           "X-DNS-Prefetch-Control",evidence=xdns,
                           remediation="Set X-DNS-Prefetch-Control: off")]
 
-# ── Enhanced HSTS with preload severity boost ───────────────────────────
-def _check_hsts(headers_list, is_cdn, target_url):
+# ── Enhanced HSTS (now accepts optional single headers dict) ────────────
+def _check_hsts(headers_list=None, is_cdn=False, target_url="", final_headers=None):
     if is_cdn:
         return [_make_finding("HSTS not applicable (CDN domain)","","info",100,"pass","Strict-Transport-Security",
                               evidence="CDN domain")]
     hsts_values = []
-    for r in headers_list:
-        hdr = _get_header(r["headers"],"Strict-Transport-Security")
+    # If we have a full chain, use it; otherwise use final_headers
+    if headers_list:
+        for r in headers_list:
+            hdr = _get_header(r["headers"],"Strict-Transport-Security")
+            if hdr: hsts_values.append(hdr)
+    elif final_headers:
+        hdr = _get_header(final_headers, "Strict-Transport-Security")
         if hdr: hsts_values.append(hdr)
+
     if not hsts_values:
         return [_make_finding("Missing HSTS header","No HSTS found. SSL stripping attacks possible.","high",100,"fail",
                               "Strict-Transport-Security",evidence="Header missing",
@@ -537,7 +566,7 @@ def _check_x_permitted_cross_domain(final_headers):
                           "X-Permitted-Cross-Domain-Policies",evidence=xpcd,
                           remediation="Set to 'none' or 'master-only'.")]
 
-# ── Fetch helper ────────────────────────────────────────────────────────
+# ── Fetch helper (only used if shared_page not provided) ────────────────
 async def _fetch_chain(session, url):
     responses = []
     current_url = url
@@ -559,48 +588,74 @@ async def _fetch_chain(session, url):
     return {"responses":responses,"error":None}
 
 # ══════════════════════════════════════════════════════════════════════════
-# Main Scanner
+# Main Scanner – NOW ACCEPTS shared_page
 # ══════════════════════════════════════════════════════════════════════════
-async def run(url: str) -> Dict[str,Any]:
+async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
     target = _normalize_url(url)
     parsed = urlparse(target)
     hostname = parsed.hostname or ""
     port = parsed.port or 443
 
-    waf_detected = await _detect_waf(hostname, port)
-    site_context = await _categorize_site(hostname, port)
+    # Use shared_page if available
+    if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
+        final_headers = shared_page.get("headers", {})
+        final_status = shared_page.get("status", 200)
+        final_url = shared_page.get("base_url", target)
+        main_html = shared_page.get("html", "")
+        # No redirect chain → HSTS will only see final headers
+        responses = []  # empty list; _check_hsts will use final_headers directly
+        # Categorization and WAF using pre‑fetched data
+        site_context = await _categorize_site(hostname, port, html=main_html, headers=final_headers)
+        waf_detected = await _detect_waf(hostname, port, headers=final_headers)
+        fetch_error = None
+    else:
+        # Original full fetch
+        waf_detected = await _detect_waf(hostname, port)
+        site_context = await _categorize_site(hostname, port)
+        try:
+            async with aiohttp.ClientSession(headers={"User-Agent":USER_AGENT}) as session:
+                # Pass a factory (lambda) so retries create fresh coroutines
+                chain = await retry_async(lambda: _fetch_chain(session, target))
+                if chain["error"]:
+                    return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
+                            "score":0,"grade":"F","summary":f"Fetch failed: {chain['error']}","findings":[],"remediation":"","details":{}}
+        except Exception as e:
+            return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
+                    "score":0,"grade":"F","summary":f"Fetch failed: {e}","findings":[],"remediation":"","details":{}}
 
-    try:
-        async with aiohttp.ClientSession(headers={"User-Agent":USER_AGENT}) as session:
-            chain = await retry_async(_fetch_chain(session, target))
-            if chain["error"]:
-                return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
-                        "score":0,"grade":"F","summary":f"Fetch failed: {chain['error']}","findings":[],"remediation":"","details":{}}
-    except Exception as e:
-        return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
-                "score":0,"grade":"F","summary":f"Fetch failed: {e}","findings":[],"remediation":"","details":{}}
+        responses = chain["responses"]
+        if not responses:
+            return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
+                    "score":0,"grade":"F","summary":"No responses","findings":[],"remediation":"","details":{}}
+        final = responses[-1]
+        final_headers = final["headers"]
+        final_status = final["status"]
+        final_url = final["url"]
+        main_html = None  # not available unless we fetch separately
 
-    responses = chain["responses"]
-    if not responses:
-        return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
-                "score":0,"grade":"F","summary":"No responses","findings":[],"remediation":"","details":{}}
-
-    final = responses[-1]
-    final_headers = final["headers"]
-    final_status = final["status"]
+    # Common analysis from final_headers
     content_type = _get_header(final_headers,"Content-Type") or ""
     set_cookie = _get_header(final_headers,"Set-Cookie")
     is_api = content_type.lower().startswith(("application/json","application/xml","image/"))
     is_error_page = final_status >= 400
     is_cdn = any(hostname.endswith(d) for d in CDN_DOMAINS)
-
     has_report_to = bool(_get_header(final_headers,"Report-To") or _get_header(final_headers,"Reporting-Endpoints"))
 
     waf_fingerprints = _fingerprint_waf_from_headers(final_headers)
-    header_order_info = _analyze_header_order(responses)
+    # Header order analysis: if we have no redirect chain, create a dummy list with one element
+    if not responses:
+        header_order_info = _analyze_header_order([{"headers": final_headers}])
+    else:
+        header_order_info = _analyze_header_order(responses)
 
     findings = []
-    findings.extend(_check_hsts(responses, is_cdn, target))
+
+    # HSTS: pass either the chain (if available) or the final headers
+    if responses:
+        findings.extend(_check_hsts(headers_list=responses, is_cdn=is_cdn, target_url=target))
+    else:
+        findings.extend(_check_hsts(final_headers=final_headers, is_cdn=is_cdn, target_url=target))
+
     findings.extend(_check_clickjacking(final_headers, is_api))
     csp_findings, csp_directives = _check_csp_enhanced(final_headers, is_api)
     findings.extend(csp_findings)
@@ -621,7 +676,7 @@ async def run(url: str) -> Dict[str,Any]:
                                       "Response Status",evidence=f"HTTP {final_status}",
                                       remediation="Re‑scan a known working page (200 OK)."))
 
-    # Dynamic severity boost for sensitive sites (before scoring)
+    # Dynamic severity boost for sensitive sites
     is_sensitive = any(cat in site_context.get("categories",[]) for cat in ("ecommerce","login"))
     if is_sensitive:
         boost_map = {"info":"info","low":"medium","medium":"high","high":"critical","critical":"critical"}
@@ -647,7 +702,7 @@ async def run(url: str) -> Dict[str,Any]:
     if not remediation: remediation = "No action needed."
 
     details = {
-        "final_url": final["url"],
+        "final_url": final_url,
         "final_status": final_status,
         "is_error_page": is_error_page,
         "is_api": is_api,
@@ -679,7 +734,6 @@ async def run(url: str) -> Dict[str,Any]:
     }
 
 if __name__ == "__main__":
-    import sys
     target_url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
     result = asyncio.run(run(target_url))
     print(json.dumps(result, indent=2, ensure_ascii=False))

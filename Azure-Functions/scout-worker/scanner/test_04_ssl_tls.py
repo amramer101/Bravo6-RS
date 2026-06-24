@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-test_04_ssl_tls.py – Bravo6 Ultimate SSL/TLS + Mixed Content Scanner (v10.6)
-================================================================================
-- Mixed content medium deduction: 5 (was 8).
-- Clean OCSP/CT note.
-- Context initialized early (no use-before-def).
-- Summary includes [H: high_count C: critical_count].
-- Single page fetch for headers, mixed content, and context.
+test_04_ssl_tls.py – Bravo6 Ultimate SSL/TLS + Mixed Content Scanner (v10.8 – Non‑blocking)
+============================================================================================
+All blocking socket calls now run in a thread executor so the asyncio event loop is never
+blocked. OpenSSL subprocess checks have proper per‑process timeouts.
 """
 
 import asyncio
@@ -47,7 +44,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("ssl_tls")
 
-USER_AGENT = "Bravo6-TLS-Scanner/10.6"
+USER_AGENT = "Bravo6-TLS-Scanner/10.8"
 TIMEOUT = 20
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -86,7 +83,6 @@ def _make_finding(title, description, severity, confidence,
     }
 
 def _apply_scoring(findings, context):
-    # Modified: medium deduction reduced to 5
     deductions = {"critical": 25, "high": 15, "medium": 5, "low": 3, "info": 0}
     score = 100
     breakdown = []
@@ -116,7 +112,6 @@ def _apply_scoring(findings, context):
     else: grade = "F"
     return score, grade, breakdown
 
-# ── Internal IP check (DNS only) ─────────────────────────────────────────
 def _check_internal(hostname: str) -> bool:
     try:
         for _, _, _, _, sockaddr in socket.getaddrinfo(hostname, None):
@@ -190,7 +185,7 @@ def _analyze_cert(der: bytes, hostname: str) -> dict:
         "must_staple": must_staple,
     }
 
-# ── Protocol probing ───────────────────────────────────────────────────────
+# ── Blocking protocol/cipher helpers (will be called via executor) ─────────
 PROTOCOLS = {
     "SSLv3": ssl.TLSVersion.SSLv3,
     "TLSv1.0": ssl.TLSVersion.TLSv1,
@@ -222,7 +217,6 @@ def _test_protocol(hostname: str, port: int, min_ver: int) -> bool:
     except Exception:
         return False
 
-# ── Cipher testing ─────────────────────────────────────────────────────────
 WEAK_CIPHERS = {
     "NULL-MD5": "NULL cipher (MD5)",
     "NULL-SHA": "NULL cipher (SHA1)",
@@ -259,7 +253,6 @@ def _test_cipher(hostname: str, port: int, cipher_string: str) -> bool:
     except Exception:
         return False
 
-# ── Chain validation ───────────────────────────────────────────────────────
 def _verify_chain_via_ssl_connect(hostname: str, port: int) -> Tuple[Optional[bool], Optional[str]]:
     try:
         ctx = ssl.create_default_context()
@@ -293,34 +286,27 @@ def _get_peer_cert_chain(hostname: str, port: int) -> Optional[List[str]]:
         pass
     return None
 
-async def _check_ocsp_python(chain: List[str]) -> Dict:
-    if not HAS_CRYPTO or len(chain) < 2:
-        return {"revoked": None, "detail": "cryptography or intermediate not available"}
+def _check_ocsp_stapling_blocking(hostname: str, port: int) -> Tuple[Optional[bool], Optional[int], str]:
+    """Returns (ocsp_stapling, ct_scts, note)"""
     try:
-        leaf = x509.load_pem_x509_certificate(chain[0].encode())
-        issuer = x509.load_pem_x509_certificate(chain[1].encode())
-        builder = crypto_ocsp.OCSPRequestBuilder()
-        builder = builder.add_certificate(leaf, issuer, hashes.SHA1())
-        req = builder.build()
-        req_data = req.public_bytes(serialization.Encoding.DER)
-        aia = leaf.extensions.get_extension_for_oid(ExtensionOID.AUTHORITY_INFORMATION_ACCESS)
-        ocsp_urls = [desc.access_location.value for desc in aia.value
-                     if desc.access_method == x509.oid.AuthorityInformationAccessOID.OCSP]
-        if not ocsp_urls:
-            return {"revoked": None, "detail": "No OCSP responder URL"}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(ocsp_urls[0], data=req_data,
-                                    headers={"Content-Type": "application/ocsp-request"}) as resp:
-                ocsp_resp = await resp.read()
-        if not ocsp_resp:
-            return {"revoked": None, "detail": "Empty OCSP response"}
-        parsed = crypto_ocsp.load_der_ocsp_response(ocsp_resp)
-        if parsed.response_status == crypto_ocsp.OCSPResponseStatus.SUCCESSFUL:
-            return {"revoked": False, "detail": "OCSP response received (status not checked in detail)"}
-        else:
-            return {"revoked": None, "detail": f"OCSP response status: {parsed.response_status}"}
-    except Exception as e:
-        return {"revoked": None, "detail": f"OCSP check failed: {e}"}
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
+            with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
+                ocsp_stapling = None
+                ct_scts = None
+                note = ""
+                if hasattr(tls_sock, "get_ocsp_response"):
+                    ocsp_stapling = tls_sock.get_ocsp_response() is not None
+                else:
+                    note = "OCSP/CT information unavailable on this Python version"
+                if hasattr(tls_sock, "get_scts"):
+                    scts = tls_sock.get_scts()
+                    ct_scts = len(scts) if scts else 0
+                return ocsp_stapling, ct_scts, note
+    except Exception:
+        return None, None, "Unable to check OCSP/CT due to connection error."
 
 # ── Mixed Content Scanner ──────────────────────────────────────────────────
 def _scan_mixed_content(html: str, base_url: str) -> List[dict]:
@@ -365,8 +351,10 @@ def _scan_mixed_content(html: str, base_url: str) -> List[dict]:
             ))
     return findings
 
-# ── Main Scanner ───────────────────────────────────────────────────────────
-async def run(url: str) -> Dict[str, Any]:
+# ══════════════════════════════════════════════════════════════════════════
+# Main Scanner – completely non‑blocking
+# ══════════════════════════════════════════════════════════════════════════
+async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     hostname, port = _normalize_url(url)
     if not HAS_CRYPTO:
         return {
@@ -377,7 +365,7 @@ async def run(url: str) -> Dict[str, Any]:
             "findings": [], "remediation": [], "details": {}
         }
 
-    # Initialize context early with is_internal
+    loop = asyncio.get_running_loop()
     is_internal = _check_internal(hostname)
     context = {
         "is_login_page": False,
@@ -389,9 +377,9 @@ async def run(url: str) -> Dict[str, Any]:
     findings = []
     cert_info = None
 
-    # 1. Basic handshake & certificate parsing
+    # 1. Basic handshake & certificate parsing (ssl.get_server_certificate is blocking)
     try:
-        pem = ssl.get_server_certificate((hostname, port))
+        pem = await loop.run_in_executor(None, ssl.get_server_certificate, (hostname, port))
         der = ssl.PEM_cert_to_DER_cert(pem)
         cert_info = _analyze_cert(der, hostname)
     except Exception as e:
@@ -403,126 +391,83 @@ async def run(url: str) -> Dict[str, Any]:
             "findings": [], "remediation": [], "details": {}
         }
 
-    # Certificate checks
+    # Certificate checks (no change)
     days = cert_info["days_until_expiry"]
     if days < 0:
-        findings.append(_make_finding(
-            "Certificate expired", f"Expired on {cert_info['not_after']}",
-            "critical", 100, location="Expiry", remediation="Renew immediately.", cwe="CWE-298"))
+        findings.append(_make_finding("Certificate expired", f"Expired on {cert_info['not_after']}", "critical", 100, location="Expiry", remediation="Renew immediately.", cwe="CWE-298"))
     elif days < 7:
-        findings.append(_make_finding(
-            f"Certificate expires in {days} days", "Renew urgently.",
-            "high", 100, location="Expiry", remediation="Renew now.", cwe="CWE-298"))
+        findings.append(_make_finding(f"Certificate expires in {days} days", "Renew urgently.", "high", 100, location="Expiry", remediation="Renew now.", cwe="CWE-298"))
     elif days < 30:
-        findings.append(_make_finding(
-            f"Certificate expires in {days} days", "Plan renewal.",
-            "medium", 100, location="Expiry", remediation="Renew soon.", cwe="CWE-298"))
+        findings.append(_make_finding(f"Certificate expires in {days} days", "Plan renewal.", "medium", 100, location="Expiry", remediation="Renew soon.", cwe="CWE-298"))
 
     if not cert_info["hostname_match"]:
         sev = "high" if not is_internal else "low"
-        findings.append(_make_finding(
-            "Hostname mismatch", "CN/SAN does not match.", sev, 100,
-            location="Certificate", remediation="Fix CN/SAN.", cwe="CWE-295"))
+        findings.append(_make_finding("Hostname mismatch", "CN/SAN does not match.", sev, 100, location="Certificate", remediation="Fix CN/SAN.", cwe="CWE-295"))
     if cert_info["self_signed"]:
         sev = "high" if not is_internal else "low"
-        findings.append(_make_finding(
-            "Self‑signed certificate", "Not trusted by public CAs.", sev, 100,
-            location="Certificate", remediation="Obtain CA‑signed certificate.", cwe="CWE-295"))
+        findings.append(_make_finding("Self‑signed certificate", "Not trusted by public CAs.", sev, 100, location="Certificate", remediation="Obtain CA‑signed certificate.", cwe="CWE-295"))
     if cert_info["weak_signature"]:
-        findings.append(_make_finding(
-            f"Weak signature algorithm ({cert_info['signature_algorithm']})", "",
-            "high", 100, location="Certificate", remediation="Re‑issue with SHA‑256.", cwe="CWE-327"))
+        findings.append(_make_finding(f"Weak signature algorithm ({cert_info['signature_algorithm']})", "", "high", 100, location="Certificate", remediation="Re‑issue with SHA‑256.", cwe="CWE-327"))
 
-    # Key size
     if cert_info["key_type"] == "rsa" and cert_info["key_size"] and cert_info["key_size"] < 2048:
-        findings.append(_make_finding(
-            f"Weak RSA key ({cert_info['key_size']} bits)", "Key length < 2048.",
-            "high", 100, location="Certificate", remediation="Re‑issue with ≥2048‑bit key.", cwe="CWE-326"))
+        findings.append(_make_finding(f"Weak RSA key ({cert_info['key_size']} bits)", "Key length < 2048.", "high", 100, location="Certificate", remediation="Re‑issue with ≥2048‑bit key.", cwe="CWE-326"))
     elif cert_info["key_type"] == "ecdsa" and cert_info["key_size"] and cert_info["key_size"] < 256:
-        findings.append(_make_finding(
-            f"Weak ECDSA key ({cert_info['key_size']} bits)", "Key length < 256.",
-            "high", 100, location="Certificate", remediation="Re‑issue with ≥256‑bit EC key.", cwe="CWE-326"))
+        findings.append(_make_finding(f"Weak ECDSA key ({cert_info['key_size']} bits)", "Key length < 256.", "high", 100, location="Certificate", remediation="Re‑issue with ≥256‑bit EC key.", cwe="CWE-326"))
     elif cert_info["key_type"] == "ecdsa" and cert_info["key_size"] == 384:
-        findings.append(_make_finding(
-            "ECC 384-bit key (strong)", "ECDSA curve P-384 provides high security.",
-            "info", 50, location="Certificate", remediation="No action needed."))
+        findings.append(_make_finding("ECC 384-bit key (strong)", "ECDSA curve P-384 provides high security.", "info", 50, location="Certificate", remediation="No action needed."))
 
-    # 2. Chain validation
-    chain_valid, chain_error = _verify_chain_via_ssl_connect(hostname, port)
+    # 2. Chain validation – run in executor
+    chain_valid, chain_error = await loop.run_in_executor(None, _verify_chain_via_ssl_connect, hostname, port)
     if chain_valid is False:
-        findings.append(_make_finding(
-            "Certificate chain not trusted",
-            f"Verification failed: {chain_error}",
-            "high", 95, location="Certificate chain", evidence=chain_error,
-            remediation="Install the correct certificate chain.", cwe="CWE-295"))
+        findings.append(_make_finding("Certificate chain not trusted", f"Verification failed: {chain_error}", "high", 95, location="Certificate chain", evidence=chain_error, remediation="Install the correct certificate chain.", cwe="CWE-295"))
     elif chain_valid is None:
-        findings.append(_make_finding(
-            "Unable to verify certificate chain",
-            "SSL verification could not be performed.",
-            "medium", 70, location="Certificate chain",
-            remediation="Ensure the server certificate is trusted by a public CA."))
+        findings.append(_make_finding("Unable to verify certificate chain", "SSL verification could not be performed.", "medium", 70, location="Certificate chain", remediation="Ensure the server certificate is trusted by a public CA."))
 
-    # 3. Full chain for OCSP
-    cert_chain = _get_peer_cert_chain(hostname, port) or []
+    # 3. Full chain for OCSP – run in executor
+    cert_chain = await loop.run_in_executor(None, _get_peer_cert_chain, hostname, port) or []
     ocsp_result = {"revoked": None}
     if len(cert_chain) >= 2:
         ocsp_result = await _check_ocsp_python(cert_chain)
         if ocsp_result.get("revoked") is True:
-            findings.append(_make_finding(
-                "Certificate is REVOKED", ocsp_result.get("detail", ""),
-                "critical", 100, location="OCSP check",
-                evidence=ocsp_result.get("detail"),
-                remediation="Replace the revoked certificate immediately.", cwe="CWE-299"))
+            findings.append(_make_finding("Certificate is REVOKED", ocsp_result.get("detail", ""), "critical", 100, location="OCSP check", evidence=ocsp_result.get("detail"), remediation="Replace the revoked certificate immediately.", cwe="CWE-299"))
         elif ocsp_result.get("revoked") is None and "No OCSP" not in ocsp_result.get("detail", ""):
-            findings.append(_make_finding(
-                "OCSP check incomplete",
-                ocsp_result.get("detail", ""),
-                "low", 50, location="OCSP check",
-                evidence=ocsp_result.get("detail"),
-                remediation="Ensure OCSP responder URL is present and accessible."))
+            findings.append(_make_finding("OCSP check incomplete", ocsp_result.get("detail", ""), "low", 50, location="OCSP check", evidence=ocsp_result.get("detail"), remediation="Ensure OCSP responder URL is present and accessible."))
 
-    # 4. Protocol probing
+    # 4. Protocol probing – run each in executor
     tls_versions = {}
     for name, ver in PROTOCOLS.items():
-        tls_versions[name] = _test_protocol(hostname, port, ver)
+        tls_versions[name] = await loop.run_in_executor(None, _test_protocol, hostname, port, ver)
 
-    # SSLv2 via openssl (optional)
+    # SSLv2 via subprocess (already async)
     ssl2_supported = False
     try:
-        import subprocess as sp
         proc = await asyncio.create_subprocess_exec(
             "openssl", "s_client", "-ssl2", "-connect", f"{hostname}:{port}",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
         if b"BEGIN CERTIFICATE" in out:
             ssl2_supported = True
+    except asyncio.TimeoutError:
+        pass
     except Exception:
         pass
     tls_versions["SSLv2"] = ssl2_supported
 
     if tls_versions.get("SSLv2"):
-        findings.append(_make_finding(
-            "SSLv2 supported (DROWN)", "Obsolete protocol",
-            "critical", 100, location="SSLv2", remediation="Disable SSLv2.", cwe="CWE-757"))
+        findings.append(_make_finding("SSLv2 supported (DROWN)", "Obsolete protocol", "critical", 100, location="SSLv2", remediation="Disable SSLv2.", cwe="CWE-757"))
     if tls_versions.get("SSLv3"):
-        findings.append(_make_finding(
-            "SSLv3 supported (POODLE)", "Obsolete protocol",
-            "critical", 100, location="SSLv3", remediation="Disable SSLv3.", cwe="CWE-757"))
+        findings.append(_make_finding("SSLv3 supported (POODLE)", "Obsolete protocol", "critical", 100, location="SSLv3", remediation="Disable SSLv3.", cwe="CWE-757"))
     if tls_versions.get("TLSv1.0"):
-        findings.append(_make_finding(
-            "TLS 1.0 supported", "Deprecated (BEAST)",
-            "high", 100, location="TLSv1.0", remediation="Disable TLS 1.0.", cwe="CWE-757"))
+        findings.append(_make_finding("TLS 1.0 supported", "Deprecated (BEAST)", "high", 100, location="TLSv1.0", remediation="Disable TLS 1.0.", cwe="CWE-757"))
     if tls_versions.get("TLSv1.1"):
-        findings.append(_make_finding(
-            "TLS 1.1 supported", "Deprecated",
-            "high", 100, location="TLSv1.1", remediation="Disable TLS 1.1.", cwe="CWE-757"))
+        findings.append(_make_finding("TLS 1.1 supported", "Deprecated", "high", 100, location="TLSv1.1", remediation="Disable TLS 1.1.", cwe="CWE-757"))
 
-    # 5. Weak ciphers
+    # 5. Weak ciphers – run each in executor
     cipher_status = {}
     for cipher_str, desc in WEAK_CIPHERS.items():
-        supported = _test_cipher(hostname, port, cipher_str)
+        supported = await loop.run_in_executor(None, _test_cipher, hostname, port, cipher_str)
         cipher_status[cipher_str] = supported
         if supported:
             if "NULL" in cipher_str or "EXPORT" in cipher_str:
@@ -533,155 +478,96 @@ async def run(url: str) -> Dict[str, Any]:
                 sev = "medium"
             else:
                 sev = "low"
-            findings.append(_make_finding(
-                f"Weak cipher accepted: {desc}",
-                f"Server negotiated {desc}.",
-                sev, 95, location=f"Cipher: {cipher_str}",
-                remediation="Remove weak ciphers from server configuration.",
-                cwe="CWE-327", owasp="A02:2021",
-                poc=f"openssl s_client -cipher {cipher_str} -connect {hostname}:{port}"))
+            findings.append(_make_finding(f"Weak cipher accepted: {desc}", f"Server negotiated {desc}.", sev, 95, location=f"Cipher: {cipher_str}", remediation="Remove weak ciphers from server configuration.", cwe="CWE-327", owasp="A02:2021", poc=f"openssl s_client -cipher {cipher_str} -connect {hostname}:{port}"))
 
-    # ROBOT detection
-    rsa_ciphers = [c for c in cipher_status if cipher_status[c] and any(
-        x in c for x in ("RSA", "AES128", "AES256", "CAMELLIA", "DES", "RC4"))]
+    rsa_ciphers = [c for c in cipher_status if cipher_status[c] and any(x in c for x in ("RSA", "AES128", "AES256", "CAMELLIA", "DES", "RC4"))]
     if rsa_ciphers and any(tls_versions.get(v) for v in ["TLSv1.0", "TLSv1.1", "TLSv1.2"]):
-        findings.append(_make_finding(
-            "ROBOT vulnerability possible",
-            "RSA key exchange ciphers with older TLS versions.",
-            "high", 90, location="Cipher/RSA",
-            remediation="Disable RSA key exchange ciphers; use ECDHE.",
-            cwe="CWE-327", owasp="A02:2021"))
+        findings.append(_make_finding("ROBOT vulnerability possible", "RSA key exchange ciphers with older TLS versions.", "high", 90, location="Cipher/RSA", remediation="Disable RSA key exchange ciphers; use ECDHE.", cwe="CWE-327", owasp="A02:2021"))
 
-    # 6. OCSP stapling & CT (Python ssl)
-    ocsp_stapling = None
-    ct_scts = None
-    ocsp_ct_note = ""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
-            with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
-                if hasattr(tls_sock, "get_ocsp_response"):
-                    ocsp_stapling = tls_sock.get_ocsp_response() is not None
-                else:
-                    ocsp_ct_note = "OCSP/CT information unavailable on this Python version"
-                if hasattr(tls_sock, "get_scts"):
-                    scts = tls_sock.get_scts()
-                    ct_scts = len(scts) if scts else 0
-    except Exception:
-        ocsp_ct_note = "Unable to check OCSP/CT due to connection error."
+    # 6. OCSP stapling & CT – run in executor
+    ocsp_stapling, ct_scts, ocsp_ct_note = await loop.run_in_executor(None, _check_ocsp_stapling_blocking, hostname, port)
 
     if ocsp_stapling is False:
-        findings.append(_make_finding(
-            "OCSP stapling not used", "Missing OCSP response in handshake.",
-            "low", 70, location="OCSP stapling",
-            remediation="Enable OCSP stapling.", cwe="CWE-299", owasp="A02:2021"))
+        findings.append(_make_finding("OCSP stapling not used", "Missing OCSP response in handshake.", "low", 70, location="OCSP stapling", remediation="Enable OCSP stapling.", cwe="CWE-299", owasp="A02:2021"))
     if cert_info.get("must_staple") and ocsp_stapling is False:
-        findings.append(_make_finding(
-            "OCSP Must‑Staple violated",
-            "Certificate requires OCSP stapling but server did not provide it.",
-            "critical", 100, location="OCSP Must‑Staple",
-            remediation="Enable OCSP stapling or remove the must‑staple flag.",
-            cwe="CWE-299", owasp="A02:2021"))
+        findings.append(_make_finding("OCSP Must‑Staple violated", "Certificate requires OCSP stapling but server did not provide it.", "critical", 100, location="OCSP Must‑Staple", remediation="Enable OCSP stapling or remove the must‑staple flag.", cwe="CWE-299", owasp="A02:2021"))
     if ct_scts == 0:
         sev = "high" if (context["is_login_page"] or context["is_ecommerce"]) else "medium"
-        findings.append(_make_finding(
-            "No Certificate Transparency (SCTs)",
-            "Certificate lacks Signed Certificate Timestamps.",
-            sev, 90 if sev == "high" else 70, location="CT",
-            remediation="Obtain a certificate with embedded SCTs.",
-            cwe="CWE-299", owasp="A02:2021"))
+        findings.append(_make_finding("No Certificate Transparency (SCTs)", "Certificate lacks Signed Certificate Timestamps.", sev, 90 if sev=="high" else 70, location="CT", remediation="Obtain a certificate with embedded SCTs.", cwe="CWE-299", owasp="A02:2021"))
 
-    # 7. Single page fetch for HSTS, CSP, Mixed Content & Context update
+    # ── 7. Use shared_page if available, else fetch ────────────────────────
     hsts_header = None
     csp_header = None
     mixed_findings = []
-    try:
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=8),
-            headers={"User-Agent": USER_AGENT}
-        ) as session:
-            async with session.get(f"https://{hostname}:{port}", ssl=ssl_ctx) as resp:
-                html = await resp.text()
-                headers = resp.headers
-                hsts_header = _get_header(headers, "Strict-Transport-Security")
-                csp_header = _get_header(headers, "Content-Security-Policy")
-                # Mixed content
-                mixed_findings = _scan_mixed_content(html, f"https://{hostname}:{port}")
-                findings.extend(mixed_findings)
-                # Update context with dynamic info
-                if 'cf-ray' in headers or 'x-sucuri-id' in headers or 'x-akamai-request-id' in headers:
-                    context["waf_detected"] = True
-                if re.search(r'<input[^>]*type=["\']?password["\']?', html, re.IGNORECASE):
-                    context["is_login_page"] = True
-                title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
-                title = title_match.group(1).lower() if title_match else ""
-                ecom_kw = ["shop", "store", "buy", "cart", "checkout", "shopping", "amazon", "ebay"]
-                if any(k in title or k in html.lower() for k in ecom_kw):
-                    context["is_ecommerce"] = True
-    except Exception as e:
-        findings.append(_make_finding(
-            "Page fetch failed for header/mixed content checks",
-            str(e),
-            "medium", 70, location="https fetch",
-            remediation="Ensure the web server is reachable and returns valid content."))
+    html = None
+    headers = None
+
+    if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
+        html = shared_page.get("html", "")
+        headers = shared_page.get("headers", {})
+    else:
+        try:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
+                                             headers={"User-Agent": USER_AGENT}) as session:
+                async with session.get(f"https://{hostname}:{port}", ssl=ssl_ctx) as resp:
+                    html = await resp.text()
+                    headers = resp.headers
+        except Exception as e:
+            findings.append(_make_finding("Page fetch failed for header/mixed content checks", str(e), "medium", 70, location="https fetch", remediation="Ensure the web server is reachable and returns valid content."))
+            html = ""
+            headers = {}
+
+    if html:
+        mixed_findings = _scan_mixed_content(html, f"https://{hostname}:{port}")
+        findings.extend(mixed_findings)
+        hsts_header = _get_header(headers, "Strict-Transport-Security")
+        csp_header = _get_header(headers, "Content-Security-Policy")
+        # Update context
+        if 'cf-ray' in headers or 'x-sucuri-id' in headers or 'x-akamai-request-id' in headers:
+            context["waf_detected"] = True
+        if re.search(r'<input[^>]*type=["\']?password["\']?', html, re.IGNORECASE):
+            context["is_login_page"] = True
+        title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+        title = title_match.group(1).lower() if title_match else ""
+        ecom_kw = ["shop", "store", "buy", "cart", "checkout", "shopping", "amazon", "ebay"]
+        if any(k in title or k in html.lower() for k in ecom_kw):
+            context["is_ecommerce"] = True
 
     # HSTS & CSP checks
     if not hsts_header and not is_internal:
-        findings.append(_make_finding(
-            "HSTS header missing", "No Strict-Transport-Security.",
-            "high", 100, location="HTTP Header", remediation="Add HSTS header.",
-            cwe="CWE-523",
-            poc=f"curl -I https://{hostname}:{port} | grep -i strict"))
+        findings.append(_make_finding("HSTS header missing", "No Strict-Transport-Security.", "high", 100, location="HTTP Header", remediation="Add HSTS header.", cwe="CWE-523", poc=f"curl -I https://{hostname}:{port} | grep -i strict"))
     elif hsts_header:
         if "includeSubDomains" not in hsts_header:
-            findings.append(_make_finding(
-                "HSTS missing includeSubDomains", "HSTS lacks subdomain protection.",
-                "medium", 90, location="HSTS header",
-                remediation="Add includeSubDomains to HSTS."))
+            findings.append(_make_finding("HSTS missing includeSubDomains", "HSTS lacks subdomain protection.", "medium", 90, location="HSTS header", remediation="Add includeSubDomains to HSTS."))
         max_age_match = re.search(r'max-age=(\d+)', hsts_header)
         if max_age_match:
             max_age = int(max_age_match.group(1))
             if max_age < 31536000:
-                findings.append(_make_finding(
-                    "HSTS max-age too short", "Max-age should be at least 1 year.",
-                    "low", 80, location="HSTS header",
-                    remediation="Set max-age to at least 31536000."))
+                findings.append(_make_finding("HSTS max-age too short", "Max-age should be at least 1 year.", "low", 80, location="HSTS header", remediation="Set max-age to at least 31536000."))
             elif max_age < 63072000:
-                findings.append(_make_finding(
-                    "HSTS max-age less than 2 years",
-                    "Consider increasing max-age to 63072000 (2 years) for better preload eligibility.",
-                    "low", 70, location="HSTS header",
-                    remediation="Increase max-age to 63072000 or more."))
+                findings.append(_make_finding("HSTS max-age less than 2 years", "Consider increasing max-age to 63072000 (2 years) for better preload eligibility.", "low", 70, location="HSTS header", remediation="Increase max-age to 63072000 or more."))
         if "preload" in hsts_header:
-            findings.append(_make_finding(
-                "HSTS preload flag present", "Domain eligible for browser preload list.",
-                "info", 50, location="HSTS header",
-                remediation="Consider submitting to hstspreload.org."))
+            findings.append(_make_finding("HSTS preload flag present", "Domain eligible for browser preload list.", "info", 50, location="HSTS header", remediation="Consider submitting to hstspreload.org."))
 
     if csp_header and "upgrade-insecure-requests" in csp_header:
-        findings.append(_make_finding(
-            "CSP upgrade-insecure-requests", "CSP is upgrading HTTP to HTTPS.",
-            "info", 50, location="CSP header", remediation="No action needed."))
+        findings.append(_make_finding("CSP upgrade-insecure-requests", "CSP is upgrading HTTP to HTTPS.", "info", 50, location="CSP header", remediation="No action needed."))
 
-    # 8. Compression / Renegotiation (openssl optional)
+    # 8. Compression / Renegotiation (optional openssl) – with proper timeout
     try:
         comp_proc = await asyncio.create_subprocess_exec(
             "openssl", "s_client", "-connect", f"{hostname}:{port}", "-comp",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL
         )
-        comp_out, _ = await asyncio.wait_for(comp_proc.communicate(), timeout=10)
-        if comp_out and b"Compression: zlib" in comp_out:
-            findings.append(_make_finding(
-                "TLS compression enabled (CRIME)", "Enables CRIME attack.",
-                "high", 95, location="TLS compression",
-                remediation="Disable TLS compression.",
-                cwe="CWE-310", owasp="A02:2021"))
+        try:
+            comp_out, _ = await asyncio.wait_for(comp_proc.communicate(), timeout=8)
+            if comp_out and b"Compression: zlib" in comp_out:
+                findings.append(_make_finding("TLS compression enabled (CRIME)", "Enables CRIME attack.", "high", 95, location="TLS compression", remediation="Disable TLS compression.", cwe="CWE-310", owasp="A02:2021"))
+        except asyncio.TimeoutError:
+            pass
     except Exception:
         pass
 
@@ -691,24 +577,22 @@ async def run(url: str) -> Dict[str, Any]:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL
         )
-        reneg_out, _ = await asyncio.wait_for(reneg_proc.communicate(), timeout=10)
-        if reneg_out and b"Secure Renegotiation IS NOT supported" in reneg_out:
-            findings.append(_make_finding(
-                "Insecure renegotiation", "Does not support secure renegotiation.",
-                "medium", 90, location="Renegotiation",
-                remediation="Enable secure renegotiation.",
-                cwe="CWE-757", owasp="A02:2021"))
+        try:
+            reneg_out, _ = await asyncio.wait_for(reneg_proc.communicate(), timeout=8)
+            if reneg_out and b"Secure Renegotiation IS NOT supported" in reneg_out:
+                findings.append(_make_finding("Insecure renegotiation", "Does not support secure renegotiation.", "medium", 90, location="Renegotiation", remediation="Enable secure renegotiation.", cwe="CWE-757", owasp="A02:2021"))
+        except asyncio.TimeoutError:
+            pass
     except Exception:
         pass
 
-    # ── Count issues and high/critical ────────────────────────────────────
+    # ── Final scoring ────────────────────────────────────────────────────
     mixed_count = len(mixed_findings)
     tls_issues = [f for f in findings if f.get("category") != "mixed_content"]
     tls_count = len(tls_issues)
     high_count = sum(1 for f in findings if f.get("severity") == "high")
     critical_count = sum(1 for f in findings if f.get("severity") == "critical")
 
-    # ── Final scoring ────────────────────────────────────────────────────
     score, grade, score_breakdown = _apply_scoring(findings, context)
     worst_sev = max(
         (f["severity"] for f in findings),
@@ -762,7 +646,6 @@ async def run(url: str) -> Dict[str, Any]:
         }
     }
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     target_url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
     result = asyncio.run(run(target_url))
