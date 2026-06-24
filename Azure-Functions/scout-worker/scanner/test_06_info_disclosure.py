@@ -25,7 +25,7 @@ SCANNER_NAME = "info_disclosure"
 USER_AGENT = "Bravo6-InfoDisclosure/8.5.1"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 HEAD_TIMEOUT = aiohttp.ClientTimeout(total=5)
-MAX_CONCURRENT = 8
+MAX_CONCURRENT = 16
 RETRY_MAX = 3
 RETRY_BACKOFF_BASE = 1
 
