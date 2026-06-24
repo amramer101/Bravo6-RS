@@ -9,6 +9,7 @@ Fully patched with:
   • Security header checks: X-Content-Type-Options, Referrer-Policy
   • Mixed content severity: forms/scripts → high
   • All set_ciphers() inside try/except → zero crashes
+  • Fixed ssl_tls_issues counting (excludes mixed_content findings correctly)
 """
 
 import asyncio
@@ -401,7 +402,11 @@ async def run(url: str) -> Dict:
     if not referrer_policy:
         findings.append({"title": "Referrer-Policy missing", "severity": "low"})
 
-    # Summary
+    # ── Accurate counts ─────────────────────────────────────────────────────
+    mixed_count = len(mixed_findings)
+    # SSL/TLS issues = everything that is NOT mixed content
+    ssl_issues_count = len([f for f in findings if f.get("type") != "mixed_content"])
+
     criticals = sum(1 for f in findings if f.get("severity") == "critical")
     highs = sum(1 for f in findings if f.get("severity") == "high")
     mediums = sum(1 for f in findings if f.get("severity") == "medium")
@@ -414,8 +419,8 @@ async def run(url: str) -> Dict:
         "status": status,
         "severity": sev,
         "title": f"Mixed Content & SSL/TLS – {len(findings)} issues",
-        "mixed_content_count": len(mixed_findings),
-        "ssl_tls_issues": len(findings) - len(mixed_findings),
+        "mixed_content_count": mixed_count,
+        "ssl_tls_issues": ssl_issues_count,
         "certificate": cert_info,
         "protocols": protocol_status,
         "ciphers": {c: v for c, v in cipher_status.items() if v},

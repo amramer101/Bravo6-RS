@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
-test_06_info_disclosure.py – Bravo6 Ultimate Info Disclosure Scanner (v8.5 – Final)
+test_06_info_disclosure.py – Bravo6 Ultimate Info Disclosure Scanner (v8.5.1 – Polished)
 ================================================================================
-- _is_sensitive_content returns False by default (minimizes false positives).
-- Reduced backup name generation (fewer patterns) to limit requests.
-- JS entropy threshold raised to 5.0 (reduces noise from high-entropy strings).
-- Modern sensitive paths added (.well-known, Firebase, Supabase, Vercel, Amplify).
-- All core features: smart wordlist, soft 404, API enumeration, GraphQL check,
-  source map detection, leaked credentials, cloud bucket listing, etc.
-- Unified JSON output with scoring, context, and summary statistics.
+- Fixed: sleep moved before semaphore acquisition in probe_path (better concurrency).
+- Helpers (_fetch_body, _is_robots_sensitive, _is_sensitive_content) moved before run().
+- All other features unchanged: smart wordlist, soft 404, entropy, etc.
 """
 
 import asyncio
@@ -26,7 +22,7 @@ from bs4 import BeautifulSoup, Comment
 
 # ── Constants ──────────────────────────────────────────────────────────────
 SCANNER_NAME = "info_disclosure"
-USER_AGENT = "Bravo6-InfoDisclosure/8.5"
+USER_AGENT = "Bravo6-InfoDisclosure/8.5.1"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 HEAD_TIMEOUT = aiohttp.ClientTimeout(total=5)
 MAX_CONCURRENT = 8
@@ -54,7 +50,7 @@ OWASP_MAP = {
     "user_enum": "A01:2021",
 }
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# ── Helpers (moved before run()) ───────────────────────────────────────────
 def _normalize_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -183,7 +179,7 @@ def _make_finding(
         "category": category,
     }
 
-# ── Risk Scoring Engine (v3) ───────────────────────────────────────────────
+# ── Risk Scoring Engine ────────────────────────────────────────────────────
 def calculate_score_v2(findings: List[Dict], context: Dict, waf_detected: bool) -> int:
     base = 100
     deductions = 0
@@ -241,7 +237,7 @@ HEADER_FINGERPRINTS = {
     },
 }
 
-# Modern sensitive paths added
+# Modern sensitive paths
 BASE_SENSITIVE_PATHS = [
     ".git/HEAD", ".env", ".env.production", ".env.local",
     "composer.json", "package.json", "Gemfile", "requirements.txt",
@@ -256,7 +252,6 @@ BASE_SENSITIVE_PATHS = [
     "xmlrpc.php",
     ".DS_Store", "Thumbs.db", "error.log",
     ".env.backup", "config.bak",
-    # Modern platforms
     ".well-known/security.txt", ".well-known/openid-configuration",
     "firebase.json", "supabase.json", "vercel.json", "amplify.yml",
     "aws-exports.js", "google-services.json",
@@ -339,7 +334,6 @@ class RateLimiter:
 
 # ── Backup Name Generation (reduced) ───────────────────────────────────────
 def _generate_backup_names(domain: str) -> List[str]:
-    """Generate a reduced set of backup filenames to avoid excessive probing."""
     names = []
     base = domain.split('.')[0]
     patterns = [
@@ -355,7 +349,7 @@ def _generate_backup_names(domain: str) -> List[str]:
         names.append(f"{domain}_backup_{datetime.now().strftime('%Y%m%d')}{ext}")
     return names
 
-# ── JS Leaked Credentials (v3 with entropy) ────────────────────────────────
+# ── JS Leaked Credentials ──────────────────────────────────────────────────
 JS_SAFE_TOKENS = [
     'localStorage', 'getToken', 'setToken', 'removeToken', 'clearToken',
     'token_type', 'grant_type', 'access_token', 'refresh_token',
@@ -434,7 +428,6 @@ async def _check_js_leaked_credentials(session, base_url, rate_limiter, findings
             resp_js = await rate_limiter.probe(session, js_url, 'GET')
             if resp_js and resp_js.status == 200:
                 content = await resp_js.text(errors='replace')
-                # High-confidence patterns
                 for pat in HIGH_CONFIDENCE_SECRET_PATTERNS:
                     matches = re.findall(pat, content)
                     for m in matches:
@@ -448,7 +441,6 @@ async def _check_js_leaked_credentials(session, base_url, rate_limiter, findings
                             poc=f"Inspect {js_url}",
                             category="js"
                         ))
-                # Broad pattern with strict filtering
                 broad_matches = BROAD_SECRET_PATTERN.findall(content)
                 for match in broad_matches:
                     val = match[0] if isinstance(match, tuple) else match
@@ -468,10 +460,10 @@ async def _check_js_leaked_credentials(session, base_url, rate_limiter, findings
                         poc=f"Inspect {js_url}",
                         category="js"
                     ))
-                # Entropy check for long strings (raised threshold to 5.0 to reduce noise)
+                # Entropy check (threshold 5.0)
                 for match in re.finditer(r'["\']([a-zA-Z0-9_\-+/=]{20,})["\']', content):
                     candidate = match.group(1)
-                    if _entropy(candidate) > 5.0:   # was 4.5, raised to suppress false positives
+                    if _entropy(candidate) > 5.0:
                         findings.append(_make_finding(
                             title="High-entropy string detected (possible API key)",
                             description=f"High-entropy string: {candidate}",
@@ -615,6 +607,54 @@ async def _fetch_generic_403_body(session, base_url: str, rate_limiter: RateLimi
             pass
     return None
 
+# ── Body fetcher (used by probe_path) ──────────────────────────────────────
+async def _fetch_body(session, url: str) -> Optional[str]:
+    try:
+        async with session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
+            if resp.status == 200:
+                return await resp.text(errors="replace")
+    except Exception as e:
+        _log_error(f"Failed to fetch body for {url}: {e}")
+    return None
+
+# ── robots.txt analysis ───────────────────────────────────────────────────
+def _is_robots_sensitive(body: str) -> bool:
+    sensitive_patterns = [r'admin', r'backup', r'config', r'\.git', r'\.env', r'wp-admin', r'login', r'dashboard']
+    for pattern in sensitive_patterns:
+        if re.search(r'Disallow:\s*/' + pattern, body, re.IGNORECASE):
+            return True
+    return False
+
+# ── Sensitive content verification ────────────────────────────────────────
+def _is_sensitive_content(path: str, body: str) -> bool:
+    """Check if the content matches the expected pattern for a sensitive file.
+    Returns True only if the file content is clearly sensitive; otherwise False."""
+    if ".git/HEAD" in path:
+        return "ref: refs/heads/" in body
+    if ".env" in path:
+        return any(kw in body for kw in ["DB_", "PASSWORD", "API_KEY", "SECRET", "APP_KEY"])
+    if "composer.json" in path:
+        return '"require"' in body
+    if "package.json" in path:
+        return '"dependencies"' in body
+    if "robots.txt" in path:
+        return True  # handled before this call
+    if "sitemap.xml" in path:
+        return "<urlset" in body or "<sitemapindex" in body
+    if "CHANGELOG" in path or "VERSION" in path or "RELEASE" in path:
+        return bool(re.search(r'\d+\.\d+\.\d+', body))
+    if "phpinfo" in path:
+        return "PHP Version" in body
+    if ".htaccess" in path:
+        return any(kw in body for kw in ["RewriteRule", "Deny"])
+    if "swagger" in path:
+        return "swagger" in body.lower() or "openapi" in body.lower()
+    if path.endswith(".sql"):
+        return "CREATE TABLE" in body
+    if path.endswith((".zip", ".tar.gz", ".tgz", ".rar", ".7z", ".bak")):
+        return True
+    return False   # <-- intentionally avoids false positives
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Main Scanner
 # ══════════════════════════════════════════════════════════════════════════════
@@ -756,75 +796,76 @@ async def run(url: str) -> Dict[str, Any]:
             # 3. Obtain generic 403 body
             generic_403_body = await _fetch_generic_403_body(session, base_url, rate_limiter)
 
-            # 4. Probe paths with rate limiting
+            # 4. Probe paths with rate limiting (sleep before semaphore)
             homepage_length = len(main_body) if main_body else 0
             sem = asyncio.Semaphore(MAX_CONCURRENT)
 
             async def probe_path(path):
+                # sleep first, then acquire slot
+                await asyncio.sleep(random.uniform(0.05, 0.2))
                 async with sem:
-                    await asyncio.sleep(random.uniform(0.05, 0.2))
-                full_url = urljoin(base_url, path)
-                try:
-                    async with session.head(full_url, timeout=HEAD_TIMEOUT, allow_redirects=True) as head_resp:
-                        status = head_resp.status
-                except Exception:
-                    return
-                if status == 200:
-                    body = await _fetch_body(session, full_url)
-                    if body:
-                        if main_body and _is_soft_404(body, main_body):
-                            return
-                        if path == "robots.txt":
-                            if _is_robots_sensitive(body):
-                                findings.append(_make_finding(
-                                    title="robots.txt exposes sensitive paths",
-                                    description="robots.txt contains disallowed admin/backup paths.",
-                                    severity="medium", confidence=90,
-                                    location=path, evidence=body[:200],
-                                    remediation="Review robots.txt and remove sensitive entries.",
-                                    category="config"
-                                ))
-                            return
-                        if path == "sitemap.xml":
-                            if "<urlset" not in body and "<sitemapindex" not in body:
-                                findings.append(_make_finding(
-                                    title="Suspicious sitemap.xml",
-                                    description="File exists but lacks standard sitemap structure.",
-                                    severity="low", confidence=50,
-                                    location=path, evidence=body[:300],
-                                    remediation="Check if this file is intentionally exposed.",
-                                    category="config"
-                                ))
-                            return
-                        if _is_sensitive_content(path, body):
-                            sev, conf, risk = "critical", 100, "Sensitive file exposed and verified."
-                        else:
-                            sev, conf, risk = "info", 50, "File exists but content does not match expected sensitive pattern."
+                    full_url = urljoin(base_url, path)
+                    try:
+                        async with session.head(full_url, timeout=HEAD_TIMEOUT, allow_redirects=True) as head_resp:
+                            status = head_resp.status
+                    except Exception:
+                        return
+                    if status == 200:
+                        body = await _fetch_body(session, full_url)
+                        if body:
+                            if main_body and _is_soft_404(body, main_body):
+                                return
+                            if path == "robots.txt":
+                                if _is_robots_sensitive(body):
+                                    findings.append(_make_finding(
+                                        title="robots.txt exposes sensitive paths",
+                                        description="robots.txt contains disallowed admin/backup paths.",
+                                        severity="medium", confidence=90,
+                                        location=path, evidence=body[:200],
+                                        remediation="Review robots.txt and remove sensitive entries.",
+                                        category="config"
+                                    ))
+                                return
+                            if path == "sitemap.xml":
+                                if "<urlset" not in body and "<sitemapindex" not in body:
+                                    findings.append(_make_finding(
+                                        title="Suspicious sitemap.xml",
+                                        description="File exists but lacks standard sitemap structure.",
+                                        severity="low", confidence=50,
+                                        location=path, evidence=body[:300],
+                                        remediation="Check if this file is intentionally exposed.",
+                                        category="config"
+                                    ))
+                                return
+                            if _is_sensitive_content(path, body):
+                                sev, conf, risk = "critical", 100, "Sensitive file exposed and verified."
+                            else:
+                                sev, conf, risk = "info", 50, "File exists but content does not match expected sensitive pattern."
+                            findings.append(_make_finding(
+                                title=f"Exposed file: {path}",
+                                description=risk,
+                                severity=sev, confidence=conf,
+                                location=path, evidence=body[:300],
+                                remediation="Restrict access or remove file.",
+                                cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
+                                owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
+                                poc=f"curl {full_url}",
+                                category="active"
+                            ))
+                    elif status == 403:
+                        if generic_403_body:
+                            body = await _fetch_body(session, full_url)
+                            if body and body.strip() == generic_403_body.strip():
+                                return
+                        sev = _is_highly_sensitive_path(path)
                         findings.append(_make_finding(
-                            title=f"Exposed file: {path}",
-                            description=risk,
-                            severity=sev, confidence=conf,
-                            location=path, evidence=body[:300],
-                            remediation="Restrict access or remove file.",
-                            cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
-                            owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
-                            poc=f"curl {full_url}",
+                            title=f"Forbidden file: {path}",
+                            description="File exists but is protected." + (" (highly sensitive)" if sev in ("high","medium") else ""),
+                            severity=sev, confidence=80,
+                            location=path,
+                            remediation="Ensure protection is adequate.",
                             category="active"
                         ))
-                elif status == 403:
-                    if generic_403_body:
-                        body = await _fetch_body(session, full_url)
-                        if body and body.strip() == generic_403_body.strip():
-                            return
-                    sev = _is_highly_sensitive_path(path)
-                    findings.append(_make_finding(
-                        title=f"Forbidden file: {path}",
-                        description="File exists but is protected." + (" (highly sensitive)" if sev in ("high","medium") else ""),
-                        severity=sev, confidence=80,
-                        location=path,
-                        remediation="Ensure protection is adequate.",
-                        category="active"
-                    ))
 
             tasks = [probe_path(p) for p in all_paths]
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -963,55 +1004,6 @@ async def run(url: str) -> Dict[str, Any]:
         "remediation": remediation_list,
         "details": details,
     }
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Helpers
-# ══════════════════════════════════════════════════════════════════════════════
-async def _fetch_body(session, url: str) -> Optional[str]:
-    try:
-        async with session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
-            if resp.status == 200:
-                return await resp.text(errors="replace")
-    except Exception as e:
-        _log_error(f"Failed to fetch body for {url}: {e}")
-    return None
-
-def _is_robots_sensitive(body: str) -> bool:
-    sensitive_patterns = [r'admin', r'backup', r'config', r'\.git', r'\.env', r'wp-admin', r'login', r'dashboard']
-    for pattern in sensitive_patterns:
-        if re.search(r'Disallow:\s*/' + pattern, body, re.IGNORECASE):
-            return True
-    return False
-
-def _is_sensitive_content(path: str, body: str) -> bool:
-    """Check if the content matches the expected pattern for a sensitive file.
-    Returns True only if the file content is clearly sensitive; otherwise False."""
-    if ".git/HEAD" in path:
-        return "ref: refs/heads/" in body
-    if ".env" in path:
-        return any(kw in body for kw in ["DB_", "PASSWORD", "API_KEY", "SECRET", "APP_KEY"])
-    if "composer.json" in path:
-        return '"require"' in body
-    if "package.json" in path:
-        return '"dependencies"' in body
-    if "robots.txt" in path:
-        return True  # robots.txt itself is not really sensitive, but we handle it separately before calling this
-    if "sitemap.xml" in path:
-        return "<urlset" in body or "<sitemapindex" in body
-    if "CHANGELOG" in path or "VERSION" in path or "RELEASE" in path:
-        return bool(re.search(r'\d+\.\d+\.\d+', body))
-    if "phpinfo" in path:
-        return "PHP Version" in body
-    if ".htaccess" in path:
-        return any(kw in body for kw in ["RewriteRule", "Deny"])
-    if "swagger" in path:
-        return "swagger" in body.lower() or "openapi" in body.lower()
-    if path.endswith(".sql"):
-        return "CREATE TABLE" in body
-    if path.endswith((".zip", ".tar.gz", ".tgz", ".rar", ".7z", ".bak")):
-        return True
-    # All other files are not considered sensitive by default
-    return False
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
