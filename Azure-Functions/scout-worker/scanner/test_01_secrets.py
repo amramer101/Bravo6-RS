@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-Bravo6 Ultimate Secrets Hunter (v6.1 – High-Precision, Low Noise)
-==================================================================
-- Drastically reduced false positives with context enforcement and tiered patterns.
-- Firebase verification now requires HTTP 200 (403 no longer counts as verified).
-- Summary separates real secrets from forbidden files; title reflects real findings.
-- Generic 403 body caching avoids reporting boilerplate forbidden pages.
-- Soft 404 detection uses title + structural similarity (difflib).
-- New `min_confidence` parameter (default 75) to filter low‑quality hits.
-- Extended sensitive paths for SSH/private keys.
-- Context window increased to 60 characters.
-- All previous features retained: shared session, deobfuscation, entropy, live verification, header fingerprinting.
+Bravo6 Ultimate Secrets Hunter (v6.2.1 – Clean Summary)
+=========================================================
+- Fixed misclassification: non‑secret evidence (e.g. Tech Stack)
+  no longer inflates secret counts or severity.
+- All previous optimizations retained.
 """
 
 import argparse
@@ -26,10 +20,8 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-USER_AGENT = "Bravo6-SecretsHunter/6.1"
+# ────────────────────────────────────────────── Configuration ──────────────────────────────────────────────
+USER_AGENT = "Bravo6-SecretsHunter/6.2.1"
 VERIFY_USER_AGENT = "Bravo6-Verification/2.0"
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 VERIFY_TIMEOUT = aiohttp.ClientTimeout(total=8)
@@ -37,15 +29,15 @@ MAX_CONCURRENT_VERIFIES = 8
 MAX_CONCURRENT_JS_FETCHES = 5
 MAX_JS_FILES = 15
 MAX_INLINE_SCRIPTS = 40
+INLINE_SCRIPT_MAX_BYTES = 250 * 1024
 FETCH_MAX_BYTES_HTML = 2 * 1024 * 1024
 FETCH_MAX_BYTES_JS = 1 * 1024 * 1024
-JS_SIZE_LIMIT = 500 * 1024          # 500 KB pre‑filter
+JS_SIZE_LIMIT = 500 * 1024
 
 SENSITIVE_PATHS = [
     "/.env", "/config.js", "/credentials.json",
     "/secrets.yaml", "/app.config", "/settings.py",
     "/.git/config", "/config/secrets.yml",
-    # SSH & private key files (NEW)
     "/id_rsa", "/id_rsa.pub", "/.ssh/id_rsa",
     "/.ssh/id_ecdsa", "/.ssh/id_ed25519",
     "/server.key", "/private.key", "/cert.pem",
@@ -53,12 +45,9 @@ SENSITIVE_PATHS = [
 ]
 
 GENERIC_403_TEST_PATH = "/Bravo6-Nonexistent-Test-404"
+DEFAULT_MIN_CONFIDENCE = 75
 
-DEFAULT_MIN_CONFIDENCE = 75  # report only findings >= this confidence (except forbidden files)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# False‑positive filters – improved
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── False‑positive filters ──────────────────────────────────────
 PLACEHOLDER_MARKERS = (
     "test", "demo", "fake", "example", "sample", "placeholder", "dummy",
     "changeme", "your_", "insert_", "redacted", "xxxxxxxx", "00000000",
@@ -66,7 +55,7 @@ PLACEHOLDER_MARKERS = (
     "process.env", "lorem", "foobar", "asdf", "yourkey", "your-api-key",
     "api_key_here", "secret_key_here", "put_your", "replace_me",
     "your-secret", "my-secret", "example-", "sample-",
-    "00000000-0000-0000-0000-000000000000"  # UUID zero
+    "00000000-0000-0000-0000-000000000000"
 )
 KNOWN_TEST_PREFIXES = (
     "sk_test_", "pk_test_", "sk_live_",
@@ -74,7 +63,6 @@ KNOWN_TEST_PREFIXES = (
     "xoxb-", "xoxp-",
     "SG.",
 )
-# Keywords that indicate a real credential context
 CONTEXT_KEYWORDS = ("key", "secret", "token", "auth", "credential",
                     "password", "api", "access", "passwd", "private",
                     "database", "dsn", "connection")
@@ -83,7 +71,6 @@ HIGH_ENTROPY_EXCLUDES = re.compile(
     re.IGNORECASE
 )
 
-# Soft 404 detection reference strings
 SOFT_404_PHRASES = [
     "404 Not Found",
     "Not Found",
@@ -94,48 +81,38 @@ SOFT_404_PHRASES = [
 ]
 
 def _looks_like_placeholder(value: str) -> bool:
-    """Extended placeholder detection including repetitive characters."""
     if not value:
         return True
     low = value.lower()
     for marker in PLACEHOLDER_MARKERS:
         if marker in low:
             return True
-    # Repetitive chars (e.g., "aaaaa...")
     if len(set(low)) <= 3 and len(low) > 5:
         return True
-    # Numeric only and short
     if value.isdigit() and len(value) < 20:
         return True
-    # Common fake GUIDs
     if re.match(r'^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$', low):
         return all(c == '0' for c in low if c != '-')
     return False
 
 def _is_known_test_key(value: str) -> bool:
-    """Check if the value starts with a well‑known test prefix."""
     return any(value.startswith(p) for p in KNOWN_TEST_PREFIXES)
 
 def _has_credential_context(text: str, match_start: int, match_end: int, window: int = 60) -> bool:
-    """Check for credential‑related keywords within a window around the match (default 60 chars)."""
     start_win = max(0, match_start - window)
     end_win = min(len(text), match_end + window)
     snippet = text[start_win:end_win]
     return any(re.search(rf'\b{kw}\b', snippet, re.IGNORECASE) for kw in CONTEXT_KEYWORDS)
 
 def _is_in_comment(text: str, match_start: int) -> bool:
-    """Determine if the match lies inside a JavaScript single‑ or multi‑line comment, or HTML comment."""
     line_start = text.rfind('\n', 0, match_start) + 1
     line = text[line_start:match_start].strip()
     if line.startswith('//') or '<!--' in line:
         return True
-    # Multi‑line comment check (/* ... */)
-    # simple: if there is an unclosed /* before the match
     return bool(re.search(r'/\*.*$', text[:match_start], re.DOTALL)) and \
            not re.search(r'\*/', text[:match_start])
 
 def _shannon_entropy(data: str) -> float:
-    """Shannon entropy of a string."""
     if not data:
         return 0.0
     freq = {}
@@ -145,11 +122,6 @@ def _shannon_entropy(data: str) -> float:
     return -sum((c / length) * math.log2(c / length) for c in freq.values())
 
 def _is_soft_404(html: str) -> bool:
-    """
-    Detect soft 404 pages using:
-      1. Title patterns.
-      2. Structural similarity (difflib) against known 404 phrases.
-    """
     if not html:
         return False
     soup = BeautifulSoup(html, "html.parser")
@@ -161,16 +133,12 @@ def _is_soft_404(html: str) -> bool:
     if re.search(r'\b(404|not\s*found)\b', title, re.IGNORECASE):
         return True
     for phrase in SOFT_404_PHRASES:
-        ratio = difflib.SequenceMatcher(None, text.lower(), phrase.lower()).ratio()
-        if ratio > 0.65:
+        if difflib.SequenceMatcher(None, text.lower(), phrase.lower()).ratio() > 0.65:
             return True
     return False
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Active Verification
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── Active Verification ──────────────────────────────────────────
 async def _verify_with_retry(verifier, key, session, *args) -> dict:
-    """Execute a verifier with one retry on exception."""
     try:
         return await verifier(key, session, *args)
     except Exception:
@@ -249,7 +217,6 @@ async def _verify_mapbox(key: str, session: aiohttp.ClientSession) -> dict:
         return {"verified": resp.status == 200, "status": resp.status, "preview": body[:300]}
 
 async def _verify_firebase(api_key: str, project_id: str, session: aiohttp.ClientSession) -> dict:
-    """Firebase verification: only HTTP 200 means verified."""
     url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/__test_collection__"
     headers = {"User-Agent": VERIFY_USER_AGENT}
     params = {"key": api_key}
@@ -273,10 +240,7 @@ VERIFIERS = {
     "MapBox API Key":        _verify_mapbox,
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Secret Patterns – Tiered (high/low confidence)
-# ──────────────────────────────────────────────────────────────────────────────
-# (label, regex, group_idx, high_confidence_bool)
+# ────────────────────────────────────────────── Secret Patterns ──────────────────────────────────────────────
 SECRET_PATTERNS = [
     ("OpenAI API Key",          re.compile(r'sk-proj-[A-Za-z0-9_\-]{20,}'), 0, True),
     ("OpenAI API Key",          re.compile(r'sk-(?!ant-|live_|test_|proj-)[A-Za-z0-9]{20,}'), 0, True),
@@ -293,14 +257,14 @@ SECRET_PATTERNS = [
     ("Mailgun API Key",         re.compile(r'key-[a-zA-Z0-9]{32}'), 0, True),
     ("Supabase Key",            re.compile(r'sb-[a-z0-9]{20,}-[a-z0-9]{20,}'), 0, True),
     ("Vercel Token",            re.compile(r'[a-zA-Z0-9]{24}\.[a-zA-Z0-9_]{60,70}'), 0, True),
-    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0, False),   # low‑confidence unless context
+    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0, False),
     ("MapBox API Key",          re.compile(r'(pk|sk)\.eyJ1Ijoi[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+'), 0, True),
-    ("Google API Key",          re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),  # generic, needs context
-    ("Firebase API Key",        re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),  # handled separately via config
+    ("Google API Key",          re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),
+    ("Firebase API Key",        re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),
     ("Twilio Auth Token",       re.compile(r'SK[0-9a-fA-F]{32}'), 0, False),
     ("Twilio Account SID",      re.compile(r'AC[0-9a-fA-F]{32}'), 0, False),
-    ("Algolia Application ID",  re.compile(r'[A-Z0-9]{10}'), 0, False),         # very generic
-    ("Algolia API Key",         re.compile(r'[a-fA-F0-9]{32}'), 0, False),      # very generic
+    ("Algolia Application ID",  re.compile(r'[A-Z0-9]{10}'), 0, False),
+    ("Algolia API Key",         re.compile(r'[a-fA-F0-9]{32}'), 0, False),
     ("AWS Access Key ID",       re.compile(r'AKIA[0-9A-Z]{16}'), 0, True),
     ("AWS Secret Access Key",   re.compile(r'(?i)aws.{0,20}secret.{0,20}["\']([A-Za-z0-9/+=]{40})["\']'), 1, True),
     ("AWS4-HMAC-SHA256",        re.compile(r'AWS4-HMAC-SHA256\s+Credential=([A-Z0-9]{16})/[0-9]+/[a-z0-9-]+/[a-z0-9]+/aws4_request'), 1, True),
@@ -319,9 +283,7 @@ FIREBASE_CONFIG = re.compile(
 ENTROPY_CANDIDATE = re.compile(r'["\'`]([A-Za-z0-9+/_\-=]{40,})["\'`]')
 ENTROPY_CONTEXT = re.compile(r'(?i)(key|token|secret|auth|credential|passwd)')
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── Helpers ──────────────────────────────────────────────────────
 def _mask(value: str, keep_start: int = 4, keep_end: int = 4) -> str:
     if len(value) <= keep_start + keep_end:
         return "*" * len(value)
@@ -331,16 +293,17 @@ def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 def _extract_context(text: str, start: int, end: int) -> str:
-    """Return 5 lines of surrounding context."""
     lines = text.splitlines()
     ln = _line_number(text, start) - 1
-    ctx = []
+    ctx_lines = []
     for i in range(max(0, ln - 2), min(len(lines), ln + 3)):
-        ctx.append(f"{i + 1}: {lines[i].strip()}")
-    return "\n".join(ctx)
+        line = lines[i].strip()
+        if len(line) > 200:
+            line = line[:200] + "..."
+        ctx_lines.append(f"{i + 1}: {line}")
+    return "\n".join(ctx_lines)
 
 def _poc_command(secret_type: str, key: str, url: str = "") -> str:
-    """Generate a proof-of-concept command for verification."""
     if "OpenAI" in secret_type:
         return f'curl https://api.openai.com/v1/models -H "Authorization: Bearer {key}"'
     if "Stripe" in secret_type:
@@ -374,11 +337,8 @@ def _risk_description(secret_type: str, verified: bool, note: str = "") -> str:
         return f"Unverified {secret_type}: {note}"
     return f"High‑confidence pattern for {secret_type}; manual verification needed."
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Deobfuscation
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── Deobfuscation ────────────────────────────────────────────────
 def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
-    """Decode atob() and String.fromCharCode() calls in JavaScript."""
     decoded = []
     methods = []
     atob_pat = re.compile(r'atob\s*\(\s*(["\'])((?:(?!\1).)*)\1\s*\)', re.IGNORECASE)
@@ -408,16 +368,13 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
     method_str = ", ".join(methods) if methods else None
     return unique, method_str
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Header‑based technology fingerprinting
-# ──────────────────────────────────────────────────────────────────────────────
-def _fingerprint_from_headers(resp_headers: Dict[str, str]) -> List[str]:
-    """Return a list of detected technologies from HTTP response headers."""
+# ────────────────────────────────────────────── Header‑based fingerprinting ─────────────────────────────────
+def _fingerprint_from_headers(resp_headers: Dict[str, str], raw_set_cookies: List[str]) -> List[str]:
     tech = []
     server = resp_headers.get("server", "")
     powered = resp_headers.get("x-powered-by", "")
     generator = resp_headers.get("x-generator", "")
-    cookies = resp_headers.get("set-cookie", "")
+    cookies = "; ".join(raw_set_cookies)
 
     if "php" in powered.lower():
         tech.append("PHP")
@@ -456,12 +413,10 @@ def _fingerprint_from_headers(resp_headers: Dict[str, str]) -> List[str]:
             break
     return list(set(tech))
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Core scanning
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── Core scanning ────────────────────────────────────────────────
 async def _scan_content(
     content: str,
-    location_fn,
+    location_fn_factory,
     session: aiohttp.ClientSession,
     is_script: bool,
     semaphore: asyncio.Semaphore,
@@ -469,10 +424,6 @@ async def _scan_content(
     verify_live: bool = False,
     min_confidence: int = DEFAULT_MIN_CONFIDENCE,
 ) -> List[dict]:
-    """
-    Scan a text block for secrets. Returns findings that meet the min_confidence
-    threshold (except forbidden files, which are handled separately).
-    """
     findings = []
     matched_spans = []
     aws_access_keys: Dict[str, dict] = {}
@@ -496,12 +447,10 @@ async def _scan_content(
             if is_script and _is_in_comment(content, start):
                 continue
 
-            # Low‑confidence patterns MUST have strong credential context (window=60)
             if not is_high_conf:
                 if not _has_credential_context(content, start, end, window=60):
                     continue
 
-            # Additional domain‑specific context for known low‑confidence ones
             if label == "Cloudflare API Token":
                 ctx = content[max(0, start - 60):end + 60]
                 if not re.search(r'(cloudflare|cf_)', ctx, re.IGNORECASE):
@@ -563,12 +512,13 @@ async def _scan_content(
                 continue
 
             line_no = _line_number(content, start)
+            location = location_fn_factory(line_no)
             context = _extract_context(content, start, end)
             poc = _poc_command(label, value)
 
             evidence = {
                 "type": label,
-                "location": location_fn(line_no),
+                "location": location,
                 "value_masked": _mask(value),
                 "verified": verified,
                 "confidence": confidence,
@@ -593,9 +543,11 @@ async def _scan_content(
                     pair_conf = 90
                     if pair_conf < min_confidence:
                         continue
+                    loc_ak = location_fn_factory(ak_data["line"])
+                    loc_sk = location_fn_factory(sk_data["line"])
                     findings.append({
                         "type": "AWS Key Pair",
-                        "location": f"AK line {ak_data['line']}, SK line {sk_data['line']}",
+                        "location": f"AK {loc_ak}, SK {loc_sk}",
                         "value_masked": f"{_mask(ak)} & {_mask(sk)}",
                         "verified": False,
                         "confidence": pair_conf,
@@ -627,9 +579,10 @@ async def _scan_content(
             continue
         severity_fb = "critical" if verified_fb else "medium"
         line_no = _line_number(content, start)
+        location = location_fn_factory(line_no)
         evidence = {
             "type": "Firebase Configuration",
-            "location": location_fn(line_no),
+            "location": location,
             "value_masked": f"apiKey={_mask(apikey)}, projectId={project_id}",
             "verified": verified_fb,
             "confidence": confidence_fb,
@@ -643,7 +596,7 @@ async def _scan_content(
         findings.append(evidence)
         matched_spans.append((start, end))
 
-    # High‑entropy generic secrets (only if min_confidence allows, default 50)
+    # High‑entropy generic secrets
     if min_confidence <= 50:
         for match in ENTROPY_CANDIDATE.finditer(content):
             start, end = match.start(), match.end()
@@ -654,15 +607,16 @@ async def _scan_content(
                 continue
             if _shannon_entropy(candidate) < 5.0:
                 continue
-            if not ENTROPY_CONTEXT.search(content[max(0, start - 30):start]):
+            ctx_window = content[max(0, start - 60):end + 60]
+            if not ENTROPY_CONTEXT.search(ctx_window):
                 continue
-            ctx_window = content[max(0, start - 50):end + 50]
             if HIGH_ENTROPY_EXCLUDES.search(ctx_window):
                 continue
             line_no = _line_number(content, start)
+            location = location_fn_factory(line_no)
             findings.append({
                 "type": "High‑Entropy Secret",
-                "location": location_fn(line_no),
+                "location": location,
                 "value_masked": _mask(candidate),
                 "verified": False,
                 "confidence": 50,
@@ -675,11 +629,8 @@ async def _scan_content(
 
     return findings
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Fetch helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── Fetch helpers ────────────────────────────────────────────────
 async def _fetch_text(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
-    """Fetch limited content, returns (content, status, error)."""
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=True) as resp:
             status = resp.status
@@ -693,7 +644,6 @@ async def _fetch_text(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
         return None, None, str(e)
 
 async def _fetch_full(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
-    """Fetch response body regardless of status code, returns (status, text)."""
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=True) as resp:
             content = await resp.content.read(max_bytes)
@@ -703,7 +653,6 @@ async def _fetch_full(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
         return None, None
 
 def _extract_scripts(soup_or_html, base_url, soup_obj=None):
-    """Extract external JS URLs and inline script contents."""
     if soup_obj is None:
         soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
     else:
@@ -717,12 +666,11 @@ def _extract_scripts(soup_or_html, base_url, soup_obj=None):
                 external.append(abs_url)
         else:
             content = (tag.string or "").strip()
-            if content:
+            if content and len(content) <= INLINE_SCRIPT_MAX_BYTES:
                 inline.append(content)
     return list(dict.fromkeys(external))[:MAX_JS_FILES], inline[:MAX_INLINE_SCRIPTS]
 
 def _find_risky_files(soup_or_html, base_url, soup_obj=None):
-    """Identify URLs pointing to potential config/secrets files."""
     if soup_obj is None:
         soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
     else:
@@ -747,14 +695,11 @@ def _find_risky_files(soup_or_html, base_url, soup_obj=None):
     return list(risky)[:10]
 
 async def _get_generic_403_info(session, base_url):
-    """Fetch a known non‑existent path and return (is_generic_403, body)."""
     test_url = urljoin(base_url, GENERIC_403_TEST_PATH)
     status, body = await _fetch_full(session, test_url, max_bytes=8192, timeout=5)
     return (status == 403), body if status == 403 else ""
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main entry point
-# ──────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────── Main entry point ──────────────────────────────────────────────
 async def run(
     url: str,
     shared_page: dict = None,
@@ -762,19 +707,6 @@ async def run(
     session: aiohttp.ClientSession = None,
     min_confidence: int = DEFAULT_MIN_CONFIDENCE,
 ) -> Dict[str, Any]:
-    """
-    Secrets Hunter main function.
-
-    Args:
-        url: Target URL.
-        shared_page: Pre‑fetched page dict from main_scanner (optional).
-        verify_live: Enable live Anthropic verification.
-        session: Shared aiohttp session (optional).
-        min_confidence: Minimum confidence to include a finding (0‑100, default 75).
-
-    Returns:
-        Dictionary with test results.
-    """
     target = url.strip()
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
@@ -794,12 +726,12 @@ async def run(
     scanned_urls = []
     sem_verify = asyncio.Semaphore(MAX_CONCURRENT_VERIFIES)
     sem_js_fetch = asyncio.Semaphore(MAX_CONCURRENT_JS_FETCHES)
-    generic_403_body = ""
 
+    resp_headers = {}
+    raw_set_cookies = []
     try:
         html = None
         status = None
-        resp_headers = {}
         soup_obj = None
 
         if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
@@ -808,6 +740,7 @@ async def run(
             soup_obj = shared_page.get("soup")
             raw_headers = shared_page.get("headers", {})
             resp_headers = {k.lower(): v for k, v in raw_headers.items()}
+            raw_set_cookies = shared_page.get("raw_set_cookies", [])
         else:
             async with own_session.get(target, timeout=aiohttp.ClientTimeout(total=20),
                                        ssl=True, allow_redirects=True) as resp:
@@ -820,6 +753,7 @@ async def run(
                         "evidence": []
                     }
                 resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+                raw_set_cookies = resp.headers.getall("set-cookie")
                 body_bytes = await resp.content.read(FETCH_MAX_BYTES_HTML + 1)
                 if len(body_bytes) > FETCH_MAX_BYTES_HTML:
                     return {
@@ -839,7 +773,7 @@ async def run(
                 "evidence": []
             }
 
-        tech_stack = _fingerprint_from_headers(resp_headers)
+        tech_stack = _fingerprint_from_headers(resp_headers, raw_set_cookies)
         if tech_stack:
             findings.append({
                 "type": "Tech Stack (from headers)",
@@ -859,14 +793,18 @@ async def run(
 
         for idx, script in enumerate(inline_scripts):
             resources_scanned += 1
-            loc_fn = lambda ln, i=idx: f"Inline script #{i+1} line {ln}"
+            def make_loc_fn(idx):
+                return lambda ln: f"Inline script #{idx+1} line {ln}"
+            loc_fn = make_loc_fn(idx)
             f = await _scan_content(script, loc_fn, own_session, True, sem_verify,
                                     verify_live=verify_live, min_confidence=min_confidence)
             findings.extend(f)
             decoded_strings, method = _extract_decoded_strings(script)
             if decoded_strings:
                 combined = "\n".join(decoded_strings)
-                dec_loc_fn = lambda ln, i=idx, m=method: f"Inline script #{i+1} (decoded {m}) line {ln}"
+                def make_dec_loc_fn(idx, method):
+                    return lambda ln: f"Inline script #{idx+1} (decoded {method}) line {ln}"
+                dec_loc_fn = make_dec_loc_fn(idx, method)
                 f_dec = await _scan_content(combined, dec_loc_fn, own_session, True, sem_verify,
                                             decoded_method=method, verify_live=verify_live,
                                             min_confidence=min_confidence)
@@ -895,20 +833,26 @@ async def run(
             resources_scanned += 1
             scanned_urls.append(ext_urls[i])
             filename = urlparse(ext_urls[i]).path.split("/")[-1] or "external.js"
-            loc_fn = lambda ln, fn=filename: f"{fn} line {ln}"
+            def make_js_loc_fn(filename):
+                return lambda ln: f"{filename} line {ln}"
+            loc_fn = make_js_loc_fn(filename)
             f = await _scan_content(js_content, loc_fn, own_session, True, sem_verify,
                                     verify_live=verify_live, min_confidence=min_confidence)
             findings.extend(f)
             decoded_strings, method = _extract_decoded_strings(js_content)
             if decoded_strings:
                 combined = "\n".join(decoded_strings)
-                dec_loc_fn = lambda ln, fn=filename, m=method: f"{fn} (decoded {m}) line {ln}"
+                def make_dec_js_loc_fn(filename, method):
+                    return lambda ln: f"{filename} (decoded {method}) line {ln}"
+                dec_loc_fn = make_dec_js_loc_fn(filename, method)
                 f_dec = await _scan_content(combined, dec_loc_fn, own_session, True, sem_verify,
                                             decoded_method=method, verify_live=verify_live,
                                             min_confidence=min_confidence)
                 findings.extend(f_dec)
 
-        f = await _scan_content(html, lambda ln: f"HTML line {ln}", own_session, False, sem_verify,
+        def html_loc_fn(ln):
+            return f"HTML line {ln}"
+        f = await _scan_content(html, html_loc_fn, own_session, False, sem_verify,
                                 verify_live=verify_live, min_confidence=min_confidence)
         findings.extend(f)
 
@@ -952,8 +896,9 @@ async def run(
                 resources_scanned += 1
                 scanned_urls.append(file_url)
                 filename = urlparse(file_url).path.split("/")[-1] or "config"
-                loc_fn = lambda ln, fn=filename: f"{fn} line {ln}"
-                f = await _scan_content(body, loc_fn, own_session, False, sem_verify,
+                def risky_loc_fn(ln):
+                    return f"{filename} line {ln}"
+                f = await _scan_content(body, risky_loc_fn, own_session, False, sem_verify,
                                         verify_live=verify_live, min_confidence=min_confidence)
                 findings.extend(f)
 
@@ -963,8 +908,14 @@ async def run(
         if should_close and own_session is not None:
             await own_session.close()
 
-    # ── Summary logic (separate real secrets from forbidden files) ──
-    all_secrets = [f for f in findings if f.get("type") != "Forbidden Sensitive File"]
+    # ── Summary logic ──
+    # Evidence types that are NOT secrets (informational, forbidden files)
+    NON_SECRET_TYPES = {"Tech Stack (from headers)"}
+
+    all_secrets = [
+        f for f in findings
+        if f.get("type") != "Forbidden Sensitive File" and f.get("type") not in NON_SECRET_TYPES
+    ]
     forbidden_files = [f for f in findings if f.get("type") == "Forbidden Sensitive File"]
 
     verified = [s for s in all_secrets if s.get("verified")]
@@ -1010,7 +961,7 @@ async def run(
             "severity_breakdown": severity_counts,
             "resources_scanned": resources_scanned,
             "scanned_urls": scanned_urls,
-            "tech_stack_detected": _fingerprint_from_headers(resp_headers) if 'resp_headers' in locals() else [],
+            "tech_stack_detected": _fingerprint_from_headers(resp_headers, raw_set_cookies),
         },
         "evidence": findings,
         "remediation": "Rotate verified keys immediately. For high‑confidence matches, manual inspection is strongly recommended."

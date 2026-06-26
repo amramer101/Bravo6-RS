@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-test_06_info_disclosure.py – Bravo6 Info Disclosure Scanner (v12.0 – Noise‑Elimination Edition)
-================================================================================================
-- Zero noise from false "Forbidden file" findings: generic 403 bodies are completely ignored
-  at the per‑path level; blanket blocks produce a single aggregate info finding.
-- Extension‑based aggregation threshold reduced to 5; low‑sensitivity 403s inside the same
-  directory prefix are aggregated when >3.
-- Directory listing detection now verifies that the body:
-    • actually contains listing indicators (Index of /, Parent Directory, ...)
-    • is NOT the homepage
-    • contains file links (<a href=…>)
-- Path traversal detection additionally checks that the response differs from both the
-  homepage and the original directory’s body.
-- JS library vulnerability detection uses an extra confirmation pattern map;
-  generic signatures (e.g. 'animate') no longer trigger findings unless library‑specific
-  indicators are present – dramatically cuts duplicate JS false positives.
-- Soft‑404 detection strengthened with explicit 404‑phrase matching.
-- All other features (shared page, JS cache, tech fingerprinting, API enumeration,
-  cloud buckets) kept intact.
+test_06_info_disclosure.py – Bravo6 Info Disclosure Scanner (v12.5 – Clean & Focused)
+========================================================================================
+What it does:
+  - Sensitive file discovery (.env, .git/HEAD, backups, etc.)
+  - Source map detection & API enumeration
+  - Cloud bucket (S3) listing checks
+  - JavaScript credential leaks (hardcoded keys, entropy)
+  - Technology fingerprinting with smart path injection
+
+Key design decisions (v12.5):
+  - JS library CVE scanning is REMOVED entirely; now handled by test_02 (dedicated JS vuln scanner).
+    This eliminates false positives and duplicate findings.
+  - HEAD → GET fallback for servers that don't support HEAD.
+  - Safe connection handling with async with for HEAD requests (no leaks).
+  - Aggressive 403 aggregation to eliminate noise from blanket blocks.
+  - Soft‑404 detection minimises false positives from error pages.
+  - Fallback WordPress paths when technology fingerprinting yields empty.
+
+Known limitations (acceptable trade‑offs):
+  - Rate limiting reduces WAF blocking but cannot prevent it entirely.
+  - Soft‑404 detection may miss some custom error pages.
+  - Wordlist is static; non‑standard file names will not be found.
 """
 
 import asyncio
@@ -37,7 +41,7 @@ from bs4 import BeautifulSoup, Comment
 
 # ── Constants ──────────────────────────────────────────────────────────────
 SCANNER_NAME = "info_disclosure"
-USER_AGENT = "Bravo6-InfoDisclosure/12.0"
+USER_AGENT = "Bravo6-InfoDisclosure/12.5"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 HEAD_TIMEOUT = aiohttp.ClientTimeout(total=5)
 MAX_CONCURRENT = 8
@@ -45,7 +49,6 @@ RETRY_MAX = 3
 RETRY_BACKOFF_BASE = 1
 PATH_RATE = 10
 
-# Aggregation thresholds (tightened)
 EXT_AGGREGATION_THRESHOLD = 5
 DIR_AGGREGATION_THRESHOLD = 3
 
@@ -84,7 +87,6 @@ def _get_header(headers: Dict[str, str], name: str) -> Optional[str]:
     return None
 
 async def retry_async(func, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
-    """Factory pattern: func is a callable returning an awaitable."""
     last_exc = None
     for attempt in range(max_retries + 1):
         try:
@@ -107,7 +109,7 @@ def _entropy(s: str) -> float:
     prob = [float(s.count(c)) / len(s) for c in set(s)]
     return -sum(p * math.log2(p) for p in prob)
 
-# ── Version comparison ─────────────────────────────────────────────────────
+# ── Version comparison (only used internally if needed elsewhere) ─────────
 def _parse_version(version_str: str) -> Tuple[int, ...]:
     parts = re.split(r'[.-]', version_str)
     return tuple(int(p) for p in parts if p.isdigit())
@@ -365,17 +367,6 @@ API_ENDPOINTS = [
     "/graphql/console", "/swagger-resources", "/v2/api-docs",
 ]
 
-# ── CVE DB ────────────────────────────────────────────────────────────────
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CVE_DB_PATH = os.path.join(SCRIPT_DIR, "cve_db.json")
-
-try:
-    with open(CVE_DB_PATH, "r", encoding="utf-8") as f:
-        CVE_DB = json.load(f)
-except Exception:
-    CVE_DB = {}
-    _log_error(f"Could not load {CVE_DB_PATH} – CVE detection disabled.")
-
 # ── Soft 404 Detection ────────────────────────────────────────────────────
 def _is_soft_404(body: str, homepage_body: str) -> bool:
     if not body:
@@ -394,6 +385,13 @@ def _is_soft_404(body: str, homepage_body: str) -> bool:
             if abs(len(body) - len(homepage_body)) <= max(len(homepage_body) * 0.15, 200):
                 return True
     return False
+
+# ── Response Placeholder (for safe HEAD requests) ─────────────────────────
+class ResponsePlaceholder:
+    """Simple object to mimic aiohttp response for HEAD requests, with safe release."""
+    def __init__(self, status, headers):
+        self.status = status
+        self.headers = headers
 
 # ── Rate Limiters ──────────────────────────────────────────────────────────
 class LeakyBucketLimiter:
@@ -416,17 +414,19 @@ class RateLimiter:
         self.min_delay = min_delay
         self.max_delay = max_delay
 
-    async def probe(self, session, url: str, method='GET') -> Optional[aiohttp.ClientResponse]:
+    async def probe(self, session, url: str, method='GET') -> Optional[Any]:
+        """Probe a URL. For HEAD, returns ResponsePlaceholder safely. For GET, returns live response (caller must read)."""
         async with self.sem:
             await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
             try:
                 if method == 'HEAD':
-                    resp = await asyncio.wait_for(session.head(url, timeout=HEAD_TIMEOUT, allow_redirects=True),
-                                                  timeout=HEAD_TIMEOUT.total)
+                    # Safe async with ensures connection release even on timeout
+                    async with session.head(url, timeout=HEAD_TIMEOUT, allow_redirects=True) as resp:
+                        return ResponsePlaceholder(resp.status, resp.headers)
                 else:
                     resp = await asyncio.wait_for(session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True),
                                                   timeout=REQUEST_TIMEOUT.total)
-                return resp
+                    return resp
             except Exception as e:
                 _log_error(f"Probe failed for {url}: {e}")
                 return None
@@ -454,103 +454,6 @@ ENTROPY_EXCLUDE_DOMAINS = [
     "cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com",
     "polyfill.io", "static.cloudflareinsights.com",
 ]
-
-# ── JS Library confirmation patterns (reduce false positives) ─────────────
-LIB_CONFIRMATION = {
-    "jquery": [r'jquery', r'jQuery'],
-    "jquery-ui": [r'jquery-ui', r'jQuery UI'],
-    "lodash": [r'lodash', r'\_\.'],
-    "moment": [r'moment\.js', r'moment\('],
-    "angular": [r'angular\.module', r'ng-app'],
-    "vue": [r'Vue\.', r'createApp'],
-    "react": [r'React\.', r'react-dom'],
-    "bootstrap": [r'bootstrap\.js', r'data-toggle'],
-    "animate": [r'\.animate\s*\(', r'\.velocity', r'animate\.css'],
-}
-
-def _library_present(lib_name: str, content: str) -> bool:
-    """Check if the content contains at least one of the library's characteristic patterns."""
-    patterns = LIB_CONFIRMATION.get(lib_name.lower())
-    if patterns is None:
-        return True  # unknown library, trust the signature
-    return any(re.search(p, content, re.IGNORECASE) for p in patterns)
-
-# ── JS Vulnerability Checker ──────────────────────────────────────────────
-def _check_js_library_vulns(content: str, js_url: str, findings: List[Dict]):
-    if not CVE_DB:
-        return
-    for lib, vulns in CVE_DB.items():
-        for vuln in vulns:
-            sig = vuln.get("sig")
-            if not sig or not re.search(sig, content):
-                continue
-
-            # Extra confirmation: if the library's own patterns are absent, skip
-            if not _library_present(lib, content):
-                continue
-
-            version_pattern = vuln.get("version_pattern")
-            min_ver = vuln.get("min_version")
-            max_ver = vuln.get("max_version")
-            version_match = None
-
-            if version_pattern:
-                m = re.search(version_pattern, content)
-                if m:
-                    version_match = m.group(1) if m.lastindex else m.group(0)
-                else:
-                    findings.append(_make_finding(
-                        title=f"Vulnerable JS library: {lib} ({vuln['cve']}) (version unknown)",
-                        description=vuln["desc"] + " (could not determine version, flagging with low confidence)",
-                        severity=vuln["severity"],
-                        confidence=35,
-                        location=js_url,
-                        evidence=f"Signature: {sig}",
-                        remediation=f"Upgrade {lib} to {vuln.get('patch', 'latest')} or later.",
-                        cwe="CWE-1104",
-                        category="js"
-                    ))
-                    continue
-
-            if version_match and min_ver and max_ver:
-                if _version_in_range(version_match, min_ver, max_ver):
-                    findings.append(_make_finding(
-                        title=f"Vulnerable JS library: {lib} {version_match} ({vuln['cve']})",
-                        description=vuln["desc"],
-                        severity=vuln["severity"],
-                        confidence=85,
-                        location=js_url,
-                        evidence=f"Detected version {version_match} (vulnerable range {min_ver} - {max_ver})",
-                        remediation=f"Upgrade {lib} to {vuln.get('patch', 'latest')} or later.",
-                        cwe="CWE-1104",
-                        category="js"
-                    ))
-                else:
-                    pass
-            elif min_ver and max_ver and not version_match:
-                findings.append(_make_finding(
-                    title=f"Potential vulnerable JS library: {lib} ({vuln['cve']}) (version not extracted)",
-                    description=vuln["desc"] + " (version extraction failed, possibly vulnerable)",
-                    severity=vuln["severity"],
-                    confidence=40,
-                    location=js_url,
-                    evidence=f"Signature: {sig}",
-                    remediation=f"Verify {lib} version manually; upgrade to {vuln.get('patch', 'latest')} if needed.",
-                    cwe="CWE-1104",
-                    category="js"
-                ))
-            else:
-                findings.append(_make_finding(
-                    title=f"Vulnerable JS library: {lib} ({vuln['cve']}) (unverified version)",
-                    description=vuln["desc"],
-                    severity=vuln["severity"],
-                    confidence=55,
-                    location=js_url,
-                    evidence=f"Signature: {sig}",
-                    remediation=f"Upgrade {lib} to {vuln.get('patch', 'latest')} or later.",
-                    cwe="CWE-1104",
-                    category="js"
-                ))
 
 # ── JS Leaked Credentials ──────────────────────────────────────────────────
 JS_SAFE_TOKENS = [
@@ -630,6 +533,10 @@ async def _check_js_source_maps(session, base_url, html: str, rate_limiter, find
 
 async def _check_js_leaked_credentials(session, base_url, html: str, rate_limiter, findings,
                                        js_cache: Dict[str, Optional[str]]):
+    """
+    Scan JavaScript files for hardcoded credentials/high‑entropy strings.
+    JS library CVE scanning is intentionally omitted; handled by test_02.
+    """
     if not html:
         return
     try:
@@ -693,7 +600,6 @@ async def _check_js_leaked_credentials(session, base_url, html: str, rate_limite
                             poc=f"Inspect {js_url}",
                             category="js"
                         ))
-            _check_js_library_vulns(content, js_url, findings)
     except Exception as e:
         _log_error(f"JS leaked credential check failed: {e}")
 
@@ -896,8 +802,6 @@ def _is_sensitive_content(path: str, body: str) -> bool:
     return False
 
 def _is_directory_listing(body: str, homepage_body: str) -> bool:
-    """Real directory listing check – must contain listing indicators,
-       must NOT be the homepage, and must contain file links."""
     if not body or not homepage_body:
         return False
     listing_indicators = [
@@ -906,18 +810,15 @@ def _is_directory_listing(body: str, homepage_body: str) -> bool:
     ]
     if not any(ind in body for ind in listing_indicators):
         return False
-    # Must not be the same as homepage
     if body.strip() == homepage_body.strip():
         return False
     if body[:500] == homepage_body[:500] and len(body) == len(homepage_body):
         return False
-    # Must contain at least one file link
     if not re.search(r'<a\s+href="[^"]*"[^>]*>', body, re.IGNORECASE):
         return False
     return True
 
 def _is_real_path_traversal(body: str, homepage_body: str, orig_dir_body: Optional[str]) -> bool:
-    """Confirm that the body is truly a path traversal result and not the homepage."""
     if not body or not homepage_body:
         return False
     if body[:500] == homepage_body[:500]:
@@ -932,6 +833,13 @@ def _is_real_path_traversal(body: str, homepage_body: str, orig_dir_body: Option
 # Main Scanner
 # ══════════════════════════════════════════════════════════════════════════════
 async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
+    """
+    Main scanner entry point (v12.5).
+
+    Parameters:
+        url: target URL
+        shared_page: optional dict with pre‑fetched page data (html, headers, soup, js_cache)
+    """
     target = _normalize_url(url)
     parsed = urlparse(target)
     hostname = parsed.hostname or ""
@@ -943,7 +851,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     tech_stack: Set[str] = set()
     rate_limiter = RateLimiter(max_concurrent=MAX_CONCURRENT)
 
-    # ── Shared page or fresh fetch ───────────────────────────────────────
     if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
         main_body = shared_page["html"]
         main_headers = shared_page["headers"]
@@ -1075,13 +982,20 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             category="passive"
                         ))
 
-            # Build wordlist
+            # ── Build wordlist (with WordPress fallback if no tech detected) ─
             all_paths = set(BASE_SENSITIVE_PATHS)
             for bn in _generate_backup_names(domain):
                 all_paths.add(bn)
-            for tech in tech_stack:
-                for tpaths in TECH_SPECIFIC_PATHS.get(tech, []):
-                    all_paths.add(tpaths)
+
+            # If no technology identified, add WordPress paths as fallback (most common CMS)
+            if not tech_stack:
+                for wp_path in TECH_SPECIFIC_PATHS.get("WordPress", []):
+                    all_paths.add(wp_path)
+            else:
+                for tech in tech_stack:
+                    for tpaths in TECH_SPECIFIC_PATHS.get(tech, []):
+                        all_paths.add(tpaths)
+            # Always add core WordPress files that may be present even if not detected
             all_paths.update(["wp-config.php", "wp-content/debug.log", "xmlrpc.php"])
 
             # Generic 403 bodies
@@ -1099,11 +1013,27 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             async def probe_path(path):
                 full_url = urljoin(base_url, path)
                 head_resp = await rate_limiter.probe(session, full_url, 'HEAD')
-                if head_resp is None:
-                    return
-                status = head_resp.status
+                if head_resp is None or head_resp.status == 405:
+                    # fallback to GET
+                    head_resp = await rate_limiter.probe(session, full_url, 'GET')
+                    if head_resp is None:
+                        return
+                    if head_resp.status == 200:
+                        try:
+                            body = await head_resp.text()
+                        except:
+                            body = None
+                        status = 200
+                    else:
+                        status = head_resp.status
+                        body = None
+                else:
+                    status = head_resp.status
+                    body = None
+
                 if status == 200:
-                    body = await _fetch_body(session, full_url)
+                    if body is None:
+                        body = await _fetch_body(session, full_url)
                     if body:
                         if main_body and _is_soft_404(body, main_body):
                             return
@@ -1152,11 +1082,11 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             break
                     generic_body = generic_403_by_ext.get(ext_for_body) if ext_for_body else generic_403_html
                     if generic_body:
-                        body = await _fetch_body(session, full_url)
+                        if body is None:
+                            body = await _fetch_body(session, full_url)
                         if body and _body_matches_generic(body, generic_body):
                             raw_403_by_ext.append({"path": path, "ext": ext_for_body or "unknown"})
-                            return  # totally ignore individual reporting
-                    # Not a generic block → classify
+                            return
                     sev, conf = _forbidden_sensitivity(path)
                     ext_agg = ext_for_body
                     if not ext_agg:
@@ -1172,7 +1102,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             await asyncio.gather(*tasks, return_exceptions=True)
 
             # ── Post-process forbidden candidates ────────────────────────
-            # Aggregate by extension
             ext_groups = defaultdict(list)
             for cand in forbidden_candidates:
                 ext_groups[cand["ext"]].append(cand)
@@ -1210,7 +1139,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         if c in forbidden_candidates:
                             forbidden_candidates.remove(c)
 
-            # Aggregate by directory prefix (low severity only)
             dir_groups = defaultdict(list)
             for cand in forbidden_candidates:
                 if cand["severity"] == "low":
@@ -1234,7 +1162,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         if c in forbidden_candidates:
                             forbidden_candidates.remove(c)
 
-            # Report remaining individually
             for cand in forbidden_candidates:
                 sev, conf = cand["severity"], cand["confidence"]
                 if sev == "high":
@@ -1255,7 +1182,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                     category="config"
                 ))
 
-            # Aggregate extension-based blanket blocks (generic 403)
             ext_block_groups = defaultdict(list)
             for item in raw_403_by_ext:
                 ext_block_groups[item["ext"]].append(item["path"])
@@ -1270,7 +1196,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                     category="config"
                 ))
 
-            # ── Directory listing & traversal (with enhanced checks) ────
+            # ── Directory listing & traversal ──────────────────────────
             dir_paths = ["/assets/", "/static/", "/uploads/", "/files/", "/images/", "/css/", "/js/"]
             dir_urls = [urljoin(base_url, d) for d in dir_paths]
             trav_urls = [urljoin(base_url, d + "../") for d in dir_paths]
@@ -1320,7 +1246,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         category="active"
                     ))
 
-            # Advanced scans
+            # Advanced scans (no JS library CVE)
             await _check_interesting_files_from_headers(session, base_url, main_headers, findings)
             await _check_js_source_maps(session, base_url, main_body, rate_limiter, findings)
             await _check_js_leaked_credentials(session, base_url, main_body, rate_limiter, findings, js_cache)

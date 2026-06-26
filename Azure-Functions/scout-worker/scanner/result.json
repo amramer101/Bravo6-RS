@@ -1,0 +1,1030 @@
+{
+  "url": "https://www.egyptian-trading.com",
+  "scan_time": "2026-06-26T18:24:56.529686",
+  "duration_seconds": 33.51,
+  "tests_run": 5,
+  "total_findings": 24,
+  "findings": [
+    {
+      "library": "select2",
+      "version_detected": "4.0.3",
+      "vulnerable": true,
+      "cve": "CVE-2016-10725",
+      "cve_link": "https://nvd.nist.gov/vuln/detail/CVE-2016-10725",
+      "description": "XSS via template result",
+      "severity": "medium",
+      "patch_version": "4.0.5",
+      "sources": [
+        "script_src_filename",
+        "script_content"
+      ],
+      "signature_verified": true,
+      "confidence": 95,
+      "poc_js": "// select2@4.0.3: XSS via template result\n// Exploitable via select2.*templateResult",
+      "poc_curl": "curl -s https://www.egyptian-trading.com/ext/select2/select2-4.0.3/js/select2.min.js -o vulnerable-select2-4.0.3.js",
+      "remediation": "Upgrade select2 to >= 4.0.5"
+    },
+    {
+      "title": "OCSP stapling not used",
+      "description": "Missing OCSP response in handshake.",
+      "severity": "low",
+      "confidence": 70,
+      "location": "OCSP stapling",
+      "evidence": "",
+      "remediation": "Enable OCSP stapling.",
+      "cwe": "CWE-299",
+      "owasp": "A02:2021",
+      "poc": null,
+      "category": "ssl"
+    },
+    {
+      "title": "HSTS header missing",
+      "description": "No Strict-Transport-Security.",
+      "severity": "high",
+      "confidence": 100,
+      "location": "HTTP Header",
+      "evidence": "",
+      "remediation": "Add HSTS header.",
+      "cwe": "CWE-523",
+      "owasp": "",
+      "poc": "curl -I https://www.egyptian-trading.com:443 | grep -i strict",
+      "category": "ssl"
+    },
+    {
+      "title": "Missing HSTS header",
+      "description": "No HSTS found. SSL stripping attacks possible.",
+      "severity": "high",
+      "confidence": 100,
+      "status": "fail",
+      "header": "Strict-Transport-Security",
+      "evidence": "Header missing",
+      "remediation": "Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
+      "cwe": "CWE-319",
+      "owasp": "A05:2021",
+      "poc": "curl -I https://www.egyptian-trading.com | grep -i strict"
+    },
+    {
+      "title": "Missing clickjacking protection",
+      "description": "Neither XFO nor CSP frame-ancestors set.",
+      "severity": "critical",
+      "confidence": 100,
+      "status": "fail",
+      "header": "X-Frame-Options / CSP",
+      "evidence": "",
+      "remediation": "Add X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
+      "cwe": "",
+      "owasp": "",
+      "poc": "<iframe src='...'></iframe>"
+    },
+    {
+      "title": "Missing Content‑Security‑Policy",
+      "description": "No CSP header found.",
+      "severity": "high",
+      "confidence": 100,
+      "status": "fail",
+      "header": "Content-Security-Policy",
+      "evidence": "Header missing",
+      "remediation": "Implement a strict CSP.",
+      "cwe": "CWE-1021",
+      "owasp": "A01:2021",
+      "poc": null
+    },
+    {
+      "title": "Missing X-Content-Type-Options",
+      "description": "MIME sniffing attacks possible.",
+      "severity": "medium",
+      "confidence": 100,
+      "status": "fail",
+      "header": "X-Content-Type-Options",
+      "evidence": "",
+      "remediation": "Add: X-Content-Type-Options: nosniff",
+      "cwe": "CWE-693",
+      "owasp": "A05:2021",
+      "poc": null
+    },
+    {
+      "title": "Missing Referrer-Policy",
+      "description": "Referer header may leak URLs.",
+      "severity": "medium",
+      "confidence": 100,
+      "status": "fail",
+      "header": "Referrer-Policy",
+      "evidence": "",
+      "remediation": "Set Referrer-Policy: strict-origin-when-cross-origin",
+      "cwe": "CWE-200",
+      "owasp": "A01:2021",
+      "poc": null
+    },
+    {
+      "title": "Permissions-Policy missing",
+      "description": "Feature controls not enforced.",
+      "severity": "low",
+      "confidence": 80,
+      "status": "warning",
+      "header": "Permissions-Policy",
+      "evidence": "",
+      "remediation": "Add Permissions-Policy",
+      "cwe": "",
+      "owasp": "",
+      "poc": null
+    },
+    {
+      "title": "Missing COOP",
+      "description": "Cross‑origin opener attacks possible.",
+      "severity": "medium",
+      "confidence": 85,
+      "status": "warning",
+      "header": "Cross-Origin-Opener-Policy",
+      "evidence": "Header missing",
+      "remediation": "COOP: same-origin",
+      "cwe": "CWE-693",
+      "owasp": "A05:2021",
+      "poc": null
+    },
+    {
+      "title": "Missing COEP",
+      "description": "Cross‑origin embedding not controlled.",
+      "severity": "medium",
+      "confidence": 80,
+      "status": "warning",
+      "header": "Cross-Origin-Embedder-Policy",
+      "evidence": "Header missing",
+      "remediation": "COEP: require-corp",
+      "cwe": "CWE-693",
+      "owasp": "A05:2021",
+      "poc": null
+    },
+    {
+      "title": "Missing Cross-Origin-Resource-Policy",
+      "description": "Allows any website to load resources from your site.",
+      "severity": "medium",
+      "confidence": 80,
+      "status": "warning",
+      "header": "Cross-Origin-Resource-Policy",
+      "evidence": "Header missing",
+      "remediation": "Set CORP to 'same-origin' or 'same-site'.",
+      "cwe": "CWE-693",
+      "owasp": "A05:2021",
+      "poc": null
+    },
+    {
+      "title": "Cache‑Control correctly restricts caching",
+      "description": "Cache-Control: no-store, no-cache, must-revalidate",
+      "severity": "info",
+      "confidence": 100,
+      "status": "pass",
+      "header": "Cache-Control",
+      "evidence": "no-store, no-cache, must-revalidate",
+      "remediation": "",
+      "cwe": "",
+      "owasp": "",
+      "poc": null
+    },
+    {
+      "title": "X-DNS-Prefetch-Control missing",
+      "description": "Browser may prefetch DNS for links, enabling tracking.",
+      "severity": "low",
+      "confidence": 70,
+      "status": "warning",
+      "header": "X-DNS-Prefetch-Control",
+      "evidence": "Header missing",
+      "remediation": "Add X-DNS-Prefetch-Control: off",
+      "cwe": "CWE-693",
+      "owasp": "A05:2021",
+      "poc": null
+    },
+    {
+      "title": "Server header exposed: Apache",
+      "description": "Information disclosure.",
+      "severity": "low",
+      "confidence": 80,
+      "status": "info",
+      "header": "Server",
+      "evidence": "",
+      "remediation": "Remove Server header.",
+      "cwe": "CWE-200",
+      "owasp": "A01:2021",
+      "poc": null
+    },
+    {
+      "title": "Missing X-Permitted-Cross-Domain-Policies",
+      "description": "Prevents Adobe Flash from loading data from your domain.",
+      "severity": "low",
+      "confidence": 70,
+      "status": "warning",
+      "header": "X-Permitted-Cross-Domain-Policies",
+      "evidence": "Header missing",
+      "remediation": "Set to 'none' or 'master-only'.",
+      "cwe": "",
+      "owasp": "",
+      "poc": null
+    },
+    {
+      "title": "Technology identified: Apache",
+      "description": "Header Server reveals Apache",
+      "severity": "low",
+      "confidence": 80,
+      "location": "Header: Server",
+      "evidence": "Apache",
+      "remediation": "Remove or obscure version headers.",
+      "cwe": "CWE-200",
+      "owasp": "",
+      "poc": null,
+      "category": "passive"
+    },
+    {
+      "title": "Multiple .sql files are blocked (403)",
+      "description": "14 .sql paths return 403, suggesting blanket restriction. Examples: www.egyptian-trading.com.sql, backup_www.sql, 2026.sql, dump.sql, db.sql",
+      "severity": "info",
+      "confidence": 90,
+      "location": "Multiple paths (*.sql)",
+      "evidence": "14 blocked files",
+      "remediation": "Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+      "cwe": "",
+      "owasp": "",
+      "poc": null,
+      "category": "config"
+    },
+    {
+      "title": "Multiple .bak files are blocked (403)",
+      "description": "15 .bak paths return 403, suggesting blanket restriction. Examples: wp-config.php.bak, backup_www.bak, www.egyptian-trading.com.bak, www.egyptian-trading.com_backup_20260626.bak, www_old.bak",
+      "severity": "info",
+      "confidence": 90,
+      "location": "Multiple paths (*.bak)",
+      "evidence": "15 blocked files",
+      "remediation": "Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+      "cwe": "",
+      "owasp": "",
+      "poc": null,
+      "category": "config"
+    },
+    {
+      "title": "Directory / is protected (403) for multiple files",
+      "description": "18 low‑sensitivity files in / return 403, indicating blanket protection.",
+      "severity": "info",
+      "confidence": 85,
+      "location": "//",
+      "evidence": "Examples: .env.local, .DS_Store, Dockerfile, .env.backup, composer.json",
+      "remediation": "This is likely intended, but verify that sensitive files are not accidentally exposed.",
+      "cwe": "",
+      "owasp": "",
+      "poc": null,
+      "category": "config"
+    },
+    {
+      "title": "Forbidden file: .git/HEAD",
+      "description": "File exists but returns 403 Forbidden.",
+      "severity": "low",
+      "confidence": 60,
+      "location": ".git/HEAD",
+      "evidence": "",
+      "remediation": "Ensure proper access controls are in place.",
+      "cwe": "CWE-538",
+      "owasp": "A01:2021",
+      "poc": null,
+      "category": "config"
+    },
+    {
+      "title": "Protected file: wp-content/debug.log",
+      "description": "File exists but returns 403 Forbidden.",
+      "severity": "medium",
+      "confidence": 80,
+      "location": "wp-content/debug.log",
+      "evidence": "",
+      "remediation": "Ensure proper access controls are in place.",
+      "cwe": "CWE-538",
+      "owasp": "A01:2021",
+      "poc": null,
+      "category": "config"
+    },
+    {
+      "title": "Forbidden file: .idea/workspace.xml",
+      "description": "File exists but returns 403 Forbidden.",
+      "severity": "low",
+      "confidence": 60,
+      "location": ".idea/workspace.xml",
+      "evidence": "",
+      "remediation": "Ensure proper access controls are in place.",
+      "cwe": "CWE-538",
+      "owasp": "A01:2021",
+      "poc": null,
+      "category": "config"
+    },
+    {
+      "title": "Forbidden file: storage/logs/laravel.log",
+      "description": "File exists but returns 403 Forbidden.",
+      "severity": "low",
+      "confidence": 60,
+      "location": "storage/logs/laravel.log",
+      "evidence": "",
+      "remediation": "Ensure proper access controls are in place.",
+      "cwe": "CWE-538",
+      "owasp": "A01:2021",
+      "poc": null,
+      "category": "config"
+    }
+  ],
+  "tests": {
+    "test_01_secrets": {
+      "test_name": "secrets_detection",
+      "status": "warning",
+      "severity": "low",
+      "title": "Sensitive files detected (403) – 6 forbidden",
+      "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
+      "summary": {
+        "total_secrets": 0,
+        "verified_active": 0,
+        "high_confidence_unverified": 0,
+        "forbidden_files_count": 6,
+        "severity_breakdown": {
+          "critical": 0,
+          "high": 0,
+          "medium": 0,
+          "low": 6,
+          "info": 0
+        },
+        "resources_scanned": 34,
+        "scanned_urls": [
+          "https://www.egyptian-trading.com/ext/jquery/jquery-3.6.0.min.js",
+          "https://www.egyptian-trading.com/ext/bootstrap/js/bootstrap.min.js",
+          "https://www.egyptian-trading.com/ext/wow/wow.min.js",
+          "https://www.egyptian-trading.com/ext/popper/popper.min.js",
+          "https://www.egyptian-trading.com/ext/slicknav/jquery.slicknav.min.js",
+          "https://www.egyptian-trading.com/ext/owl-carousel/owl.carousel.min.js",
+          "https://www.egyptian-trading.com/ext/isotope/isotope.pkgd.min.js",
+          "https://www.egyptian-trading.com/ext/fancybox/jquery.fancybox.min.js",
+          "https://www.egyptian-trading.com/ext/select2/select2-4.0.3/js/select2.min.js",
+          "https://www.egyptian-trading.com/assets/theme/js/semiorbit.min.js?1657724124",
+          "https://www.egyptian-trading.com/assets/theme/js/main.js",
+          "https://www.egyptian-trading.com/assets/theme/js/script.min.js?1659455582",
+          "https://www.googletagmanager.com/gtag/js?id=G-J042ZBRL4M",
+          "https://www.egyptian-trading.com/config/secrets.yml",
+          "https://www.egyptian-trading.com/private.key",
+          "https://www.egyptian-trading.com/key.pem",
+          "https://www.egyptian-trading.com/.ssh/id_ecdsa",
+          "https://www.egyptian-trading.com/settings.py",
+          "https://www.egyptian-trading.com/.env",
+          "https://www.egyptian-trading.com/config.js",
+          "https://www.egyptian-trading.com/server.key",
+          "https://www.egyptian-trading.com/id_rsa.pub",
+          "https://www.egyptian-trading.com/.ssh/id_ed25519",
+          "https://www.egyptian-trading.com/secrets.yaml",
+          "https://www.egyptian-trading.com/id_rsa",
+          "https://www.egyptian-trading.com/.ssh/id_rsa",
+          "https://www.egyptian-trading.com/private.pem",
+          "https://www.egyptian-trading.com/cert.pem",
+          "https://www.egyptian-trading.com/.git/config",
+          "https://www.egyptian-trading.com/app.config",
+          "https://www.egyptian-trading.com/credentials.json"
+        ],
+        "tech_stack_detected": [
+          "Apache"
+        ]
+      },
+      "evidence": [
+        {
+          "type": "Tech Stack (from headers)",
+          "location": "HTTP response headers",
+          "value_masked": "Apache",
+          "verified": false,
+          "confidence": 90,
+          "severity": "info",
+          "poc": "N/A",
+          "risk": "Detected technologies: Apache",
+          "context": "Server: Apache, X-Powered-By: "
+        },
+        {
+          "type": "Forbidden Sensitive File",
+          "location": "/private.key (HTTP 403)",
+          "value_masked": "https://www.egyptian-trading.com/private.key",
+          "verified": false,
+          "confidence": 80,
+          "severity": "low",
+          "poc": "Check if file is accessible: https://www.egyptian-trading.com/private.key",
+          "risk": "Sensitive configuration file appears to exist but is forbidden (HTTP 403).",
+          "context": ""
+        },
+        {
+          "type": "Forbidden Sensitive File",
+          "location": "/.env (HTTP 403)",
+          "value_masked": "https://www.egyptian-trading.com/.env",
+          "verified": false,
+          "confidence": 80,
+          "severity": "low",
+          "poc": "Check if file is accessible: https://www.egyptian-trading.com/.env",
+          "risk": "Sensitive configuration file appears to exist but is forbidden (HTTP 403).",
+          "context": ""
+        },
+        {
+          "type": "Forbidden Sensitive File",
+          "location": "/server.key (HTTP 403)",
+          "value_masked": "https://www.egyptian-trading.com/server.key",
+          "verified": false,
+          "confidence": 80,
+          "severity": "low",
+          "poc": "Check if file is accessible: https://www.egyptian-trading.com/server.key",
+          "risk": "Sensitive configuration file appears to exist but is forbidden (HTTP 403).",
+          "context": ""
+        },
+        {
+          "type": "Forbidden Sensitive File",
+          "location": "/.ssh/id_rsa (HTTP 403)",
+          "value_masked": "https://www.egyptian-trading.com/.ssh/id_rsa",
+          "verified": false,
+          "confidence": 80,
+          "severity": "low",
+          "poc": "Check if file is accessible: https://www.egyptian-trading.com/.ssh/id_rsa",
+          "risk": "Sensitive configuration file appears to exist but is forbidden (HTTP 403).",
+          "context": ""
+        },
+        {
+          "type": "Forbidden Sensitive File",
+          "location": "/.git/config (HTTP 403)",
+          "value_masked": "https://www.egyptian-trading.com/.git/config",
+          "verified": false,
+          "confidence": 80,
+          "severity": "low",
+          "poc": "Check if file is accessible: https://www.egyptian-trading.com/.git/config",
+          "risk": "Sensitive configuration file appears to exist but is forbidden (HTTP 403).",
+          "context": ""
+        },
+        {
+          "type": "Forbidden Sensitive File",
+          "location": "/app.config (HTTP 403)",
+          "value_masked": "https://www.egyptian-trading.com/app.config",
+          "verified": false,
+          "confidence": 80,
+          "severity": "low",
+          "poc": "Check if file is accessible: https://www.egyptian-trading.com/app.config",
+          "risk": "Sensitive configuration file appears to exist but is forbidden (HTTP 403).",
+          "context": ""
+        }
+      ],
+      "remediation": "Rotate verified keys immediately. For high‑confidence matches, manual inspection is strongly recommended."
+    },
+    "test_02_frontend_libs": {
+      "test_name": "frontend_libs_audit",
+      "status": "warning",
+      "severity": "medium",
+      "title": "1 vulnerable libraries (medium/low)",
+      "libraries_detected": 3,
+      "vulnerable_count": 1,
+      "severity_breakdown": {
+        "critical": 0,
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "severity_summary": "[!] 0 CRITICAL | 0 HIGH | 1 MEDIUM | 0 LOW",
+      "detected_libraries": [
+        {
+          "library": "jquery",
+          "version": "3.6.0",
+          "sources": [
+            "script_src_filename",
+            "script_content"
+          ],
+          "urls": [
+            "https://www.egyptian-trading.com/ext/bootstrap/js/bootstrap.min.js",
+            "https://www.egyptian-trading.com/ext/jquery/jquery-3.6.0.min.js"
+          ],
+          "detection_confidence": 95
+        },
+        {
+          "library": "select2",
+          "version": "4.0.3",
+          "sources": [
+            "script_src_filename",
+            "script_content"
+          ],
+          "urls": [
+            "https://www.egyptian-trading.com/ext/select2/select2-4.0.3/js/select2.min.js"
+          ],
+          "detection_confidence": 95
+        },
+        {
+          "library": "font-awesome",
+          "version": "4.7.0",
+          "sources": [
+            "css"
+          ],
+          "urls": [
+            "https://www.egyptian-trading.com/ext/fontawesome/font-awesome-4.7.0/css/font-awesome.min.css?v=470"
+          ],
+          "detection_confidence": 70
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "library": "select2",
+          "version_detected": "4.0.3",
+          "vulnerable": true,
+          "cve": "CVE-2016-10725",
+          "cve_link": "https://nvd.nist.gov/vuln/detail/CVE-2016-10725",
+          "description": "XSS via template result",
+          "severity": "medium",
+          "patch_version": "4.0.5",
+          "sources": [
+            "script_src_filename",
+            "script_content"
+          ],
+          "signature_verified": true,
+          "confidence": 95,
+          "poc_js": "// select2@4.0.3: XSS via template result\n// Exploitable via select2.*templateResult",
+          "poc_curl": "curl -s https://www.egyptian-trading.com/ext/select2/select2-4.0.3/js/select2.min.js -o vulnerable-select2-4.0.3.js",
+          "remediation": "Upgrade select2 to >= 4.0.5"
+        }
+      ],
+      "findings": [
+        {
+          "library": "select2",
+          "version_detected": "4.0.3",
+          "vulnerable": true,
+          "cve": "CVE-2016-10725",
+          "cve_link": "https://nvd.nist.gov/vuln/detail/CVE-2016-10725",
+          "description": "XSS via template result",
+          "severity": "medium",
+          "patch_version": "4.0.5",
+          "sources": [
+            "script_src_filename",
+            "script_content"
+          ],
+          "signature_verified": true,
+          "confidence": 95,
+          "poc_js": "// select2@4.0.3: XSS via template result\n// Exploitable via select2.*templateResult",
+          "poc_curl": "curl -s https://www.egyptian-trading.com/ext/select2/select2-4.0.3/js/select2.min.js -o vulnerable-select2-4.0.3.js",
+          "remediation": "Upgrade select2 to >= 4.0.5"
+        }
+      ],
+      "remediation": "Update all identified libraries to the recommended versions. Use provided PoC commands and CVE links for verification."
+    },
+    "test_04_ssl_tls": {
+      "scanner": "ssl_tls",
+      "target": "www.egyptian-trading.com:443",
+      "status": "fail",
+      "severity": "high",
+      "confidence": 100,
+      "score": 92,
+      "grade": "A",
+      "summary": "TLS: 2 issue(s) [H:1 C:0] | Mixed: 0 issue(s) | Grade: A (92/100)",
+      "findings": [
+        {
+          "title": "OCSP stapling not used",
+          "description": "Missing OCSP response in handshake.",
+          "severity": "low",
+          "confidence": 70,
+          "location": "OCSP stapling",
+          "evidence": "",
+          "remediation": "Enable OCSP stapling.",
+          "cwe": "CWE-299",
+          "owasp": "A02:2021",
+          "poc": null,
+          "category": "ssl"
+        },
+        {
+          "title": "HSTS header missing",
+          "description": "No Strict-Transport-Security.",
+          "severity": "high",
+          "confidence": 100,
+          "location": "HTTP Header",
+          "evidence": "",
+          "remediation": "Add HSTS header.",
+          "cwe": "CWE-523",
+          "owasp": "",
+          "poc": "curl -I https://www.egyptian-trading.com:443 | grep -i strict",
+          "category": "ssl"
+        }
+      ],
+      "remediation": [
+        "Add HSTS header.",
+        "Enable OCSP stapling."
+      ],
+      "details": {
+        "certificate": {
+          "subject": "commonName=egyptian-trading.com",
+          "issuer": "countryName=US, organizationName=Let's Encrypt, commonName=YR1",
+          "not_after": "2026-09-07T17:10:55+00:00",
+          "days_until_expiry": 73,
+          "hostname_match": true,
+          "self_signed": false,
+          "signature_algorithm": "sha256WithRSAEncryption",
+          "key_size": 2048,
+          "key_type": "rsa",
+          "san_dns": [
+            "*.egyptian-trading.com",
+            "egyptian-trading.com"
+          ],
+          "is_lets_encrypt": true,
+          "must_staple": false
+        },
+        "chain_valid": true,
+        "ocsp_revoked": null,
+        "protocols": {
+          "SSLv2": false,
+          "SSLv3": false,
+          "TLSv1.0": false,
+          "TLSv1.1": false,
+          "TLSv1.2": true,
+          "TLSv1.3": true
+        },
+        "ciphers": {
+          "NULL-MD5": false,
+          "NULL-SHA": false,
+          "EXP-RC4-MD5": false,
+          "EXP-DES-CBC-SHA": false,
+          "EXP-EDH-DSS-DES-CBC-SHA": false,
+          "EXP-EDH-RSA-DES-CBC-SHA": false,
+          "RC4-MD5": false,
+          "RC4-SHA": false,
+          "DES-CBC3-SHA": false,
+          "DES-CBC-SHA": false,
+          "AES128-SHA": false,
+          "AES256-SHA": false,
+          "CAMELLIA128-SHA": false,
+          "CAMELLIA256-SHA": false,
+          "ECDHE-RSA-AES128-SHA": false,
+          "ECDHE-RSA-AES256-SHA": false,
+          "ADH-RC4-MD5": false,
+          "AECDH-NULL-SHA": false
+        },
+        "hsts_header": null,
+        "csp_header": null,
+        "ocsp_stapling": false,
+        "ct_scts_total": 2,
+        "ct_scts_tls_ext": 0,
+        "ct_scts_cert": 2,
+        "ocsp_ct_note": "OCSP/CT checks performed",
+        "context": {
+          "is_login_page": false,
+          "is_ecommerce": true,
+          "is_internal": false,
+          "waf_detected": false
+        },
+        "score_breakdown": [
+          "-3 (low): OCSP stapling not used",
+          "-15 (high): HSTS header missing",
+          "+10 (Login / E-commerce context)"
+        ]
+      }
+    },
+    "test_05_security_headers": {
+      "scanner": "security_headers",
+      "target": "https://www.egyptian-trading.com",
+      "status": "fail",
+      "severity": "critical",
+      "confidence": 95,
+      "score": 0,
+      "grade": "F",
+      "summary": "Security Headers – 13 findings | Score 0/100 (F)",
+      "findings": [
+        {
+          "title": "Missing HSTS header",
+          "description": "No HSTS found. SSL stripping attacks possible.",
+          "severity": "high",
+          "confidence": 100,
+          "status": "fail",
+          "header": "Strict-Transport-Security",
+          "evidence": "Header missing",
+          "remediation": "Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
+          "cwe": "CWE-319",
+          "owasp": "A05:2021",
+          "poc": "curl -I https://www.egyptian-trading.com | grep -i strict"
+        },
+        {
+          "title": "Missing clickjacking protection",
+          "description": "Neither XFO nor CSP frame-ancestors set.",
+          "severity": "critical",
+          "confidence": 100,
+          "status": "fail",
+          "header": "X-Frame-Options / CSP",
+          "evidence": "",
+          "remediation": "Add X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
+          "cwe": "",
+          "owasp": "",
+          "poc": "<iframe src='...'></iframe>"
+        },
+        {
+          "title": "Missing Content‑Security‑Policy",
+          "description": "No CSP header found.",
+          "severity": "high",
+          "confidence": 100,
+          "status": "fail",
+          "header": "Content-Security-Policy",
+          "evidence": "Header missing",
+          "remediation": "Implement a strict CSP.",
+          "cwe": "CWE-1021",
+          "owasp": "A01:2021",
+          "poc": null
+        },
+        {
+          "title": "Missing X-Content-Type-Options",
+          "description": "MIME sniffing attacks possible.",
+          "severity": "medium",
+          "confidence": 100,
+          "status": "fail",
+          "header": "X-Content-Type-Options",
+          "evidence": "",
+          "remediation": "Add: X-Content-Type-Options: nosniff",
+          "cwe": "CWE-693",
+          "owasp": "A05:2021",
+          "poc": null
+        },
+        {
+          "title": "Missing Referrer-Policy",
+          "description": "Referer header may leak URLs.",
+          "severity": "medium",
+          "confidence": 100,
+          "status": "fail",
+          "header": "Referrer-Policy",
+          "evidence": "",
+          "remediation": "Set Referrer-Policy: strict-origin-when-cross-origin",
+          "cwe": "CWE-200",
+          "owasp": "A01:2021",
+          "poc": null
+        },
+        {
+          "title": "Permissions-Policy missing",
+          "description": "Feature controls not enforced.",
+          "severity": "low",
+          "confidence": 80,
+          "status": "warning",
+          "header": "Permissions-Policy",
+          "evidence": "",
+          "remediation": "Add Permissions-Policy",
+          "cwe": "",
+          "owasp": "",
+          "poc": null
+        },
+        {
+          "title": "Missing COOP",
+          "description": "Cross‑origin opener attacks possible.",
+          "severity": "medium",
+          "confidence": 85,
+          "status": "warning",
+          "header": "Cross-Origin-Opener-Policy",
+          "evidence": "Header missing",
+          "remediation": "COOP: same-origin",
+          "cwe": "CWE-693",
+          "owasp": "A05:2021",
+          "poc": null
+        },
+        {
+          "title": "Missing COEP",
+          "description": "Cross‑origin embedding not controlled.",
+          "severity": "medium",
+          "confidence": 80,
+          "status": "warning",
+          "header": "Cross-Origin-Embedder-Policy",
+          "evidence": "Header missing",
+          "remediation": "COEP: require-corp",
+          "cwe": "CWE-693",
+          "owasp": "A05:2021",
+          "poc": null
+        },
+        {
+          "title": "Missing Cross-Origin-Resource-Policy",
+          "description": "Allows any website to load resources from your site.",
+          "severity": "medium",
+          "confidence": 80,
+          "status": "warning",
+          "header": "Cross-Origin-Resource-Policy",
+          "evidence": "Header missing",
+          "remediation": "Set CORP to 'same-origin' or 'same-site'.",
+          "cwe": "CWE-693",
+          "owasp": "A05:2021",
+          "poc": null
+        },
+        {
+          "title": "Cache‑Control correctly restricts caching",
+          "description": "Cache-Control: no-store, no-cache, must-revalidate",
+          "severity": "info",
+          "confidence": 100,
+          "status": "pass",
+          "header": "Cache-Control",
+          "evidence": "no-store, no-cache, must-revalidate",
+          "remediation": "",
+          "cwe": "",
+          "owasp": "",
+          "poc": null
+        },
+        {
+          "title": "X-DNS-Prefetch-Control missing",
+          "description": "Browser may prefetch DNS for links, enabling tracking.",
+          "severity": "low",
+          "confidence": 70,
+          "status": "warning",
+          "header": "X-DNS-Prefetch-Control",
+          "evidence": "Header missing",
+          "remediation": "Add X-DNS-Prefetch-Control: off",
+          "cwe": "CWE-693",
+          "owasp": "A05:2021",
+          "poc": null
+        },
+        {
+          "title": "Server header exposed: Apache",
+          "description": "Information disclosure.",
+          "severity": "low",
+          "confidence": 80,
+          "status": "info",
+          "header": "Server",
+          "evidence": "",
+          "remediation": "Remove Server header.",
+          "cwe": "CWE-200",
+          "owasp": "A01:2021",
+          "poc": null
+        },
+        {
+          "title": "Missing X-Permitted-Cross-Domain-Policies",
+          "description": "Prevents Adobe Flash from loading data from your domain.",
+          "severity": "low",
+          "confidence": 70,
+          "status": "warning",
+          "header": "X-Permitted-Cross-Domain-Policies",
+          "evidence": "Header missing",
+          "remediation": "Set to 'none' or 'master-only'.",
+          "cwe": "",
+          "owasp": "",
+          "poc": null
+        }
+      ],
+      "remediation": "Add Permissions-Policy | Add X-DNS-Prefetch-Control: off | Add X-Frame-Options: DENY or CSP frame-ancestors 'none'. | Add: X-Content-Type-Options: nosniff | COEP: require-corp | COOP: same-origin | Implement a strict CSP. | Remove Server header. | Set CORP to 'same-origin' or 'same-site'. | Set Referrer-Policy: strict-origin-when-cross-origin | Set to 'none' or 'master-only'. | Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
+      "details": {
+        "final_url": "https://www.egyptian-trading.com",
+        "final_status": 200,
+        "is_error_page": false,
+        "is_api": false,
+        "is_cdn": false,
+        "content_type": "text/html; charset=UTF-8",
+        "waf_detected": null,
+        "waf_fingerprints": [],
+        "site_categories": [],
+        "has_report_to": false,
+        "header_order_analysis": {
+          "security_headers_count": 0,
+          "order_followed_ideal": 0,
+          "order_score": 0,
+          "actual_order": []
+        },
+        "headers_summary": {
+          "checked": 13,
+          "failed": 11
+        }
+      }
+    },
+    "test_06_info_disclosure": {
+      "scanner": "info_disclosure",
+      "target": "https://www.egyptian-trading.com",
+      "status": "warning",
+      "severity": "medium",
+      "confidence": 68,
+      "score": 82,
+      "grade": "B",
+      "summary": "Info Disclosure – 8 findings | Score 82/100 | Grade B",
+      "findings": [
+        {
+          "title": "Technology identified: Apache",
+          "description": "Header Server reveals Apache",
+          "severity": "low",
+          "confidence": 80,
+          "location": "Header: Server",
+          "evidence": "Apache",
+          "remediation": "Remove or obscure version headers.",
+          "cwe": "CWE-200",
+          "owasp": "",
+          "poc": null,
+          "category": "passive"
+        },
+        {
+          "title": "Multiple .sql files are blocked (403)",
+          "description": "14 .sql paths return 403, suggesting blanket restriction. Examples: www.egyptian-trading.com.sql, backup_www.sql, 2026.sql, dump.sql, db.sql",
+          "severity": "info",
+          "confidence": 90,
+          "location": "Multiple paths (*.sql)",
+          "evidence": "14 blocked files",
+          "remediation": "Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+          "cwe": "",
+          "owasp": "",
+          "poc": null,
+          "category": "config"
+        },
+        {
+          "title": "Multiple .bak files are blocked (403)",
+          "description": "15 .bak paths return 403, suggesting blanket restriction. Examples: wp-config.php.bak, backup_www.bak, www.egyptian-trading.com.bak, www.egyptian-trading.com_backup_20260626.bak, www_old.bak",
+          "severity": "info",
+          "confidence": 90,
+          "location": "Multiple paths (*.bak)",
+          "evidence": "15 blocked files",
+          "remediation": "Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+          "cwe": "",
+          "owasp": "",
+          "poc": null,
+          "category": "config"
+        },
+        {
+          "title": "Directory / is protected (403) for multiple files",
+          "description": "18 low‑sensitivity files in / return 403, indicating blanket protection.",
+          "severity": "info",
+          "confidence": 85,
+          "location": "//",
+          "evidence": "Examples: .env.local, .DS_Store, Dockerfile, .env.backup, composer.json",
+          "remediation": "This is likely intended, but verify that sensitive files are not accidentally exposed.",
+          "cwe": "",
+          "owasp": "",
+          "poc": null,
+          "category": "config"
+        },
+        {
+          "title": "Forbidden file: .git/HEAD",
+          "description": "File exists but returns 403 Forbidden.",
+          "severity": "low",
+          "confidence": 60,
+          "location": ".git/HEAD",
+          "evidence": "",
+          "remediation": "Ensure proper access controls are in place.",
+          "cwe": "CWE-538",
+          "owasp": "A01:2021",
+          "poc": null,
+          "category": "config"
+        },
+        {
+          "title": "Protected file: wp-content/debug.log",
+          "description": "File exists but returns 403 Forbidden.",
+          "severity": "medium",
+          "confidence": 80,
+          "location": "wp-content/debug.log",
+          "evidence": "",
+          "remediation": "Ensure proper access controls are in place.",
+          "cwe": "CWE-538",
+          "owasp": "A01:2021",
+          "poc": null,
+          "category": "config"
+        },
+        {
+          "title": "Forbidden file: .idea/workspace.xml",
+          "description": "File exists but returns 403 Forbidden.",
+          "severity": "low",
+          "confidence": 60,
+          "location": ".idea/workspace.xml",
+          "evidence": "",
+          "remediation": "Ensure proper access controls are in place.",
+          "cwe": "CWE-538",
+          "owasp": "A01:2021",
+          "poc": null,
+          "category": "config"
+        },
+        {
+          "title": "Forbidden file: storage/logs/laravel.log",
+          "description": "File exists but returns 403 Forbidden.",
+          "severity": "low",
+          "confidence": 60,
+          "location": "storage/logs/laravel.log",
+          "evidence": "",
+          "remediation": "Ensure proper access controls are in place.",
+          "cwe": "CWE-538",
+          "owasp": "A01:2021",
+          "poc": null,
+          "category": "config"
+        }
+      ],
+      "remediation": [
+        "Ensure proper access controls are in place.",
+        "This is likely intended, but verify that sensitive files are not accidentally exposed.",
+        "Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+        "Remove or obscure version headers."
+      ],
+      "details": {
+        "tech_stack": [
+          "Apache",
+          "WordPress"
+        ],
+        "waf_detected": null,
+        "context": {
+          "is_login_page": false,
+          "is_ecommerce": false,
+          "is_internal": false,
+          "is_api": false
+        },
+        "summary_stats": {
+          "total_findings": 8,
+          "critical_count": 0,
+          "high_count": 0,
+          "medium_count": 1,
+          "low_count": 4,
+          "info_count": 3
+        }
+      }
+    }
+  },
+  "waf": null,
+  "errors": [],
+  "errors_count": 0,
+  "deduplicated_count": 0,
+  "summary": {
+    "critical": 1,
+    "high": 3,
+    "medium": 7,
+    "low": 9
+  },
+  "score": 9,
+  "grade": "F"
+}
