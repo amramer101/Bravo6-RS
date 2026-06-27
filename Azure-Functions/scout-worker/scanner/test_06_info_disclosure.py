@@ -1,30 +1,26 @@
 #!/usr/bin/env python3
 """
-test_06_info_disclosure.py – Bravo6 Info Disclosure Scanner (v12.5 – Clean & Focused)
-========================================================================================
+test_06_info_disclosure.py – Bravo6 Info Disclosure Scanner (v12.7 – Accurate Tech Detection)
+==============================================================================================
 What it does:
   - Sensitive file discovery (.env, .git/HEAD, backups, etc.)
   - Source map detection & API enumeration
   - Cloud bucket (S3) listing checks
   - JavaScript credential leaks (hardcoded keys, entropy)
-  - Technology fingerprinting with smart path injection
+  - Technology fingerprinting (high‑precision HTML patterns only)
 
-Key design decisions (v12.5):
-  - JS library CVE scanning is REMOVED entirely; now handled by test_02 (dedicated JS vuln scanner).
-    This eliminates false positives and duplicate findings.
-  - HEAD → GET fallback for servers that don't support HEAD.
-  - Safe connection handling with async with for HEAD requests (no leaks).
-  - Aggressive 403 aggregation to eliminate noise from blanket blocks.
-  - Soft‑404 detection minimises false positives from error pages.
-  - Fallback WordPress paths when technology fingerprinting yields empty.
-
-Known limitations (acceptable trade‑offs):
-  - Rate limiting reduces WAF blocking but cannot prevent it entirely.
-  - Soft‑404 detection may miss some custom error pages.
-  - Wordlist is static; non‑standard file names will not be found.
+v12.7 Changes:
+  - Eliminated false‑positive technology detections (Django, Rails, Laravel, React)
+    by removing generic patterns (e.g., /assets/, /static/, id="root").
+  - Added precise HTML signatures: csrfmiddlewaretoken for Django, meta csrf-param for Rails,
+    meta csrf-token for Laravel, react.*.min.js for React.
+  - Lowered confidence of HTML‑based technology findings to 75 (passive, no network verification).
+  - Fixed false HTML comment detection (script/style content mistaken as Comment objects).
+  - All previous fixes (WAF bonus, phpinfo evidence, IDE config, dedup, soft‑404, etc.) retained.
 """
 
 import asyncio
+import difflib
 import json
 import math
 import os
@@ -41,7 +37,7 @@ from bs4 import BeautifulSoup, Comment
 
 # ── Constants ──────────────────────────────────────────────────────────────
 SCANNER_NAME = "info_disclosure"
-USER_AGENT = "Bravo6-InfoDisclosure/12.5"
+USER_AGENT = "Bravo6-InfoDisclosure/12.7"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 HEAD_TIMEOUT = aiohttp.ClientTimeout(total=5)
 MAX_CONCURRENT = 8
@@ -71,6 +67,16 @@ OWASP_MAP = {
     "dir_listing": "A05:2021",
     "backup": "A05:2021",
     "user_enum": "A01:2021",
+}
+
+# Paths that are normal to see 403 on
+EXPECTED_403_PATHS = {
+    "wp-content/uploads/",
+    "wp-content/uploads",
+    ".well-known/",
+    ".well-known",
+    "cgi-bin/",
+    "cgi-bin",
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -109,7 +115,7 @@ def _entropy(s: str) -> float:
     prob = [float(s.count(c)) / len(s) for c in set(s)]
     return -sum(p * math.log2(p) for p in prob)
 
-# ── Version comparison (only used internally if needed elsewhere) ─────────
+# ── Version comparison ─────────────────────────────────────────────────────
 def _parse_version(version_str: str) -> Tuple[int, ...]:
     parts = re.split(r'[.-]', version_str)
     return tuple(int(p) for p in parts if p.isdigit())
@@ -253,8 +259,9 @@ def calculate_score_v2(findings: List[Dict], context: Dict, waf_detected: bool) 
         base += 15
     if context.get("is_internal"):
         base -= 15
-    if waf_detected:
-        base -= 12
+    # WAF bonus (+5) unless a critical finding exists
+    if waf_detected and not any(f.get("severity") == "critical" for f in findings):
+        base += 5
     score = base + deductions
     return max(0, min(100, score))
 
@@ -297,6 +304,24 @@ HEADER_FINGERPRINTS = {
     },
 }
 
+# HTML‑based technology fingerprints (v12.7 – strict, no false positives)
+HTML_TECH_SIGNATURES = {
+    # Only extremely specific patterns that don't appear in other frameworks
+    "WordPress": [r'/wp-content/', r'/wp-includes/', r'wp-json'],  # very WordPress specific
+    "Django":    [r'csrfmiddlewaretoken'],  # hidden form field unique to Django
+    "Ruby on Rails": [r'<meta\s+name="csrf-param"'],  # Rails‑specific meta tag
+    "Laravel":   [r'<meta\s+name="csrf-token"'],  # Laravel's CSRF meta tag
+    "React":     [r'react\.(production|development)\.min\.js'],  # React library file in script src
+    "Vue.js":    [r'v-app', r'v-bind', r'v-on'],  # Vue directives (still somewhat specific)
+    "Angular":   [r'ng-app', r'ng-controller', r'ng-version'],  # AngularJS attributes
+    "Bootstrap": [r'bootstrap\.min\.css', r'bootstrap\.bundle'],  # Bootstrap file names
+    "jQuery":    [r'jquery\.min\.js', r'jquery\.js'],  # jQuery library
+    "ASP.NET":   [r'__VIEWSTATE', r'__EVENTVALIDATION'],  # ASP.NET WebForms hidden fields
+    "Next.js":   [r'/_next/static/', r'__NEXT_DATA__'],  # Next.js specific
+    "Nuxt.js":   [r'/_nuxt/', r'window\.__NUXT__'],  # Nuxt.js specific
+}
+
+# Expansive sensitive path list (static, no extra requests)
 BASE_SENSITIVE_PATHS = [
     ".git/HEAD", ".env", ".env.production", ".env.local",
     "composer.json", "package.json", "Gemfile", "requirements.txt",
@@ -321,9 +346,22 @@ BASE_SENSITIVE_PATHS = [
     "db.sqlite3", "storage/logs/laravel.log",
     ".next/", "out/", "staticfiles/",
     "id_rsa", "id_rsa.pub", "authorized_keys",
+    ".config", "appsettings.json", "web.config.bak", "config.yml",
+    "parameters.yml", "services.yml", ".env.staging", ".env.development",
+    "admin.php", "login.php", "user.php", "api.php", "cron.php",
+    "wp-login.php", "administrator/index.php", "user/login",
+    "graphql", "graphiql", "playground",
+    "server-status", "server-info", "status", "healthcheck",
+    "phpMyAdmin/", "adminer.php", "pma/",
+    "crossdomain.xml", "clientaccesspolicy.xml",
+    "sftp-config.json", ".htpasswd", ".bash_history",
+    "config/database.yml", "config/secrets.yml", "config/initializers/secret_token.rb",
+    "db/development.sqlite3", "log/production.log", "tmp/restart.txt",
+    ".npmrc", ".yarnrc.yml", ".pypirc",
+    "credentials.json", "secret_key.txt", "private.key", "cert.pem",
 ]
 
-BACKUP_EXTS = [".zip", ".tar.gz", ".sql", ".bak", ".tar"]
+BACKUP_EXTS = [".zip", ".tar.gz", ".sql", ".bak", ".tar", ".7z", ".rar", ".gz", ".bz2"]
 
 TECH_SPECIFIC_PATHS = {
     "WordPress": [
@@ -339,7 +377,7 @@ TECH_SPECIFIC_PATHS = {
         "staticfiles/", "media/",
     ],
     "ASP.NET": [
-        "web.config", "elmah.axd", "trace.axd", "bin/",
+        "web.config", "elmah.axd", "trace.axd", "bin/", "appsettings.json",
     ],
     "PHP": [
         "phpinfo.php", "config.php", "adminer.php", "info.php",
@@ -357,6 +395,18 @@ TECH_SPECIFIC_PATHS = {
     "Ruby": [
         "Gemfile", "config/database.yml", "config/secrets.yml",
     ],
+    "React": [
+        ".env", ".env.production", "build/", "node_modules/",
+    ],
+    "Vue.js": [
+        ".env", ".env.production", "dist/", "node_modules/",
+    ],
+    "Next.js": [
+        ".next/", "out/", ".env.local", "next.config.js",
+    ],
+    "Nuxt.js": [
+        ".nuxt/", ".output/", ".env", "nuxt.config.js",
+    ],
 }
 
 API_ENDPOINTS = [
@@ -367,7 +417,7 @@ API_ENDPOINTS = [
     "/graphql/console", "/swagger-resources", "/v2/api-docs",
 ]
 
-# ── Soft 404 Detection ────────────────────────────────────────────────────
+# ── Soft 404 Detection (enhanced with difflib) ────────────────────────────
 def _is_soft_404(body: str, homepage_body: str) -> bool:
     if not body:
         return False
@@ -384,11 +434,17 @@ def _is_soft_404(body: str, homepage_body: str) -> bool:
         if title_match and home_title and title_match.group(1) == home_title.group(1):
             if abs(len(body) - len(homepage_body)) <= max(len(homepage_body) * 0.15, 200):
                 return True
+    # difflib similarity for custom error pages
+    try:
+        ratio = difflib.SequenceMatcher(None, body[:2000], homepage_body[:2000]).ratio()
+        if ratio > 0.85:
+            return True
+    except Exception:
+        pass
     return False
 
-# ── Response Placeholder (for safe HEAD requests) ─────────────────────────
+# ── Response Placeholder ──────────────────────────────────────────────────
 class ResponsePlaceholder:
-    """Simple object to mimic aiohttp response for HEAD requests, with safe release."""
     def __init__(self, status, headers):
         self.status = status
         self.headers = headers
@@ -415,12 +471,10 @@ class RateLimiter:
         self.max_delay = max_delay
 
     async def probe(self, session, url: str, method='GET') -> Optional[Any]:
-        """Probe a URL. For HEAD, returns ResponsePlaceholder safely. For GET, returns live response (caller must read)."""
         async with self.sem:
             await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
             try:
                 if method == 'HEAD':
-                    # Safe async with ensures connection release even on timeout
                     async with session.head(url, timeout=HEAD_TIMEOUT, allow_redirects=True) as resp:
                         return ResponsePlaceholder(resp.status, resp.headers)
                 else:
@@ -533,10 +587,6 @@ async def _check_js_source_maps(session, base_url, html: str, rate_limiter, find
 
 async def _check_js_leaked_credentials(session, base_url, html: str, rate_limiter, findings,
                                        js_cache: Dict[str, Optional[str]]):
-    """
-    Scan JavaScript files for hardcoded credentials/high‑entropy strings.
-    JS library CVE scanning is intentionally omitted; handled by test_02.
-    """
     if not html:
         return
     try:
@@ -625,7 +675,7 @@ async def _check_interesting_files_from_headers(session, base_url, main_headers,
                 category="active"
             ))
 
-# ── API Endpoint Enumeration ──────────────────────────────────────────────
+# ── API Endpoint Enumeration (with timeout on body read) ─────────────────
 async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
     reported_user_enum = False
     for endpoint in API_ENDPOINTS:
@@ -634,7 +684,10 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
         if resp is None: continue
         if resp.status == 200:
             content_type = resp.headers.get('Content-Type', '')
-            body = await resp.text()
+            try:
+                body = await asyncio.wait_for(resp.text(), timeout=10)  # safe read timeout
+            except Exception:
+                continue
             if endpoint == "/wp-json/wp/v2/users":
                 if not reported_user_enum and '"id"' in body and '"name"' in body and '"slug"' in body:
                     findings.append(_make_finding(
@@ -693,12 +746,13 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                     category="api"
                 ))
         elif resp.status in (401, 403):
+            sev = "low" if "wp-json" in endpoint and "users" in endpoint else "info"
             findings.append(_make_finding(
                 title=f"Protected API endpoint: {endpoint}",
-                description="Endpoint exists but requires authentication.",
-                severity="info", confidence=85,
+                description="Endpoint exists but requires authentication — verify access controls are correctly enforced.",
+                severity=sev, confidence=85,
                 location=endpoint,
-                remediation="Ensure strong authentication.",
+                remediation="Ensure the endpoint requires authentication and test with a real unauthenticated request.",
                 category="api"
             ))
 
@@ -716,6 +770,7 @@ MEDIUM_SENSITIVE_PATHS = [
     ".sql", ".bak", "/backup", "/error.log", "/debug.log", "/.DS_Store",
     "/web.config", "/composer.json", "/package.json", "/Gemfile.lock",
     "/yarn.lock", "/config", "/settings.py", "/.env.example",
+    "/appsettings.json", "/parameters.yml", "/.npmrc",
 ]
 
 def _forbidden_sensitivity(path: str) -> Tuple[str, int]:
@@ -797,8 +852,14 @@ def _is_sensitive_content(path: str, body: str) -> bool:
         return "swagger" in body.lower() or "openapi" in body.lower()
     if path.endswith(".sql"):
         return "CREATE TABLE" in body
-    if path.endswith((".zip", ".tar.gz", ".tar", ".bak")):
+    if path.endswith((".zip", ".tar.gz", ".tar", ".bak", ".7z", ".rar")):
         return True
+    if ".vscode" in path or ".idea" in path:
+        return True
+    if "web.config" in path or "appsettings.json" in path:
+        return "<configuration" in body or "<appSettings" in body
+    if "parameters.yml" in path:
+        return "parameters:" in body
     return False
 
 def _is_directory_listing(body: str, homepage_body: str) -> bool:
@@ -830,16 +891,22 @@ def _is_real_path_traversal(body: str, homepage_body: str, orig_dir_body: Option
     return False
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Main Scanner
+# Smart Tech Detection from HTML (v12.7 – high precision)
 # ══════════════════════════════════════════════════════════════════════════════
-async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
-    """
-    Main scanner entry point (v12.5).
+def _detect_tech_from_html(html: str) -> Set[str]:
+    """Passive technology detection using only highly specific HTML patterns."""
+    if not html:
+        return set()
+    detected = set()
+    for tech, patterns in HTML_TECH_SIGNATURES.items():
+        for pat in patterns:
+            if re.search(pat, html, re.IGNORECASE):
+                detected.add(tech)
+                break
+    return detected
 
-    Parameters:
-        url: target URL
-        shared_page: optional dict with pre‑fetched page data (html, headers, soup, js_cache)
-    """
+# ── Main Scanner ───────────────────────────────────────────────────────────
+async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     target = _normalize_url(url)
     parsed = urlparse(target)
     hostname = parsed.hostname or ""
@@ -898,7 +965,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             connector=aiohttp.TCPConnector(ssl=True, limit=MAX_CONCURRENT + 10)
         ) as session:
 
-            # ── Passive technology fingerprint ──────────────────────────
+            # ── Passive technology fingerprint (headers) ───────────────
             for header_name, patterns in HEADER_FINGERPRINTS.items():
                 val = _get_header(main_headers, header_name)
                 if val:
@@ -940,10 +1007,20 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         category="config"
                     ))
 
+            # ── HTML-based tech fingerprinting (high precision) ─────────
+            html_techs = _detect_tech_from_html(main_body)
+            for tech in html_techs:
+                tech_stack.add(tech)
+                findings.append(_make_finding(
+                    title=f"Technology identified: {tech}",
+                    description="Detected from HTML signature",
+                    severity="info", confidence=75,   # reduced confidence for passive detection
+                    location="HTML body",
+                    category="passive"
+                ))
+
             # ── HTML meta / comments ────────────────────────────────────
-            if main_body:
-                if soup is None:
-                    soup = BeautifulSoup(main_body, "html.parser")
+            if soup:
                 for meta in soup.find_all("meta", attrs={"name": "generator"}):
                     content = meta.get("content", "")
                     if "WordPress" in content:
@@ -970,6 +1047,14 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 noise_patterns = [r'sp:feature', r'google\.com/recaptcha', r'Async Google Analytics']
                 for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
                     comm = comment.strip()
+                    # ── Fix: filter out non‑comment strings that BS erroneously classifies as Comment ──
+                    # Skip if looks like JS/CSS or other tag content
+                    if comm.startswith('<') or comm.startswith('function') or comm.startswith('$') or comm.startswith('var ') or comm.startswith('const ') or comm.startswith('let ') or comm.startswith('('):
+                        continue
+                    parent = getattr(comment, 'parent', None)
+                    if parent and getattr(parent, 'name', '') in ('script', 'style', 'noscript'):
+                        continue
+                    # ── End fix ──────────────────────────────────────────────────────────────────────
                     if any(re.search(p, comm) for p in noise_patterns):
                         continue
                     if any(kw.lower() in comm.lower() for kw in ["TODO", "FIXME", "BUG", "HACK", "password",
@@ -982,12 +1067,11 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             category="passive"
                         ))
 
-            # ── Build wordlist (with WordPress fallback if no tech detected) ─
+            # ── Build wordlist (smart tech_stack now accurate) ─────────
             all_paths = set(BASE_SENSITIVE_PATHS)
             for bn in _generate_backup_names(domain):
                 all_paths.add(bn)
 
-            # If no technology identified, add WordPress paths as fallback (most common CMS)
             if not tech_stack:
                 for wp_path in TECH_SPECIFIC_PATHS.get("WordPress", []):
                     all_paths.add(wp_path)
@@ -995,7 +1079,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 for tech in tech_stack:
                     for tpaths in TECH_SPECIFIC_PATHS.get(tech, []):
                         all_paths.add(tpaths)
-            # Always add core WordPress files that may be present even if not detected
             all_paths.update(["wp-config.php", "wp-content/debug.log", "xmlrpc.php"])
 
             # Generic 403 bodies
@@ -1014,7 +1097,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 full_url = urljoin(base_url, path)
                 head_resp = await rate_limiter.probe(session, full_url, 'HEAD')
                 if head_resp is None or head_resp.status == 405:
-                    # fallback to GET
                     head_resp = await rate_limiter.probe(session, full_url, 'GET')
                     if head_resp is None:
                         return
@@ -1037,13 +1119,25 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                     if body:
                         if main_body and _is_soft_404(body, main_body):
                             return
+                        if any(ide in path for ide in (".vscode/", ".idea/")):
+                            findings.append(_make_finding(
+                                title=f"IDE configuration file exposed: {path}",
+                                description="IDE config files may contain local paths, database URIs, or project secrets.",
+                                severity="medium", confidence=85,
+                                location=path, evidence=body[:300],
+                                remediation="Add .vscode/ and .idea/ to your .gitignore and remove from the web root.",
+                                cwe="CWE-200", owasp="A01:2021",
+                                poc=f"curl {full_url}",
+                                category="active"
+                            ))
+                            return
                         if path == "robots.txt":
                             if _is_robots_sensitive(body):
                                 findings.append(_make_finding(
                                     title="robots.txt exposes sensitive paths",
                                     description="robots.txt contains disallowed admin/backup paths.",
                                     severity="medium", confidence=90,
-                                    location=path, evidence=body[:200],
+                                    location=path, evidence=body[:1000],
                                     remediation="Review robots.txt and remove sensitive entries.",
                                     category="config"
                                 ))
@@ -1061,13 +1155,19 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             return
                         if _is_sensitive_content(path, body):
                             sev, conf, risk = "critical", 100, "Sensitive file exposed and verified."
+                            if "phpinfo" in path.lower():
+                                ver_match = re.search(r'PHP Version\s+([\d.]+)', body)
+                                evidence_str = f"PHP Version: {ver_match.group(1)}" if ver_match else body[:300]
+                            else:
+                                evidence_str = body[:300]
                         else:
                             sev, conf, risk = "info", 50, "File exists but content does not match expected sensitive pattern."
+                            evidence_str = body[:300]
                         findings.append(_make_finding(
                             title=f"Exposed file: {path}",
                             description=risk,
                             severity=sev, confidence=conf,
-                            location=path, evidence=body[:300],
+                            location=path, evidence=evidence_str,
                             remediation="Restrict access or remove file.",
                             cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
                             owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
@@ -1075,6 +1175,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             category="active"
                         ))
                 elif status == 403:
+                    path_norm = path.strip("/")
+                    if path_norm in EXPECTED_403_PATHS:
+                        return
                     ext_for_body = None
                     for e in BACKUP_EXTS:
                         if path.endswith(e):
@@ -1088,9 +1191,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                             raw_403_by_ext.append({"path": path, "ext": ext_for_body or "unknown"})
                             return
                     sev, conf = _forbidden_sensitivity(path)
-                    ext_agg = ext_for_body
-                    if not ext_agg:
-                        ext_agg = '.' + path.rsplit('.', 1)[-1] if '.' in path else path
+                    ext_agg = ext_for_body or ('.' + path.rsplit('.', 1)[-1] if '.' in path else path)
                     forbidden_candidates.append({
                         "path": path,
                         "ext": ext_agg,
@@ -1101,7 +1202,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             tasks = [probe_path(p) for p in all_paths]
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            # ── Post-process forbidden candidates ────────────────────────
+            # ── Post‑process forbidden candidates ────────────────────────
             ext_groups = defaultdict(list)
             for cand in forbidden_candidates:
                 ext_groups[cand["ext"]].append(cand)
@@ -1126,13 +1227,13 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         paths = [c["path"] for c in other_cands]
                         findings.append(_make_finding(
                             title=f"Multiple {ext} files are blocked (403)",
-                            description=f"{len(other_cands)} {ext} paths return 403, suggesting blanket restriction. "
+                            description=f"{len(other_cands)} {ext} paths return 403. "
                                         f"Examples: {', '.join(paths[:5])}",
                             severity="info",
                             confidence=90,
                             location=f"Multiple paths (*{ext})",
                             evidence=f"{len(other_cands)} blocked files",
-                            remediation="Verify that sensitive backup files are not accidentally exposed; otherwise this is normal.",
+                            remediation="Verify sensitive files are not accidentally exposed.",
                             category="config"
                         ))
                     for c in cands:
@@ -1150,12 +1251,12 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                     paths = [c["path"] for c in cands]
                     findings.append(_make_finding(
                         title=f"Directory {dir_name}/ is protected (403) for multiple files",
-                        description=f"{len(paths)} low‑sensitivity files in /{dir_name} return 403, indicating blanket protection.",
+                        description=f"{len(paths)} low‑sensitivity files in /{dir_name} return 403.",
                         severity="info",
                         confidence=85,
                         location=f"/{dir_name}/",
                         evidence=f"Examples: {', '.join(paths[:5])}",
-                        remediation="This is likely intended, but verify that sensitive files are not accidentally exposed.",
+                        remediation="This is likely intended.",
                         category="config"
                     ))
                     for c in cands:
@@ -1176,7 +1277,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                     severity=sev,
                     confidence=conf,
                     location=cand["path"],
-                    remediation="Ensure proper access controls are in place.",
+                    remediation="Ensure proper access controls.",
                     cwe="CWE-538",
                     owasp="A01:2021",
                     category="config"
@@ -1188,15 +1289,15 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             for ext, paths in ext_block_groups.items():
                 findings.append(_make_finding(
                     title=f"Server blocks access to {ext} files",
-                    description=f"The server returns 403 Forbidden for all {ext} paths (blanket block).",
+                    description=f"Blanket 403 for {ext} paths.",
                     severity="info", confidence=90,
                     location=f"Multiple paths (*{ext})",
-                    evidence=f"First few: {', '.join(paths[:5])}",
-                    remediation="Verify that backup files are not accidentally exposed; otherwise this is a normal security measure.",
+                    evidence=f"Examples: {', '.join(paths[:5])}",
+                    remediation="Verify backups are not exposed.",
                     category="config"
                 ))
 
-            # ── Directory listing & traversal ──────────────────────────
+            # Directory listing & traversal
             dir_paths = ["/assets/", "/static/", "/uploads/", "/files/", "/images/", "/css/", "/js/"]
             dir_urls = [urljoin(base_url, d) for d in dir_paths]
             trav_urls = [urljoin(base_url, d + "../") for d in dir_paths]
@@ -1246,7 +1347,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         category="active"
                     ))
 
-            # Advanced scans (no JS library CVE)
             await _check_interesting_files_from_headers(session, base_url, main_headers, findings)
             await _check_js_source_maps(session, base_url, main_body, rate_limiter, findings)
             await _check_js_leaked_credentials(session, base_url, main_body, rate_limiter, findings, js_cache)
@@ -1268,14 +1368,14 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             "details": {}
         }
 
-    # Post-processing
+    # Post‑processing
     if _detect_wordpress_from_findings(findings):
         tech_stack.add("WordPress")
 
     unique = []
     seen = set()
     for f in findings:
-        key = (f.get("title"), f.get("location", "")[:150])
+        key = (f.get("title", "").strip(), f.get("location", "").strip().rstrip("/"))
         if key not in seen:
             seen.add(key)
             unique.append(f)

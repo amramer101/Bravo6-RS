@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.5 – Enhanced)
+test_05_security_headers.py – Bravo6 Ultimate Security Headers Auditor (v6.5 – Pure shared_page)
 ========================================================================================
-Now accepts shared_page from main_scanner to avoid re‑fetching the homepage.
-Redirect chain is omitted when shared_page is used (final headers only).
+Now operates strictly on the shared_page dict from the orchestrator.
+All network requests have been removed; the module only analyses pre-fetched data.
 
-Improvements:
+Improvements (retained):
 - Fixed HSTS logic when using shared_page (checks final HTTPS response correctly).
-- _check_xss_protection now returns consistent pass/warning findings.
-- retry_async always uses factory pattern (unchanged, already correct).
+- _check_xss_protection returns consistent pass/warning findings.
 - Enhanced dynamic severity boosting for sensitive sites (login form, ecommerce)
   extends to more headers (Cache‑Control, COOP, COEP, Referrer‑Policy).
 - Better API vs HTML page detection (content‑type, URL path heuristics, JSON sniffing).
@@ -20,15 +19,10 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import urlparse, urljoin
 
-import aiohttp
 from bs4 import BeautifulSoup, Comment
 
 SCANNER_NAME = "security_headers"
 USER_AGENT = "Bravo6-SecurityHeaders/6.5"
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
-MAX_REDIRECTS = 6
-RETRY_MAX = 3
-RETRY_BACKOFF_BASE = 1
 
 CDN_DOMAINS = (
     ".cloudfront.net", ".azurewebsites.net", ".herokuapp.com",
@@ -62,53 +56,21 @@ def _get_header(headers: Dict[str,str], name: str) -> Optional[str]:
         if k.lower()==name.lower(): return v
     return None
 
-async def retry_async(coro_factory, max_retries=RETRY_MAX, base_delay=RETRY_BACKOFF_BASE):
-    """
-    Retry an async operation. Accepts a **callable** that returns a fresh coroutine
-    on each attempt (e.g., a lambda or partial). This avoids reusing an already‑awaited
-    coroutine object.
-    """
-    last_exc = None
-    for attempt in range(max_retries + 1):
-        try:
-            return await coro_factory()
-        except (asyncio.TimeoutError, ConnectionError, OSError) as e:
-            last_exc = e
-            if attempt == max_retries:
-                raise
-            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-            await asyncio.sleep(delay)
-    raise last_exc
-
-# ── Pre‑scan: WAF (now accepts optional headers/html) ────────────────────
+# ── Pre‑scan: WAF (no network requests) ─────────────────────────────────
 async def _detect_waf(hostname: str, port: int=443,
                       html: str = None, headers: dict = None) -> Optional[str]:
+    """
+    Pure static detection from headers; no fallback request.
+    """
     if headers:
         if 'cf-ray' in {k.lower() for k in headers}: return 'cloudflare'
         if 'x-sucuri-id' in {k.lower() for k in headers}: return 'sucuri'
         if 'x-akamai-request-id' in {k.lower() for k in headers}: return 'akamai'
         if headers.get('server','').lower().startswith('cloudflare'): return 'cloudflare'
-        return None
-    # Fallback: make a request
-    try:
-        ssl_ctx = __import__('ssl').create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8),
-                                         headers={"User-Agent":USER_AGENT}) as session:
-            async with session.get(f"https://{hostname}:{port}",ssl=ssl_ctx) as resp:
-                headers = resp.headers
-                if 'cf-ray' in headers: return 'cloudflare'
-                if 'x-sucuri-id' in headers: return 'sucuri'
-                if 'x-akamai-request-id' in headers: return 'akamai'
-                if headers.get('server','').lower().startswith('cloudflare'): return 'cloudflare'
-    except Exception as e:
-        print(f"[waf_detection] Error during fallback request: {e}", file=sys.stderr)
     return None
 
 def _fingerprint_waf_from_headers(headers: Dict[str,str]) -> List[str]:
     fingerprints = []
-    # Use case‑insensitive lookup
     csp = _get_header(headers, "Content-Security-Policy") or ""
     xcsp = _get_header(headers, "X-Content-Security-Policy") or ""
     if 'ModSecurity' in csp or 'ModSecurity' in xcsp:
@@ -119,7 +81,7 @@ def _fingerprint_waf_from_headers(headers: Dict[str,str]) -> List[str]:
         fingerprints.append('Generic WAF')
     return fingerprints
 
-# ── Site Categorization (now accepts optional html) ──────────────────────
+# ── Site Categorization (no network requests) ───────────────────────────
 SITE_CATEGORIES = {
     "bank":["bank","بنك","online banking"],
     "ecommerce":["shop","متجر","buy","cart","checkout","pay"],
@@ -130,21 +92,13 @@ SITE_CATEGORIES = {
 }
 async def _categorize_site(hostname: str, port: int=443,
                           html: str = None, headers: dict = None) -> Dict:
+    """
+    Uses only the supplied HTML; no network requests.
+    """
     result = {"categories":[],"has_login_form":False,"title":"","meta_keywords":""}
-    if html:
-        text = html
-    else:
-        try:
-            ssl_ctx = __import__('ssl').create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = __import__('ssl').CERT_NONE
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10),
-                                             headers={"User-Agent":USER_AGENT}) as session:
-                async with session.get(f"https://{hostname}:{port}",ssl=ssl_ctx) as resp:
-                    text = await resp.text()
-        except Exception as e:
-            print(f"[categorize_site] Error fetching homepage: {e}", file=sys.stderr)
-            return result
+    if not html:
+        return result
+    text = html
     title_match = re.search(r'<title>(.*?)</title>',text,re.IGNORECASE)
     if title_match: result["title"] = title_match.group(1)
     meta_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"',text,re.IGNORECASE)
@@ -379,7 +333,7 @@ def _check_dns_prefetch(final_headers):
                           "X-DNS-Prefetch-Control",evidence=xdns,
                           remediation="Set X-DNS-Prefetch-Control: off")]
 
-# ── Enhanced HSTS (now accepts optional single headers dict) ────────────
+# ── Enhanced HSTS (accepts optional final headers dict) ─────────────────
 def _check_hsts(headers_list=None, is_cdn=False, target_url="", final_headers=None):
     if is_cdn:
         return [_make_finding("HSTS not applicable (CDN domain)","","info",100,"pass","Strict-Transport-Security",
@@ -535,8 +489,6 @@ def _check_xss_protection(final_headers):
         return [_make_finding("X-XSS-Protection disabled (deprecated but safe)",
                               "Header set to 0 disables the legacy filter.","info",80,"pass",
                               "X-XSS-Protection",evidence=xssp)]
-    # Any other value (e.g., '1; mode=block') is considered a warning because
-    # it may enable a feature that has been deprecated and can sometimes be abused.
     return [_make_finding("X-XSS-Protection enabled (deprecated, potential risk)",
                           "The legacy XSS filter is deprecated; enabling it may introduce security risks.",
                           "low",70,"warning","X-XSS-Protection",evidence=xssp,
@@ -615,29 +567,8 @@ def _is_api_response(final_headers, final_url, main_html=None) -> bool:
                 pass
     return False
 
-# ── Fetch helper (only used if shared_page not provided) ────────────────
-async def _fetch_chain(session, url):
-    responses = []
-    current_url = url
-    for _ in range(MAX_REDIRECTS):
-        try:
-            async with session.get(current_url, allow_redirects=False, timeout=REQUEST_TIMEOUT) as resp:
-                headers = dict(resp.headers)
-                status = resp.status
-                final_url = str(resp.url)
-                responses.append({"headers":headers,"status":status,"url":final_url})
-                if status in (301,302,303,307,308):
-                    location = _get_header(headers,"Location")
-                    if location:
-                        current_url = urljoin(current_url,location)
-                        continue
-                break
-        except Exception as e:
-            return {"responses":responses,"error":str(e)}
-    return {"responses":responses,"error":None}
-
 # ══════════════════════════════════════════════════════════════════════════
-# Main Scanner – NOW ACCEPTS shared_page
+# Main Scanner – STRICTLY uses shared_page
 # ══════════════════════════════════════════════════════════════════════════
 async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
     target = _normalize_url(url)
@@ -656,28 +587,14 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
         waf_detected = await _detect_waf(hostname, port, headers=final_headers)
         fetch_error = None
     else:
-        # Original full fetch
-        waf_detected = await _detect_waf(hostname, port)
+        # No valid shared_page – proceed with empty data (NO NETWORK REQUESTS)
+        final_headers = {}
+        final_status = 0
+        final_url = target
+        main_html = ""
+        responses = []
         site_context = await _categorize_site(hostname, port)
-        try:
-            async with aiohttp.ClientSession(headers={"User-Agent":USER_AGENT}) as session:
-                chain = await retry_async(lambda: _fetch_chain(session, target))
-                if chain["error"]:
-                    return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
-                            "score":0,"grade":"F","summary":f"Fetch failed: {chain['error']}","findings":[],"remediation":"","details":{}}
-        except Exception as e:
-            return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
-                    "score":0,"grade":"F","summary":f"Fetch failed: {e}","findings":[],"remediation":"","details":{}}
-
-        responses = chain["responses"]
-        if not responses:
-            return {"scanner":SCANNER_NAME,"target":target,"status":"error","severity":"info","confidence":0,
-                    "score":0,"grade":"F","summary":"No responses","findings":[],"remediation":"","details":{}}
-        final = responses[-1]
-        final_headers = final["headers"]
-        final_status = final["status"]
-        final_url = final["url"]
-        main_html = None
+        waf_detected = await _detect_waf(hostname, port)
 
     # Common analysis from final_headers
     content_type = _get_header(final_headers,"Content-Type") or ""
@@ -723,12 +640,10 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
                                       remediation="Re‑scan a known working page (200 OK)."))
 
     # ── Enhanced dynamic severity boosting for sensitive sites ─────────
-    # Determine sensitivity: ecommerce, login categories, or presence of login form
     is_sensitive = any(cat in site_context.get("categories",[]) for cat in ("ecommerce","login"))
     is_sensitive = is_sensitive or site_context.get("has_login_form", False)
 
     if is_sensitive:
-        # Boost certain headers for pages handling sensitive data
         sensitive_headers = {
             "Strict-Transport-Security", "X-Frame-Options", "Content-Security-Policy",
             "Cache-Control", "Cross-Origin-Opener-Policy", "Cross-Origin-Embedder-Policy",

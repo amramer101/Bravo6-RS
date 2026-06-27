@@ -9,3 +9,6 @@ __pycache__/
 env/
 venv/
 .vscode
+
+security_report.html
+result.json

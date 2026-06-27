@@ -21,6 +21,10 @@ Improvements over the previous version:
 - WAF detection extended to AWS CloudFront, Akamai, Imperva/Incapsula.
 - Scoring tuned: reduced medium severity penalty, adjusted grade thresholds
   (A>=85, B>=75, C>=65, D>=55) for more realistic ratings.
+
+[HTML REPORT]
+- If --html flag is passed, the scanner will automatically generate
+  a security_report.html using the companion report_generator module.
 """
 
 import asyncio
@@ -398,6 +402,24 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", "-v", action="store_true", help="Show console output")
     parser.add_argument("--min-confidence", type=int, default=MIN_CONFIDENCE_DEFAULT,
                         help=f"Minimum confidence threshold (default: {MIN_CONFIDENCE_DEFAULT})")
+    parser.add_argument("--html", action="store_true", help="Generate HTML security report after scan")
     args = parser.parse_args()
 
+    # Run the scanner
     asyncio.run(run_scout(args.url, verbose=args.verbose, min_confidence=args.min_confidence))
+
+    # Generate HTML report if requested
+    if args.html:
+        try:
+            # Assumes report_generator.py is in the same directory and contains build_html(data) function
+            from report_generator import build_html
+            with open("result.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            html = build_html(data)
+            with open("security_report.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            print("✅ HTML report generated: security_report.html")
+        except ImportError:
+            print("❌ report_generator.py not found. Please ensure it is in the same folder.")
+        except Exception as e:
+            print(f"❌ Failed to generate report: {e}")

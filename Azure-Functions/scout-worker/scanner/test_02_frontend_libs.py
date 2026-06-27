@@ -1,56 +1,49 @@
 #!/usr/bin/env python3
 """
-Bravo6 Ultimate Frontend Library Auditor (v5.6 – Precision Tuned)
-=====================================================================
-- MIN_CONFIDENCE = 70 – low‑confidence detections are hidden from output.
-- Blacklists + positive context prevent AngularJS / jQuery / Vue false positives.
-- Strict CVE range matching – patched versions are never flagged.
-- URL path version extraction gives select2 etc. full confidence.
-- Full shared_page support: re‑uses HTML, headers, cookies and even pre‑fetched
-  JS content to minimise bandwidth and ensure consistency.
-- Clean, machine‑readable JSON output with no bare print statements.
-- Self‑test verifies version‑range logic at startup.
-
-v5.6 improvements:
-• Vulnerability confidence now linked to the source confidence and signature
-  presence – eliminates false high‑confidence alerts when the vulnerable code
-  pattern is missing.
-• Signature verification restricted to content‑detected URLs (no more false
-  matches from generic CDN scripts).
-• Added `*.version` property patterns to catch minified/bundled libraries.
-• Stronger positive‑context checks for several libraries.
+Bravo6 Ultimate Frontend Library Auditor (v6.0 – Cache‑Aware & Modern JS Ready)
+================================================================================
+- Fully leverages the engine’s `js_cache` and `fetch_js` for zero‑redundant fetching.
+- Extremely flexible version extraction from filenames (hashes, @‑sign, -alpha/beta/rc).
+- Content signatures for minified/bundled code (e.g. jQuery.fn.jquery).
+- Auto‑detects Next.js, Nuxt.js, plus modern libs (Uppy, Splide, Alpine, Svelte, Tailwind).
+- Composer.json support for PHP/Laravel projects.
+- Confidence 85+ for immutable signatures, 80 for others; MIN_CONFIDENCE=70 kept.
+- Positive context expanded for Vue/React/JSX, preventing false positives.
+- Output structure identical to main scanner expectations.
 """
 
 import asyncio
 import json
+import logging
 import os
 import random
 import re
 import sys
-from typing import Dict, List, Optional, Any
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urljoin
 
 import aiohttp
 from bs4 import BeautifulSoup
-from packaging.version import Version, InvalidVersion
+from packaging.version import InvalidVersion, Version
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-USER_AGENT = "Bravo6-LibAudit/5.6"
+# ------------------------------------------------------------------------------
+USER_AGENT = "Bravo6-LibAudit/6.0"
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 MAX_FILE_BYTES = 1_048_576          # 1 MB per script
 MAX_SCRIPT_URLS = 40
 MAX_CONCURRENT_FETCHES = 8
+MIN_CONFIDENCE = 70                # drop detections below this
 
-MIN_CONFIDENCE = 70                # discard detections below this entirely
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Version patterns
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# Version pattern (captures pre‑releases like 3.0.0-alpha1)
+# ------------------------------------------------------------------------------
 _VERSION = r"(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)"
 
-# Query‑string based (low priority)
+# ------------------------------------------------------------------------------
+# Flexible URL/filename/path patterns
+# ------------------------------------------------------------------------------
 LIB_URL = {
     "jquery":           re.compile(r"jquery[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "jquery-ui":        re.compile(r"jquery[.\-]?ui[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
@@ -64,7 +57,6 @@ LIB_URL = {
     "react":            re.compile(r"react[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "react-dom":        re.compile(r"react-dom[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "react-router":     re.compile(r"react-router[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
-    "next":             re.compile(r"next[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "svelte":           re.compile(r"svelte[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "alpinejs":         re.compile(r"alpine(?:js)?[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "chart.js":         re.compile(r"chart(?:\.min)?\.js\?.*v?" + _VERSION, re.I),
@@ -76,38 +68,72 @@ LIB_URL = {
     "vite":             re.compile(r"vite[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "webpack":          re.compile(r"webpack[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "elementor":        re.compile(r"elementor[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
+    "uppy":             re.compile(r"uppy[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
+    "splide":           re.compile(r"splide[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
 }
 
-# Filename‑based (high priority)
+# Filename patterns – now allow hashes, @, and pre‑release suffixes
 LIB_URL_FILENAME = {
-    "jquery":           re.compile(r"jquery[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "jquery-ui":        re.compile(r"jquery[.\-]?ui[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "bootstrap":        re.compile(r"bootstrap[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "angularjs":        re.compile(r"angular[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "lodash":           re.compile(r"lodash[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "moment":           re.compile(r"moment[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "axios":            re.compile(r"axios[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "vue":              re.compile(r"vue[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "react":            re.compile(r"react[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "react-dom":        re.compile(r"react-dom[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "swiper":           re.compile(r"swiper[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "select2":          re.compile(r"select2[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
-    "chart.js":         re.compile(r"chart[.-](\d+\.\d+\.\d+)(?:\.min)?\.js", re.I),
+    "jquery":           re.compile(r"jquery[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "jquery-ui":        re.compile(r"jquery[.\-]?ui[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "bootstrap":        re.compile(r"bootstrap[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "angularjs":        re.compile(r"angular[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "lodash":           re.compile(r"lodash[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "moment":           re.compile(r"moment[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "axios":            re.compile(r"axios[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "vue":              re.compile(r"vue[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "react":            re.compile(r"react[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "react-dom":        re.compile(r"react-dom[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "swiper":           re.compile(r"swiper[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "select2":          re.compile(r"select2[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "chart.js":         re.compile(r"chart[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "uppy":             re.compile(r"uppy[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
+    "splide":           re.compile(r"splide[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
 }
 
-# Content‑based patterns (high priority, subject to blacklist & context)
-# Now also covers `*.version` properties for minified code.
-LIB_CONTENT = {
-    "jquery":           re.compile(r"(?:jQuery\s+v?" + _VERSION + r"|jquery\.fn\.jquery\s*=\s*[\"']" + _VERSION + r"[\"']|jQuery\.version\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
+# Path‑based extraction for libraries using @ or slashes
+LIB_PATH_VERSIONS = {
+    "select2":          re.compile(r'(?:^|/)select2[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "jquery":           re.compile(r'(?:^|/)jquery[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "bootstrap":        re.compile(r'(?:^|/)bootstrap[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "angularjs":        re.compile(r'(?:^|/)angular[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "lodash":           re.compile(r'(?:^|/)lodash[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "moment":           re.compile(r'(?:^|/)moment[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "swiper":           re.compile(r'(?:^|/)swiper[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "chart.js":         re.compile(r'(?:^|/)chart[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "react":            re.compile(r'(?:^|/)react[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "react-dom":        re.compile(r'(?:^|/)react-dom[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "vue":              re.compile(r'(?:^|/)vue[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "uppy":             re.compile(r'(?:^|/)uppy[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+    "splide":           re.compile(r'(?:^|/)splide[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)[\-/]', re.I),
+}
+
+# ------------------------------------------------------------------------------
+# Content signatures – split into immutable (property) and generic (string)
+# ------------------------------------------------------------------------------
+LIB_CONTENT_SIGNATURE = {
+    "jquery":       re.compile(r"jQuery\.fn\.jquery\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "react":        re.compile(r"React\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "vue":          re.compile(r"Vue\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "bootstrap":    re.compile(r"Bootstrap\.VERSION\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "moment":       re.compile(r"moment\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "lodash":       re.compile(r"(?:lodash\.version|_.VERSION)\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "angularjs":    re.compile(r"angular\.version\.full\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "axios":        re.compile(r"axios\.VERSION\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "uppy":         re.compile(r"Uppy\.VERSION\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+    "splide":       re.compile(r"Splide\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
+}
+
+LIB_CONTENT_GENERAL = {
+    "jquery":           re.compile(r"jQuery\s+v?" + _VERSION, re.I),
     "jquery-ui":        re.compile(r"jQuery UI\s+v?" + _VERSION, re.I),
     "bootstrap":        re.compile(r"Bootstrap\s+v?" + _VERSION, re.I),
-    "angularjs":        re.compile(r"(?:angular[.\-]v?" + _VERSION + r"|angular\.version\.full\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
-    "lodash":           re.compile(r"(?:lodash\s+v?" + _VERSION + r"|lodash\.version\s*=\s*[\"']" + _VERSION + r"[\"']|_.VERSION\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
-    "moment":           re.compile(r"moment\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
-    "axios":            re.compile(r"(?:axios\s+v?" + _VERSION + r"|axios\.version\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
-    "vue":              re.compile(r"(?:Vue\.js\s+v?" + _VERSION + r"|Vue\.version\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
-    "react":            re.compile(r"(?:React\s+v?" + _VERSION + r"|React\.version\s*=\s*[\"']" + _VERSION + r"[\"'])", re.I),
-    "next":             re.compile(r"Next\.js\s+v?" + _VERSION, re.I),
+    "angularjs":        re.compile(r"angular[.\-]v?" + _VERSION, re.I),
+    "lodash":           re.compile(r"lodash\s+v?" + _VERSION, re.I),
+    "moment":           re.compile(r"Moment\.js\s+v?" + _VERSION, re.I),
+    "axios":            re.compile(r"axios\s+v?" + _VERSION, re.I),
+    "vue":              re.compile(r"Vue\.js\s+v?" + _VERSION, re.I),
+    "react":            re.compile(r"React\s+v?" + _VERSION, re.I),
     "svelte":           re.compile(r"svelte\s+v?" + _VERSION, re.I),
     "alpinejs":         re.compile(r"Alpine\.js\s+v?" + _VERSION, re.I),
     "chart.js":         re.compile(r"Chart\.js\s+v?" + _VERSION, re.I),
@@ -120,7 +146,9 @@ LIB_CONTENT = {
     "slicknav":         re.compile(r"SlickNav\s+v?" + _VERSION, re.I),
 }
 
-# False‑positive blacklist for content‑based detection
+# ------------------------------------------------------------------------------
+# Blacklist patterns for content false positives
+# ------------------------------------------------------------------------------
 CONTENT_FALSE_POSITIVE_PATTERNS = {
     "bootstrap": [
         re.compile(r"\banimate\b", re.I),
@@ -159,7 +187,9 @@ CONTENT_FALSE_POSITIVE_PATTERNS = {
     ],
 }
 
-# Positive context checks – MUST be present to accept a content‑based detection
+# ------------------------------------------------------------------------------
+# Positive context (must be present for content‑based detection)
+# ------------------------------------------------------------------------------
 LIB_POSITIVE_CONTEXT = {
     "angularjs": [
         r'angular\.module\s*\(',
@@ -178,6 +208,11 @@ LIB_POSITIVE_CONTEXT = {
         r'el\s*:\s*["\']#app',
         r'\.\.\.mapActions\b',
         r'Vue\.version\s*=',
+        r'Vue\.createApp\s*\(',
+        r'createVNode\s*\(',
+        r'_jsx\s*\(',
+        r'h\s*\(',
+        r'resolveComponent\s*\(',
     ],
     "bootstrap": [
         r'bs\.modal',
@@ -216,9 +251,14 @@ LIB_POSITIVE_CONTEXT = {
         r'React\.createElement\(',
         r'React\.version\s*=',
         r'__REACT_DEVTOOLS_GLOBAL_HOOK__',
+        r'jsx\s*\(',
+        r'jsxs\s*\(',
     ],
 }
 
+# ------------------------------------------------------------------------------
+# Meta / headers / cookies (server‑side tech)
+# ------------------------------------------------------------------------------
 META_GENERATOR = {
     "wordpress": re.compile(r"WordPress\s+" + _VERSION, re.I),
     "joomla":    re.compile(r"Joomla!\s+" + _VERSION, re.I),
@@ -246,6 +286,9 @@ COOKIE_HINTS = {
     "java":         "JSESSIONID",
 }
 
+# ------------------------------------------------------------------------------
+# Global variables (window.*)
+# ------------------------------------------------------------------------------
 GLOBAL_VAR = {
     "jquery":   re.compile(r"window\.jQuery\s*=", re.I),
     "react":    re.compile(r"window\.React\s*=", re.I),
@@ -259,8 +302,13 @@ GLOBAL_VAR = {
     "elementor": re.compile(r"window\.elementor\s*=", re.I),
     "popper":   re.compile(r"window\.Popper\s*=", re.I),
     "select2":  re.compile(r"window\.jQuery\.fn\.select2\s*=", re.I),
+    "uppy":     re.compile(r"window\.Uppy\s*=", re.I),
+    "splide":   re.compile(r"window\.Splide\s*=", re.I),
 }
 
+# ------------------------------------------------------------------------------
+# CSS hints
+# ------------------------------------------------------------------------------
 CSS_LINKS = {
     "bootstrap":        re.compile(r"bootstrap[.\-]v?" + _VERSION, re.I),
     "font-awesome":     re.compile(r"font-awesome[.\-]v?" + _VERSION, re.I),
@@ -273,24 +321,9 @@ CSS_LINKS = {
 
 VERSION_FALLBACK = re.compile(r'(?:window\.)?(?:__VERSION__|\.version)\s*=\s*["\']' + _VERSION + r'["\']', re.I)
 
-# URL path segment extraction
-LIB_PATH_VERSIONS = {
-    "select2":          re.compile(r'(?:^|/)select2[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "jquery":           re.compile(r'(?:^|/)jquery[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "bootstrap":        re.compile(r'(?:^|/)bootstrap[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "angularjs":        re.compile(r'(?:^|/)angular[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "lodash":           re.compile(r'(?:^|/)lodash[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "moment":           re.compile(r'(?:^|/)moment[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "swiper":           re.compile(r'(?:^|/)swiper[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "chart.js":         re.compile(r'(?:^|/)chart[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "react":            re.compile(r'(?:^|/)react[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "react-dom":        re.compile(r'(?:^|/)react-dom[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-    "vue":              re.compile(r'(?:^|/)vue[.\-](\d+\.\d+\.\d+)[\-/]', re.I),
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CVE database
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
+# CVE database loader
+# ------------------------------------------------------------------------------
 def _load_cve_db() -> Dict[str, List[Dict]]:
     db_path = os.path.join(os.path.dirname(__file__), "cve_db.json")
     try:
@@ -312,9 +345,9 @@ def _load_cve_db() -> Dict[str, List[Dict]]:
 
 VULNERABILITIES = _load_cve_db()
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 def _normalize_url(url: str) -> str:
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
@@ -329,7 +362,6 @@ def _safe_version(v: str) -> Optional[Version]:
         return None
 
 def _version_in_range(ver: Version, min_str: str, max_str: str) -> bool:
-    """True if min <= ver < max (patched version excluded)."""
     min_v = _safe_version(min_str)
     max_v = _safe_version(max_str)
     return min_v is not None and max_v is not None and min_v <= ver < max_v
@@ -344,21 +376,38 @@ def _has_library_context(text: str, lib: str) -> bool:
         if key in LIB_POSITIVE_CONTEXT:
             if any(re.search(pat, text) for pat in LIB_POSITIVE_CONTEXT[key]):
                 return True
+    # If no context rules exist for this lib, we accept it
     return not any(k in LIB_POSITIVE_CONTEXT for k in keys)
 
-def _unified_version_extraction(
+def _unified_version_extraction_with_type(
     text: str,
-    patterns: Dict[str, re.Pattern],
+    patterns_signature: Dict[str, re.Pattern],
+    patterns_general: Dict[str, re.Pattern],
     false_positive_blacklist: Optional[Dict[str, List[re.Pattern]]] = None
-) -> Dict[str, str]:
+) -> Dict[str, tuple]:
+    """
+    Returns dict: lib -> (version, is_signature)
+    Signature patterns have priority.
+    """
     result = {}
-    for lib, pat in patterns.items():
+    # first signature patterns
+    for lib, pat in patterns_signature.items():
         m = pat.search(text)
         if m and m.group(1):
             if false_positive_blacklist and lib in false_positive_blacklist:
                 if any(bp.search(text) for bp in false_positive_blacklist[lib]):
                     continue
-            result[lib] = m.group(1)
+            result[lib] = (m.group(1), True)
+    # general patterns, skip already found
+    for lib, pat in patterns_general.items():
+        if lib in result:
+            continue
+        m = pat.search(text)
+        if m and m.group(1):
+            if false_positive_blacklist and lib in false_positive_blacklist:
+                if any(bp.search(text) for bp in false_positive_blacklist[lib]):
+                    continue
+            result[lib] = (m.group(1), False)
     return result
 
 def _best_url(urls: List[str], lib: str) -> Optional[str]:
@@ -382,7 +431,30 @@ async def _fetch_script(session, url: str, sem: asyncio.Semaphore, retries=3) ->
                     await asyncio.sleep(backoff)
     return None
 
-# Source priorities (higher = more reliable)
+async def _get_content(
+    url: str,
+    fetch_js: Optional[Callable] = None,
+    session: Optional[aiohttp.ClientSession] = None,
+    sem: Optional[asyncio.Semaphore] = None
+) -> Optional[str]:
+    """Unified content fetcher: uses fetch_js if available, else session."""
+    if fetch_js:
+        try:
+            content = await fetch_js(url)
+            if isinstance(content, bytes):
+                return content.decode("utf-8", errors="replace")
+            if isinstance(content, str):
+                return content
+        except Exception:
+            pass
+    # fallback to direct HTTP via session
+    if session and sem:
+        data = await _fetch_script(session, url, sem)
+        if data:
+            return data.decode("utf-8", errors="replace")
+    return None
+
+# Source priorities for merging
 SOURCE_PRIORITY = {
     "script_src_filename":  10,
     "script_content":       9,
@@ -394,6 +466,8 @@ SOURCE_PRIORITY = {
     "header":               2,
     "cookie":               1,
     "package.json":         6,
+    "composer.json":        6,
+    "framework":            9,
     "fallback":             0,
 }
 
@@ -402,18 +476,27 @@ def _self_test():
     assert ver is not None
     assert not _version_in_range(ver, "1.0.0", "3.5.0")
     assert not _version_in_range(ver, "1.0.0", "3.6.0")
-    assert re.search(r"Vue\.version\s*=\s*[\"']" + _VERSION + r"[\"']", "Vue.version=\"2.7.14\"")
+    # test immutable signature
+    assert re.search(r"jQuery\.fn\.jquery\s*=\s*[\"']" + _VERSION + r"[\"']",
+                     "jQuery.fn.jquery=\"3.5.1\"")
+    # test flexible filename
+    assert re.search(LIB_URL_FILENAME["jquery"], "jquery-3.5.1.min.dc5e7f18c8.js")
+    assert re.search(LIB_URL_FILENAME["bootstrap"], "bootstrap@5.3.0-alpha1/dist/js/bootstrap.min.js")
     print("[+] Self-test passed")
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Main audit function
-# ──────────────────────────────────────────────────────────────────────────────
-async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
+# ------------------------------------------------------------------------------
+async def run(
+    url: str,
+    shared_page: dict = None,
+    js_cache: dict = None,
+    fetch_js: callable = None
+) -> Dict[str, Any]:
     target = _normalize_url(url)
     if not target:
         return {"test_name": "frontend_libs_audit", "status": "error", "title": "Invalid URL"}
 
-    import logging
     logging.basicConfig(level=logging.WARNING)
     logger = logging.getLogger(__name__)
     logger.info("Starting frontend audit for %s", target)
@@ -425,9 +508,26 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     raw_findings: List[Dict[str, Any]] = []
     script_contents: Dict[str, str] = {}
 
+    # ------------------------------------------------------------------
+    # 1. Pre-populate script_contents from js_cache and shared_page
+    # ------------------------------------------------------------------
+    if js_cache and isinstance(js_cache, dict):
+        for u, content in js_cache.items():
+            if u in script_contents:
+                continue
+            if isinstance(content, bytes):
+                try:
+                    script_contents[u] = content.decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+            elif isinstance(content, str):
+                script_contents[u] = content
+
     try:
         async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-            # Page load (shared_page support)
+            # ------------------------------------------------------------------
+            # 2. Obtain HTML, headers, cookies (shared_page or live fetch)
+            # ------------------------------------------------------------------
             if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
                 html = shared_page.get("html", "")
                 raw_headers = shared_page.get("headers", {})
@@ -443,9 +543,19 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 soup = shared_page.get("soup")
                 if soup is None:
                     soup = BeautifulSoup(html, "html.parser")
-                script_contents = shared_page.get("script_contents", {})
-                if not isinstance(script_contents, dict):
-                    script_contents = {}
+
+                # Merge shared_page script_contents if present
+                shared_sc = shared_page.get("script_contents", {})
+                if isinstance(shared_sc, dict):
+                    for u, content in shared_sc.items():
+                        if u not in script_contents:
+                            if isinstance(content, bytes):
+                                try:
+                                    script_contents[u] = content.decode("utf-8", errors="replace")
+                                except Exception:
+                                    pass
+                            elif isinstance(content, str):
+                                script_contents[u] = content
             else:
                 async with session.get(target, timeout=TIMEOUT, ssl=True, allow_redirects=True) as resp:
                     if resp.status >= 400:
@@ -458,7 +568,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             if not html or len(html) < 500:
                 logger.warning("Very short HTML (%s chars) – possible captcha/block", len(html) if html else 0)
 
-            # 1. Meta generator
+            # ------------------------------------------------------------------
+            # 3. Meta generator
+            # ------------------------------------------------------------------
             for meta in soup.find_all("meta", attrs={"name": "generator"}):
                 content = meta.get("content", "")
                 if content:
@@ -467,7 +579,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         if m:
                             raw_findings.append({"library": lib, "version": m.group(1), "source": "meta"})
 
-            # 2. HTTP headers
+            # ------------------------------------------------------------------
+            # 4. HTTP headers
+            # ------------------------------------------------------------------
             for hdr_name in HEADER_NAMES:
                 hdr_val = resp_headers.get(hdr_name, "")
                 if hdr_val:
@@ -476,12 +590,29 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                         if m:
                             raw_findings.append({"library": lib, "version": m.group(1), "source": "header"})
 
-            # 3. Cookies
+            # ------------------------------------------------------------------
+            # 5. Cookies
+            # ------------------------------------------------------------------
             for lib, hint in COOKIE_HINTS.items():
                 if hint.lower() in set_cookie.lower():
                     raw_findings.append({"library": lib, "version": None, "source": "cookie"})
 
-            # 4. External scripts
+            # ------------------------------------------------------------------
+            # 6. Next.js / Nuxt.js framework detection
+            # ------------------------------------------------------------------
+            # HTML clues
+            if re.search(r'/_next/static/', html) or re.search(r'__NEXT_DATA__', html):
+                raw_findings.append({"library": "next", "version": None, "source": "framework"})
+            if re.search(r'/_nuxt/', html) or re.search(r'__NUXT__', html):
+                raw_findings.append({"library": "nuxt", "version": None, "source": "framework"})
+            # Header clues
+            powered = resp_headers.get("x-powered-by", "")
+            if "next.js" in powered.lower():
+                raw_findings.append({"library": "next", "version": None, "source": "framework"})
+
+            # ------------------------------------------------------------------
+            # 7. External scripts – URL and filename analysis
+            # ------------------------------------------------------------------
             script_urls = []
             for tag in soup.find_all("script"):
                 src = tag.get("src")
@@ -489,14 +620,17 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                     abs_url = urljoin(target, src)
                     script_urls.append(abs_url)
 
-                    url_versions = _unified_version_extraction(abs_url, LIB_URL)
-                    for lib, ver in url_versions.items():
+                    # URL query‑string versions
+                    url_versions = _unified_version_extraction_with_type(abs_url, {}, LIB_URL)
+                    for lib, (ver, _) in url_versions.items():
                         raw_findings.append({"library": lib, "version": ver, "source": "script_src_url", "url": abs_url})
 
-                    filename_versions = _unified_version_extraction(abs_url, LIB_URL_FILENAME)
-                    for lib, ver in filename_versions.items():
+                    # Filename versions
+                    filename_versions = _unified_version_extraction_with_type(abs_url, {}, LIB_URL_FILENAME)
+                    for lib, (ver, _) in filename_versions.items():
                         raw_findings.append({"library": lib, "version": ver, "source": "script_src_filename", "url": abs_url})
 
+                    # Path‑based versions (handles @, slashes)
                     for lib, pat in LIB_PATH_VERSIONS.items():
                         m = pat.search(abs_url)
                         if m and m.group(1):
@@ -504,61 +638,87 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
 
             script_urls = list(dict.fromkeys(script_urls))[:MAX_SCRIPT_URLS]
 
-            # 5. Fetch external scripts
-            urls_to_fetch = [u for u in script_urls if u not in script_contents]
-            if urls_to_fetch:
-                fetched = await asyncio.gather(*[_fetch_script(session, u, sem) for u in urls_to_fetch])
-                for url, data in zip(urls_to_fetch, fetched):
-                    if data:
-                        text = data.decode("utf-8", errors="replace")
+            # ------------------------------------------------------------------
+            # 8. Fetch missing scripts (via fetch_js or direct)
+            # ------------------------------------------------------------------
+            for url in script_urls:
+                if url not in script_contents:
+                    text = await _get_content(url, fetch_js, session, sem)
+                    if text:
                         script_contents[url] = text
 
-            # Analyse scripts (pre‑cached + fetched)
+            # Analyse every script content
             for url, text in script_contents.items():
                 if not text:
                     continue
-                content_versions = _unified_version_extraction(
-                    text, LIB_CONTENT,
+
+                # Content‑based version extraction with signature flag
+                content_versions = _unified_version_extraction_with_type(
+                    text,
+                    LIB_CONTENT_SIGNATURE,
+                    LIB_CONTENT_GENERAL,
                     false_positive_blacklist=CONTENT_FALSE_POSITIVE_PATTERNS
                 )
-                for lib, ver in content_versions.items():
+                for lib, (ver, is_sig) in content_versions.items():
                     if _has_library_context(text, lib):
-                        raw_findings.append({"library": lib, "version": ver, "source": "script_content", "url": url})
+                        raw_findings.append({
+                            "library": lib,
+                            "version": ver,
+                            "source": "script_content",
+                            "url": url,
+                            "is_signature": is_sig
+                        })
 
+                # Global variable detection
                 for lib, pat in GLOBAL_VAR.items():
                     if pat.search(text):
                         raw_findings.append({"library": lib, "version": None, "source": "global_var", "url": url})
 
+                # Generic fallback version
                 fallback = VERSION_FALLBACK.search(text)
                 if fallback:
                     raw_findings.append({"library": "unknown", "version": fallback.group(1), "source": "fallback", "url": url})
 
-            # 6. Inline scripts
+            # ------------------------------------------------------------------
+            # 9. Inline scripts
+            # ------------------------------------------------------------------
             for tag in soup.find_all("script"):
                 if not tag.get("src") and tag.string:
-                    inline_vers = _unified_version_extraction(
-                        tag.string.strip(), LIB_CONTENT,
+                    inline_text = tag.string.strip()
+                    inline_versions = _unified_version_extraction_with_type(
+                        inline_text,
+                        LIB_CONTENT_SIGNATURE,
+                        LIB_CONTENT_GENERAL,
                         false_positive_blacklist=CONTENT_FALSE_POSITIVE_PATTERNS
                     )
-                    for lib, ver in inline_vers.items():
-                        if _has_library_context(tag.string.strip(), lib):
-                            raw_findings.append({"library": lib, "version": ver, "source": "inline"})
+                    for lib, (ver, is_sig) in inline_versions.items():
+                        if _has_library_context(inline_text, lib):
+                            raw_findings.append({
+                                "library": lib,
+                                "version": ver,
+                                "source": "inline",
+                                "is_signature": is_sig
+                            })
 
-            # 7. CSS links
+            # ------------------------------------------------------------------
+            # 10. CSS links
+            # ------------------------------------------------------------------
             for link in soup.find_all("link", rel="stylesheet"):
                 href = link.get("href")
                 if href:
                     full_href = urljoin(target, href)
-                    css_vers = _unified_version_extraction(full_href, CSS_LINKS)
-                    for lib, ver in css_vers.items():
+                    css_versions = _unified_version_extraction_with_type(full_href, {}, CSS_LINKS)
+                    for lib, (ver, _) in css_versions.items():
                         raw_findings.append({"library": lib, "version": ver, "source": "css", "url": full_href})
 
-            # 8. /package.json
+            # ------------------------------------------------------------------
+            # 11. /package.json
+            # ------------------------------------------------------------------
             pkg_url = urljoin(target, "/package.json")
-            pkg_data = await _fetch_script(session, pkg_url, sem)
-            if pkg_data:
+            pkg_text = await _get_content(pkg_url, fetch_js, session, sem)
+            if pkg_text:
                 try:
-                    pkg = json.loads(pkg_data)
+                    pkg = json.loads(pkg_text)
                     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
                     for lib, ver in deps.items():
                         cleaned = re.sub(r'^[\^~>=<]', '', ver.strip())
@@ -566,10 +726,28 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 except Exception:
                     pass
 
+            # ------------------------------------------------------------------
+            # 12. /composer.json (PHP/Laravel)
+            # ------------------------------------------------------------------
+            composer_url = urljoin(target, "/composer.json")
+            composer_text = await _get_content(composer_url, fetch_js, session, sem)
+            if composer_text:
+                try:
+                    composer = json.loads(composer_text)
+                    req = composer.get("require", {})
+                    req_dev = composer.get("require-dev", {})
+                    for lib, ver in {**req, **req_dev}.items():
+                        cleaned = re.sub(r'^[\^~>=<]', '', ver.strip())
+                        raw_findings.append({"library": lib, "version": cleaned, "source": "composer.json"})
+                except Exception:
+                    pass
+
     except Exception as e:
         return {"test_name": "frontend_libs_audit", "status": "error", "title": f"Error: {e}"}
 
+    # ------------------------------------------------------------------
     # Merge findings per library
+    # ------------------------------------------------------------------
     lib_groups: Dict[str, List[Dict]] = {}
     for f in raw_findings:
         lib = f["library"]
@@ -589,42 +767,66 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 break
         if not best:
             best = entries_sorted[0]
+
+        # Determine if any content detection came from an immutable signature
+        content_sig = any(
+            e.get("is_signature") for e in entries
+            if e["source"] in ("script_content", "inline")
+        )
+
         merged_libraries[lib] = {
             "library": lib,
             "version": best.get("version"),
             "sources": list({e["source"] for e in entries}),
             "urls": list({e.get("url") for e in entries if e.get("url")}),
-            "content_urls": list({e["url"] for e in entries if e.get("url") and e["source"] == "script_content"})
+            "content_urls": list({e["url"] for e in entries if e.get("url") and e["source"] == "script_content"}),
+            "content_has_signature": content_sig,
         }
 
-    # Detection confidence
+    # ------------------------------------------------------------------
+    # Detection confidence calculation
+    # ------------------------------------------------------------------
     def _detection_confidence(lib_info: dict) -> int:
         sources = lib_info["sources"]
         has_version = bool(lib_info["version"])
         lib = lib_info["library"]
 
-        if sources == ["script_content"]:
-            urls = lib_info.get("urls", [])
-            if urls and not any(lib.lower() in u.lower() for u in urls):
-                return 25
-            return 40 if has_version else 25
+        # Highest priority: filename
         if "script_src_filename" in sources and has_version:
             return 95
-        if "script_content" in sources and has_version:
+        # Framework detection (Next/Nuxt)
+        if "framework" in sources:
             return 85
+        # Package managers
+        if "package.json" in sources or "composer.json" in sources:
+            return 85 if has_version else 50
+        # Content with immutable signature
+        if ("script_content" in sources or "inline" in sources) and has_version:
+            if lib_info.get("content_has_signature"):
+                return 85
+            return 80
+        # Other content without version
+        if "script_content" in sources or "inline" in sources:
+            return 40
         if "global_var" in sources and has_version:
             return 80
-        if "package.json" in sources:
-            return 85 if has_version else 50
+        if "global_var" in sources:
+            return 50
         if "script_src_url" in sources:
             return 75 if has_version else 45
-        if "inline" in sources:
-            return 80 if has_version else 55
         if "css" in sources:
             return 70 if has_version else 40
+        if "meta" in sources:
+            return 60 if has_version else 30
+        if "header" in sources:
+            return 50 if has_version else 20
+        if "cookie" in sources:
+            return 20
         return 50 if has_version else 30
 
-    # Build vulnerability list with tiered confidence
+    # ------------------------------------------------------------------
+    # Vulnerability matching with tiered confidence
+    # ------------------------------------------------------------------
     vulnerabilities = []
     for lib, info in merged_libraries.items():
         ver_str = info.get("version")
@@ -654,8 +856,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
 
             for u in content_urls:
                 if u in script_contents:
-                    text = script_contents[u]
-                    if re.search(vuln.get("sig", ""), text, re.IGNORECASE | re.DOTALL):
+                    if re.search(vuln.get("sig", ""), script_contents[u], re.IGNORECASE | re.DOTALL):
                         sig_present = True
                         break
 
@@ -664,9 +865,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 vuln_confidence = 95
             elif sig_present and det_confidence >= 60:
                 vuln_confidence = 85
-            elif det_confidence >= 95:    # filename detection — highest source trust
+            elif det_confidence >= 95:
                 vuln_confidence = 65
-            elif det_confidence >= 85:    # content, global_var, package.json
+            elif det_confidence >= 85:
                 vuln_confidence = 55
             elif det_confidence >= 60:
                 vuln_confidence = 45
@@ -697,7 +898,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
                 "remediation": f"Upgrade {lib} to >= {vuln['patch']}"
             })
 
+    # ------------------------------------------------------------------
     # Build final output
+    # ------------------------------------------------------------------
     criticals = [v for v in vulnerabilities if v["severity"] == "critical"]
     highs = [v for v in vulnerabilities if v["severity"] == "high"]
     mediums = [v for v in vulnerabilities if v["severity"] == "medium"]
