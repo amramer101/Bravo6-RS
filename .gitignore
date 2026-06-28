@@ -50,11 +50,6 @@ Thumbs.db
 # Test outputs
 result.json
 security_report.html
-*.log
-
-# Node (if used)
-node_modules/
-package-lock.json
 
 # Secrets
 *.pem
@@ -65,5 +60,6 @@ package-lock.json
 .env.*
 !example.env
 
-# Azure
-azure-*.json
+# Node (for static website)
+node_modules/
+package-lock.json
