@@ -22,26 +22,39 @@ Improvements over the previous version:
 - Scoring tuned: reduced medium severity penalty, adjusted grade thresholds
   (A>=85, B>=75, C>=65, D>=55) for more realistic ratings.
 
-[HTML REPORT]
-- If --html flag is passed, the scanner will automatically generate
-  a security_report.html using the companion report_generator module.
+[AZURE FIXES]
+- result.json now written to /tmp directory instead of current working directory
+  to avoid PermissionError in Azure Functions Linux environment.
+- Added Cosmos DB integration: results are stored persistently in Azure Cosmos DB
+  if credentials are provided, falling back to /tmp otherwise.
 """
 
 import asyncio
 import contextlib
-import importlib
 import inspect
 import io
 import json
 import math
+import os
 import re
 import sys
+import tempfile
 import time
+import uuid
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 from bs4 import BeautifulSoup
+
+# Optional Cosmos DB import (gracefully handled if not installed)
+try:
+    from azure.cosmos import CosmosClient, exceptions
+    COSMOS_AVAILABLE = True
+except ImportError:
+    COSMOS_AVAILABLE = False
+    logging.warning("azure-cosmos not installed. Cosmos DB integration will be disabled.")
 
 # --- Import security tests -------------------------------------------------
 import test_01_secrets
@@ -388,8 +401,39 @@ async def run_scout(
         "grade": score_info["grade"],
     }
 
-    with open("result.json", "w", encoding="utf-8") as f:
-        json.dump(final_result, f, ensure_ascii=False, indent=2)
+    # --- Write result to Cosmos DB (if available) or fallback to /tmp ---
+    try:
+        if COSMOS_AVAILABLE:
+            cosmos_url = os.environ.get("COSMOS_URL")
+            cosmos_key = os.environ.get("COSMOS_KEY")
+            database_name = os.environ.get("COSMOS_DATABASE", "Bravo6DB")
+            container_name = os.environ.get("COSMOS_CONTAINER", "ScanResults")
+
+            if not cosmos_url or not cosmos_key:
+                logging.warning("Cosmos DB credentials not set. Falling back to /tmp file.")
+                raise RuntimeError("Missing Cosmos DB credentials")
+            else:
+                client = CosmosClient(cosmos_url, credential=cosmos_key)
+                database = client.get_database_client(database_name)
+                container = database.get_container_client(container_name)
+
+                # Generate a unique scanId if not already present
+                scan_id = final_result.get("scanId") or str(uuid.uuid4())
+                final_result["id"] = scan_id          # Cosmos DB requires 'id' field
+                final_result["scanId"] = scan_id      # for querying
+
+                container.create_item(body=final_result)
+                logging.info(f"✅ Scan result saved to Cosmos DB with scanId: {scan_id}")
+        else:
+            raise RuntimeError("azure-cosmos module not installed")
+
+    except Exception as e:
+        # Fallback: write to /tmp (for local development or when Cosmos DB fails)
+        logging.warning(f"Cosmos DB write failed ({e}). Falling back to /tmp/result.json")
+        temp_dir = tempfile.gettempdir()
+        result_path = os.path.join(temp_dir, "result.json")
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(final_result, f, ensure_ascii=False, indent=2)
 
     return final_result
 
@@ -408,12 +452,13 @@ if __name__ == "__main__":
     # Run the scanner
     asyncio.run(run_scout(args.url, verbose=args.verbose, min_confidence=args.min_confidence))
 
-    # Generate HTML report if requested
+    # Generate HTML report if requested (reads from /tmp)
     if args.html:
         try:
-            # Assumes report_generator.py is in the same directory and contains build_html(data) function
             from report_generator import build_html
-            with open("result.json", "r", encoding="utf-8") as f:
+            temp_dir = tempfile.gettempdir()
+            result_path = os.path.join(temp_dir, "result.json")
+            with open(result_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             html = build_html(data)
             with open("security_report.html", "w", encoding="utf-8") as f:

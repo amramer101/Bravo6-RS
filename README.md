@@ -55,7 +55,7 @@ The platform runs entirely on Microsoft Azure, is fully serverless, costs nothin
 
 BRAVO6 is a six-component event-driven serverless platform. The diagram below shows how each component relates to the others.
 
-![BRAVO6 High-Level Architecture — Component Map](media/architecture_map.svg)
+![BRAVO6 High-Level Architecture — Component Map](docs/architecture_map.svg)
 
 *The component map. Every connection is unidirectional and authenticated. No component has direct access to another's secrets.*
 
@@ -94,7 +94,7 @@ The solution, used by Netflix for video processing, Meta for feed generation, an
 
 The sequence diagram below shows the complete lifecycle of a single scan request, from the user clicking "Scan" to the report rendering in the browser.
 
-![End-to-End Sequence Diagram](media/sequence_diagram.svg)
+![End-to-End Sequence Diagram](docs/sequence_diagram.svg)
 
 *The full system choreography. Note the asynchronous boundary at the Service Bus — this is where the synchronous user experience ends and the background processing begins.*
 
@@ -126,7 +126,7 @@ Without caching, a naive implementation of 13 tests would fetch the target's mai
 
 BRAVO6 fetches the main page exactly once. It fetches each JavaScript file exactly once. Everything is stored in a `ScanContext` object that is passed to every test. The 13 tests then read from memory, not the network.
 
-![Caching Strategy Flow](media/caching_strategy.svg)
+![Caching Strategy Flow](docs/caching_strategy.svg)
 
 *The caching pipeline. One network fetch per resource. All 13 tests read from shared memory.*
 
@@ -156,7 +156,7 @@ After submitting a scan, the frontend polls the Reports API every two seconds. T
 
 The API Gateway is a single HTTP-triggered function that processes `POST /api/scan`. It is the sole public entry point into the scanning system. Everything it does is synchronous and completes in under 200 milliseconds.
 
-![Full System Flow — The Gatekeeper Logic](media/system_flow.svg)
+![Full System Flow — The Gatekeeper Logic](docs/system_flow.svg)
 
 *The complete system flow with the Gatekeeper's three-stage validation highlighted: JWT check, blocklist check, and quota check — all before a single byte of scan work begins.*
 

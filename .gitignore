@@ -1,14 +1,69 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
 
-# Environments
-.env
-.venv
-env/
+# Virtual environments
 venv/
-.vscode
+env/
+.venv/
+.env/
 
-security_report.html
+# Azure Functions local settings
+local.settings.json
+*.local.settings.json
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+*.tfvars.json
+!example.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test outputs
 result.json
+security_report.html
+*.log
+
+# Node (if used)
+node_modules/
+package-lock.json
+
+# Secrets
+*.pem
+*.key
+*.crt
+*.csr
+.env
+.env.*
+!example.env
+
+# Azure
+azure-*.json
