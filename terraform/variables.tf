@@ -3,7 +3,7 @@
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "uaenorth"
+  default     = "centralindia"
 }
 
 variable "environment" {
@@ -19,7 +19,49 @@ variable "project_name" {
 }
 
 variable "subscription_id" {
-  description = "Azure Subscription ID"
   type        = string
-  default     = "55336c1c-af74-4164-b687-a7b7c3ec740c"
+  description = "The Azure Subscription ID"
+}
+
+variable "client_id" {
+  type        = string
+  description = "The Azure Service Principal Client ID"
+}
+
+variable "client_secret" {
+  type        = string
+  description = "The Azure Service Principal Client Secret"
+  sensitive   = true
+}
+
+variable "tenant_id" {
+  type        = string
+  description = "The Azure Tenant ID"
+}
+
+
+# ---------------------------------------------
+
+variable "storage_account_name" {
+  type        = string
+  description = "The name of the Storage Account"
+  default     = "functionsappstorage"
+}
+
+variable "storage_account_container_name" {
+  type        = string
+  description = "The name of the Storage Account Container"
+  default     = "functionsappcontainer"
+}
+
+variable "storage_account_tier" {
+  type        = string
+  description = "The tier of the Storage Account"
+  default     = "Standard"
+}
+
+variable "replication_type" {
+  type        = string
+  description = "The replication type for the Storage Account"
+  default     = "LRS"
 }

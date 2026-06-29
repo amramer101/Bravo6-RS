@@ -2,12 +2,18 @@
 
 module "resource_group" {
   source = "./modules/resource_group"
-  # variables...
+  rg_name  = "my-project-rg"
+  location = "centralindia"
 }
 
 module "storage_account" {
   source = "./modules/storage_account"
-  # variables...
+  storage_account_name      = var.storage_account_name
+  resource_group_name      = module.resource_group.name
+  location                 = module.resource_group.location
+  storage_account_tier     = var.storage_account_tier
+  replication_type         = var.replication_type
+  storage_account_container_name = var.storage_account_container_name
 }
 
 module "service_bus" {
