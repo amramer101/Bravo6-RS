@@ -101,3 +101,9 @@ variable "sku_name" {
   description = "The SKU for the plan (e.g., Y1 for Consumption, S1 for Standard)"
   default     = "Y1" # Serverless (Consumption)
 }
+
+# --------------------------------------------- App Functions Variables
+
+variable "function_app_name" {
+  type = string
+}
