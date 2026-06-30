@@ -73,3 +73,15 @@ variable "key_vault_name" {
   description = "The name of the Key Vault"
   type        = string
 }
+
+# --------------------------------------------- Service Bus Variables
+
+variable "service_bus_name" {
+  description = "The name of the service bus"
+  type        = string
+}
+
+variable "service_bus_sku" {
+  type        = string
+  description = "service bus sku"
+}

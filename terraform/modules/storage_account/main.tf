@@ -4,6 +4,10 @@ resource "azurerm_storage_account" "functions_app" {
   location                 = var.location
   account_tier             = var.storage_account_tier
   account_replication_type = var.replication_type
+  
+  tags = {
+    source = "terraform"
+  }
 }
 
 resource "azurerm_storage_container" "app_container" {

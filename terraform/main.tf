@@ -24,8 +24,11 @@ module "storage_account" {
 }
 
 module "service_bus" {
-  source = "./modules/service_bus"
-  # variables...
+  source              = "./modules/service_bus"
+  service_bus_name    = var.service_bus_name
+  service_bus_sku     = var.service_bus_sku
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
 }
 
 module "cosmos_db" {
