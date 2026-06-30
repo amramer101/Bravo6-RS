@@ -11,6 +11,6 @@ resource "azurerm_servicebus_namespace" "service_bus" {
 
 resource "azurerm_servicebus_queue" "service_bus_queue" {
   name         = var.service_bus_queue_name
-  namespace_id = var.service_bus_name
+  namespace_id = azurerm_servicebus_namespace.service_bus.id
   partitioning_enabled = false
 }

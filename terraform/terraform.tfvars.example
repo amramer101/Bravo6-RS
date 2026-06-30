@@ -20,3 +20,4 @@ key_vault_name = ""
 
 service_bus_name = "" 
 service_bus_sku  = ""
+service_bus_queue_name = ""
