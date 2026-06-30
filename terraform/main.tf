@@ -1,18 +1,18 @@
 # terraform/main.tf
 
 module "resource_group" {
-  source = "./modules/resource_group"
-  rg_name  = "my-project-rg"
-  location = "centralindia"
+  source   = "./modules/resource_group"
+  rg_name  = var.resource_group_name
+  location = var.location
 }
 
 module "storage_account" {
-  source = "./modules/storage_account"
-  storage_account_name      = var.storage_account_name
-  resource_group_name      = module.resource_group.name
-  location                 = module.resource_group.location
-  storage_account_tier     = var.storage_account_tier
-  replication_type         = var.replication_type
+  source                         = "./modules/storage_account"
+  storage_account_name           = var.storage_account_name
+  resource_group_name            = module.resource_group.name
+  location                       = module.resource_group.location
+  storage_account_tier           = var.storage_account_tier
+  replication_type               = var.replication_type
   storage_account_container_name = var.storage_account_container_name
 }
 

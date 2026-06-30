@@ -3,19 +3,16 @@
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "centralindia"
 }
 
 variable "environment" {
   description = "Environment name (dev, staging, prod)"
   type        = string
-  default     = "dev"
 }
 
 variable "project_name" {
   description = "Project name"
   type        = string
-  default     = "bravo6"
 }
 
 variable "subscription_id" {
@@ -39,29 +36,31 @@ variable "tenant_id" {
   description = "The Azure Tenant ID"
 }
 
+#----------------------------------------------
+
+variable "resource_group_name" {
+  type        = string
+  description = "The name of the resource group"
+}
 
 # ---------------------------------------------
 
 variable "storage_account_name" {
   type        = string
   description = "The name of the Storage Account"
-  default     = "functionsappstorage"
 }
 
 variable "storage_account_container_name" {
   type        = string
   description = "The name of the Storage Account Container"
-  default     = "functionsappcontainer"
 }
 
 variable "storage_account_tier" {
   type        = string
   description = "The tier of the Storage Account"
-  default     = "Standard"
 }
 
 variable "replication_type" {
   type        = string
   description = "The replication type for the Storage Account"
-  default     = "LRS"
 }

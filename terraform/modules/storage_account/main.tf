@@ -8,6 +8,6 @@ resource "azurerm_storage_account" "functions_app" {
 
 resource "azurerm_storage_container" "app_container" {
   name                  = var.storage_account_container_name
-  storage_account_name  = azurerm_storage_account.functions_app.name
+  storage_account_name  = var.storage_account_name
   container_access_type = "private"
 }
