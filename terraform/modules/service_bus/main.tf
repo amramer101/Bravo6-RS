@@ -8,3 +8,9 @@ resource "azurerm_servicebus_namespace" "service_bus" {
     source = "terraform"
   }
 }
+
+resource "azurerm_servicebus_queue" "service_bus_queue" {
+  name         = var.service_bus_queue_name
+  namespace_id = var.service_bus_name
+  partitioning_enabled = false
+}

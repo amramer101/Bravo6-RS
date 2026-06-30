@@ -85,3 +85,8 @@ variable "service_bus_sku" {
   type        = string
   description = "service bus sku"
 }
+
+variable "service_bus_queue_name" {
+  type        = string
+  description = "service bus queue name"
+}
