@@ -90,3 +90,14 @@ variable "service_bus_queue_name" {
   type        = string
   description = "service bus queue name"
 }
+
+variable "plan_name" {
+  type        = string
+  description = "The name of the App Service Plan"
+}
+
+variable "sku_name" {
+  type        = string
+  description = "The SKU for the plan (e.g., Y1 for Consumption, S1 for Standard)"
+  default     = "Y1" # Serverless (Consumption)
+}

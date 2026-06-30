@@ -37,6 +37,14 @@ module "cosmos_db" {
   # variables...
 }
 
+module "app_service_plan" {
+  source              = "./modules/app_service_plan"
+  plan_name           = var.plan_name
+  sku_name            = var.sku_name
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
+}
+
 module "function_app" {
   source = "./modules/function_app"
   # variables...
