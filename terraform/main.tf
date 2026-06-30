@@ -62,8 +62,12 @@ module "keyvault" {
 }
 
 module "api_function" {
-  source = "./modules/api_function"
-  # variables...
+  source               = "./modules/api_function"
+  function_api_name    = "${var.function_api_name}-${random_string.random_suffix.result}"
+  resource_group_name  = module.resource_group.name
+  location             = module.resource_group.location
+  service_plan_id      = module.app_service_plan.plan_id
+  storage_account_name = module.storage_account.stg_name
 }
 
 module "report_function" {

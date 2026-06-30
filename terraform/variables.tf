@@ -107,3 +107,8 @@ variable "sku_name" {
 variable "function_app_name" {
   type = string
 }
+
+variable "function_api_name" {
+  type = string
+}
+
