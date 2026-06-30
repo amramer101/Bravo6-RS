@@ -1,5 +1,12 @@
 # terraform/main.tf
 
+resource "random_string" "random_suffix" {
+  length  = 4
+  special = false
+  upper   = false
+}
+
+
 module "resource_group" {
   source   = "./modules/resource_group"
   rg_name  = var.resource_group_name
@@ -8,7 +15,7 @@ module "resource_group" {
 
 module "storage_account" {
   source                         = "./modules/storage_account"
-  storage_account_name           = var.storage_account_name
+  storage_account_name           = "${var.storage_account_name}-${random_string.random_suffix.result}"
   resource_group_name            = module.resource_group.name
   location                       = module.resource_group.location
   storage_account_tier           = var.storage_account_tier
@@ -32,8 +39,10 @@ module "function_app" {
 }
 
 module "keyvault" {
-  source = "./modules/keyvault"
-  # variables...
+  source              = "./modules/keyvault"
+  key_vault_name      = "${var.key_vault_name}-${random_string.random_suffix.result}"
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
 }
 
 module "api_function" {

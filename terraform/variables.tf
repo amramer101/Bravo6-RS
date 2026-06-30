@@ -15,6 +15,8 @@ variable "project_name" {
   type        = string
 }
 
+#---------------------------------------------- Secret Variables
+
 variable "subscription_id" {
   type        = string
   description = "The Azure Subscription ID"
@@ -36,14 +38,14 @@ variable "tenant_id" {
   description = "The Azure Tenant ID"
 }
 
-#----------------------------------------------
+#---------------------------------------------- RG Variables
 
 variable "resource_group_name" {
   type        = string
   description = "The name of the resource group"
 }
 
-# ---------------------------------------------
+# --------------------------------------------- Storage Account Variables 
 
 variable "storage_account_name" {
   type        = string
@@ -63,4 +65,11 @@ variable "storage_account_tier" {
 variable "replication_type" {
   type        = string
   description = "The replication type for the Storage Account"
+}
+
+# --------------------------------------------- Key Vault Variables
+
+variable "key_vault_name" {
+  description = "The name of the Key Vault"
+  type        = string
 }
