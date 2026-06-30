@@ -71,8 +71,12 @@ module "api_function" {
 }
 
 module "report_function" {
-  source = "./modules/report_function"
-  # variables...
+  source               = "./modules/report_function"
+  function_report_name = "${var.function_report_name}-${random_string.random_suffix.result}"
+  resource_group_name  = module.resource_group.name
+  location             = module.resource_group.location
+  service_plan_id      = module.app_service_plan.plan_id
+  storage_account_name = module.storage_account.stg_name
 }
 
 module "static_website" {

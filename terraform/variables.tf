@@ -112,3 +112,6 @@ variable "function_api_name" {
   type = string
 }
 
+variable "function_report_name" {
+  type = string
+}
