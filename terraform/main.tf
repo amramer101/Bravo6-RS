@@ -5,7 +5,10 @@ resource "random_string" "random_suffix" {
   special = false
   upper   = false
 }
-
+resource "random_integer" "ri" {
+  min = 10000
+  max = 99999
+}
 
 module "resource_group" {
   source   = "./modules/resource_group"
@@ -33,8 +36,10 @@ module "service_bus" {
 }
 
 module "cosmos_db" {
-  source = "./modules/cosmos_db"
-  # variables...
+  source              = "./modules/cosmos_db"
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
+  cosmosdb_name       = "bravo6-cosmosdb-${random_integer.ri.result}"
 }
 
 module "app_service_plan" {
@@ -83,3 +88,5 @@ module "static_website" {
   source = "./modules/static_website"
   # variables...
 }
+
+

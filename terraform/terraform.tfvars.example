@@ -18,6 +18,13 @@ replication_type               = ""
 
 key_vault_name = ""
 
-service_bus_name = "" 
-service_bus_sku  = ""
+service_bus_name       = ""
+service_bus_sku        = ""
 service_bus_queue_name = ""
+
+plan_name = ""
+sku_name  = ""
+
+function_app_name    = ""
+function_api_name    = ""
+function_report_name = ""

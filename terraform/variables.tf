@@ -115,3 +115,10 @@ variable "function_api_name" {
 variable "function_report_name" {
   type = string
 }
+
+
+# --------------------------------------------- DB Variables
+
+variable "cosmosdb_name" {
+  type = string
+}
