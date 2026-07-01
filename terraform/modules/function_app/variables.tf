@@ -17,3 +17,8 @@ variable "service_plan_id" {
 variable "storage_account_name" {
   type        = string
 }
+
+variable "service_bus_namespace" {
+  type        = string
+  description = "The namespace of the Service Bus (passed from root)"
+}

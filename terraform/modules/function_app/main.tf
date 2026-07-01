@@ -19,5 +19,10 @@ resource "azurerm_linux_function_app" "worker_function" {
   app_settings = {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
     "AzureWebJobsStorage__accountName" = var.storage_account_name
+    "ServiceBusConnection__fullyQualifiedNamespace" = "${var.service_bus_namespace}.servicebus.windows.net"  
+  }
+
+  tags = {
+    source = "terraform"
   }
 }

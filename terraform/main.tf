@@ -57,6 +57,7 @@ module "function_app" {
   location             = module.resource_group.location
   service_plan_id      = module.app_service_plan.plan_id
   storage_account_name = module.storage_account.stg_name
+  service_bus_namespace = module.service_bus.service_bus_namespace
 }
 
 module "keyvault" {
