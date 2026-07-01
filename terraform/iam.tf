@@ -37,7 +37,7 @@ resource "azurerm_cosmosdb_sql_role_assignment" "functions_db_access" {
 # API Function Role Assignments For Service Bus
 # ----------------------------------------------
 resource "azurerm_role_assignment" "api_sb_sender" {
-  scope                = module.service_bus.service_bus_id 
+  scope                = module.service_bus.service_bus_id
   role_definition_name = "Azure Service Bus Data Sender"
   principal_id         = module.api_function.api_principal_id
 }

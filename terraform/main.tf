@@ -40,6 +40,7 @@ module "cosmos_db" {
   resource_group_name = module.resource_group.name
   location            = module.resource_group.location
   cosmosdb_name       = "bravo6-cosmosdb-${random_integer.ri.result}"
+  db_name             = var.db_name
 }
 
 module "app_service_plan" {
@@ -51,12 +52,12 @@ module "app_service_plan" {
 }
 
 module "function_app" {
-  source               = "./modules/function_app"
-  function_app_name    = "${var.function_app_name}-${random_string.random_suffix.result}"
-  resource_group_name  = module.resource_group.name
-  location             = module.resource_group.location
-  service_plan_id      = module.app_service_plan.plan_id
-  storage_account_name = module.storage_account.stg_name
+  source                = "./modules/function_app"
+  function_app_name     = "${var.function_app_name}-${random_string.random_suffix.result}"
+  resource_group_name   = module.resource_group.name
+  location              = module.resource_group.location
+  service_plan_id       = module.app_service_plan.plan_id
+  storage_account_name  = module.storage_account.stg_name
   service_bus_namespace = module.service_bus.service_bus_namespace
 }
 

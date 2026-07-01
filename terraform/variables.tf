@@ -122,3 +122,7 @@ variable "function_report_name" {
 variable "cosmosdb_name" {
   type = string
 }
+
+variable "db_name" {
+  type = string
+}

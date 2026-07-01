@@ -21,3 +21,35 @@ resource "azurerm_cosmosdb_account" "db" {
     source = "terraform"
   } 
 }
+
+# ----------------------------- Database -----------------------------
+
+resource "azurerm_cosmosdb_sql_database" "main_db" {
+  name                = "bravo6-nosql-db"
+  resource_group_name = var.resource_group_name
+  account_name        = azurerm_cosmosdb_account.db.name
+}
+
+# (Users container)
+resource "azurerm_cosmosdb_sql_container" "users_container" {
+  name                  = "users"
+  resource_group_name   = var.resource_group_name
+  account_name          = azurerm_cosmosdb_account.db.name
+  database_name         = azurerm_cosmosdb_sql_database.main_db.name
+  
+  partition_key_paths   = ["/userId"] 
+  
+  throughput            = 400
+}
+
+# (Scans container)
+resource "azurerm_cosmosdb_sql_container" "scans_container" {
+  name                  = "scans"
+  resource_group_name   = var.resource_group_name
+  account_name          = azurerm_cosmosdb_account.db.name
+  database_name         = azurerm_cosmosdb_sql_database.main_db.name
+  
+  partition_key_paths   = ["/scanId"] 
+  
+  throughput            = 400
+}
