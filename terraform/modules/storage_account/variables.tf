@@ -28,3 +28,8 @@ variable "location" {
   type        = string
   description = "Azure region"
 }
+
+variable "functions_subnet_id" {
+  type        = string
+  description = "The ID of the Subnet"
+}

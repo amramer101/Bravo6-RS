@@ -24,6 +24,7 @@ module "storage_account" {
   storage_account_tier           = var.storage_account_tier
   replication_type               = var.replication_type
   storage_account_container_name = var.storage_account_container_name
+  functions_subnet_id            = module.network.functions_subnet_id
 }
 
 module "service_bus" {

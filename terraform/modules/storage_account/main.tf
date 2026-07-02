@@ -5,6 +5,11 @@ resource "azurerm_storage_account" "functions_app_stg" {
   account_tier             = var.storage_account_tier
   account_replication_type = var.replication_type
 
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = [var.functions_subnet_id]
+  } 
+
   tags = {
     source = "terraform"
   }
