@@ -22,3 +22,8 @@ variable "service_bus_queue_name" {
   type        = string
   description = "service bus queue name"
 }
+
+variable "service_endpoint_subnet_id" {
+  type        = string
+  description = "The ID of the Subnet"
+}

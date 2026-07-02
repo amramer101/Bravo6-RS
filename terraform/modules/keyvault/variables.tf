@@ -12,3 +12,8 @@ variable "location" {
   type        = string
   description = "Azure region"
 }
+
+variable "service_endpoint_subnet_id" {
+  type        = string
+  description = "The ID of the Subnet"
+}
