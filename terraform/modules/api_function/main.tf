@@ -7,6 +7,8 @@ resource "azurerm_linux_function_app" "api_function" {
   service_plan_id        = var.service_plan_id
   storage_account_name   = var.storage_account_name
 
+  storage_uses_managed_identity = true
+
   identity {
     type = "SystemAssigned"
   }
@@ -22,5 +24,7 @@ resource "azurerm_linux_function_app" "api_function" {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
     "AzureWebJobsStorage__accountName" = var.storage_account_name
     "ServiceBusConnection__fullyQualifiedNamespace" = "${var.service_bus_namespace}.servicebus.windows.net"
+    "WEBSITE_RUN_FROM_PACKAGE" = "1"
+
   }
 }
