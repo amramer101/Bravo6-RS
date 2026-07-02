@@ -20,4 +20,9 @@ resource "azurerm_linux_function_app" "report_function" {
     "FUNCTIONS_WORKER_RUNTIME" = "python"
     "AzureWebJobsStorage__accountName" = var.storage_account_name
   }
+
+
+  tags = {
+    source = "terraform"
+  }
 }

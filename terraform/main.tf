@@ -36,11 +36,12 @@ module "service_bus" {
 }
 
 module "cosmos_db" {
-  source              = "./modules/cosmos_db"
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
-  cosmosdb_name       = "bravo6-cosmosdb-${random_integer.ri.result}"
-  db_name             = var.db_name
+  source                     = "./modules/cosmos_db"
+  resource_group_name        = module.resource_group.name
+  location                   = module.resource_group.location
+  cosmosdb_name              = "bravo6-cosmosdb-${random_integer.ri.result}"
+  db_name                    = var.db_name
+  service_endpoint_subnet_id = module.network.functions_subnet_id
 }
 
 module "app_service_plan" {
@@ -92,6 +93,13 @@ module "static_website" {
   static_web_app_sku  = var.static_web_app_sku
   resource_group_name = module.resource_group.name
   location            = module.resource_group.location
+}
+
+module "network" {
+  source              = "./modules/network"
+  vnet_name           = var.vnet_name
+  location            = module.resource_group.location
+  resource_group_name = module.resource_group.name
 }
 
 

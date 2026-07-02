@@ -17,6 +17,12 @@ resource "azurerm_cosmosdb_account" "db" {
     location          = var.location
     failover_priority = 0
   }
+
+  virtual_network_rule {
+    id                                   = var.service_endpoint_subnet_id
+    ignore_missing_vnet_service_endpoint = false
+  }
+
   tags = {
     source = "terraform"
   } 

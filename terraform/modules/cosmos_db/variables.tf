@@ -17,3 +17,8 @@ variable "resource_group_name" {
   type        = string
   description = "The name of the Resource Group"
 }
+
+variable "service_endpoint_subnet_id" {
+  type        = string
+  description = "The ID of the Subnet"
+}

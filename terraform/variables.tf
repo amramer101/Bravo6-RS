@@ -140,3 +140,11 @@ variable "static_web_app_sku" {
   type        = string
   description = "static web app sku"
 }
+
+
+# --------------------------------------------- Network Variables
+
+variable "vnet_name" {
+  type        = string
+  description = "The name of the virtual network"
+}
