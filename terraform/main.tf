@@ -55,13 +55,14 @@ module "app_service_plan" {
 }
 
 module "function_app" {
-  source                = "./modules/function_app"
-  function_app_name     = "${var.function_app_name}-${random_string.random_suffix.result}"
-  resource_group_name   = module.resource_group.name
-  location              = module.resource_group.location
-  service_plan_id       = module.app_service_plan.plan_id
-  storage_account_name  = module.storage_account.stg_name
-  service_bus_namespace = module.service_bus.service_bus_namespace
+  source                     = "./modules/function_app"
+  function_app_name          = "${var.function_app_name}-${random_string.random_suffix.result}"
+  resource_group_name        = module.resource_group.name
+  location                   = module.resource_group.location
+  service_plan_id            = module.app_service_plan.plan_id
+  storage_account_name       = module.storage_account.stg_name
+  service_bus_namespace      = module.service_bus.service_bus_namespace
+  service_endpoint_subnet_id = module.network.functions_subnet_id
 }
 
 module "keyvault" {
@@ -73,21 +74,25 @@ module "keyvault" {
 }
 
 module "api_function" {
-  source               = "./modules/api_function"
-  function_api_name    = "${var.function_api_name}-${random_string.random_suffix.result}"
-  resource_group_name  = module.resource_group.name
-  location             = module.resource_group.location
-  service_plan_id      = module.app_service_plan.plan_id
-  storage_account_name = module.storage_account.stg_name
+  source                     = "./modules/api_function"
+  function_api_name          = "${var.function_api_name}-${random_string.random_suffix.result}"
+  resource_group_name        = module.resource_group.name
+  location                   = module.resource_group.location
+  service_plan_id            = module.app_service_plan.plan_id
+  storage_account_name       = module.storage_account.stg_name
+  service_endpoint_subnet_id = module.network.functions_subnet_id
+  service_bus_namespace      = module.service_bus.service_bus_namespace
 }
 
 module "report_function" {
-  source               = "./modules/report_function"
-  function_report_name = "${var.function_report_name}-${random_string.random_suffix.result}"
-  resource_group_name  = module.resource_group.name
-  location             = module.resource_group.location
-  service_plan_id      = module.app_service_plan.plan_id
-  storage_account_name = module.storage_account.stg_name
+  source                     = "./modules/report_function"
+  function_report_name       = "${var.function_report_name}-${random_string.random_suffix.result}"
+  resource_group_name        = module.resource_group.name
+  location                   = module.resource_group.location
+  service_plan_id            = module.app_service_plan.plan_id
+  storage_account_name       = module.storage_account.stg_name
+  service_endpoint_subnet_id = module.network.functions_subnet_id
+  service_bus_namespace      = module.service_bus.service_bus_namespace
 }
 
 module "static_website" {

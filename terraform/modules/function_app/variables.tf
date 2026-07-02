@@ -22,3 +22,8 @@ variable "service_bus_namespace" {
   type        = string
   description = "The namespace of the Service Bus (passed from root)"
 }
+
+variable "service_endpoint_subnet_id" {
+  type        = string
+  description = "The ID of the Subnet"
+}

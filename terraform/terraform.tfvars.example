@@ -28,3 +28,11 @@ sku_name  = ""
 function_app_name    = ""
 function_api_name    = ""
 function_report_name = ""
+
+cosmosdb_name = ""
+db_name       = ""
+
+static_web_app_name = ""
+static_web_app_sku  = ""
+
+vnet_name = ""

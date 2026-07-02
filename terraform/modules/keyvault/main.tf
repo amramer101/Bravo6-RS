@@ -10,6 +10,12 @@ resource "azurerm_key_vault" "keyvault" {
   purge_protection_enabled    = false
 
   sku_name = "standard"
+  
+  network_acls {
+    default_action             = "Deny"
+    bypass                     = "AzureServices"
+    virtual_network_subnet_ids = [var.service_endpoint_subnet_id]
+  }
 
   access_policy {
     tenant_id = data.azurerm_client_config.current.tenant_id

@@ -2,6 +2,7 @@ resource "azurerm_linux_function_app" "worker_function" {
   name                = var.function_app_name
   resource_group_name = var.resource_group_name
   location            = var.location
+  virtual_network_subnet_id  = var.service_endpoint_subnet_id
 
   service_plan_id        = var.service_plan_id
   storage_account_name   = var.storage_account_name
@@ -14,6 +15,7 @@ resource "azurerm_linux_function_app" "worker_function" {
     application_stack {
       python_version = "3.11"
     }
+    vnet_route_all_enabled = true
   }
 
   app_settings = {
