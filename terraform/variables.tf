@@ -126,3 +126,17 @@ variable "cosmosdb_name" {
 variable "db_name" {
   type = string
 }
+
+
+# --------------------------------------------- Static Web App  Variables
+
+variable "static_web_app_name" {
+  description = "The name of the static web app"
+  type        = string
+}
+
+
+variable "static_web_app_sku" {
+  type        = string
+  description = "static web app sku"
+}

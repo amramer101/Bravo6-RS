@@ -87,8 +87,11 @@ module "report_function" {
 }
 
 module "static_website" {
-  source = "./modules/static_website"
-  # variables...
+  source              = "./modules/static_website"
+  static_web_app_name = var.static_web_app_name
+  static_web_app_sku  = var.static_web_app_sku
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
 }
 
 
