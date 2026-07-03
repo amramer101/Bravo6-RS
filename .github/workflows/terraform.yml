@@ -64,6 +64,8 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "</details>" >> $GITHUB_STEP_SUMMARY
         working-directory: ./terraform
+        env:
+          TF_VAR_client_id: ${{ secrets.AZURE_CLIENT_ID }}
 
   # ==========================================
 
