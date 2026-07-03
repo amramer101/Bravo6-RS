@@ -33,6 +33,7 @@ resource "azurerm_key_vault" "keyvault" {
       "Get",
     ]
   }
+  
   tags = {
     source = "terraform"
   }
