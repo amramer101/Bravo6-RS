@@ -50,6 +50,19 @@ resource "azurerm_network_security_group" "nsg" {
     source_address_prefix      = "*"
     destination_address_prefix = "*"
   }
+
+  # Allow Service Endpoints Traffic
+  security_rule {
+    name                       = "AllowServiceEndpoints"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+  }
 }
 
 resource "azurerm_subnet_network_security_group_association" "nsg_association" {

@@ -39,7 +39,7 @@ jobs:
       - name: Download Plan
         uses: actions/download-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ github.sha }}
           path: ./terraform
 
       - name: Terraform Apply
