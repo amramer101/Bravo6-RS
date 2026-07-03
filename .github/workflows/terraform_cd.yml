@@ -36,11 +36,13 @@ jobs:
         run: terraform init
         working-directory: ./terraform
 
-      - name: Download Plan
-        uses: actions/download-artifact@v4
+      - name: Download Last Plan
+        uses: dawidd6/action-download-artifact@v2
         with:
-          name: tfplan-${{ github.sha }}
+          workflow: terraform-plan.yml
+          name: tfplan                  
           path: ./terraform
+          branch: main              
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan.binary
