@@ -15,7 +15,7 @@ variable "project_name" {
   type        = string
 }
 
-#---------------------------------------------- Secret Variables
+#---------------------------------------------- Secret Variables From Azure Service Principal .tfvars file
 
 variable "subscription_id" {
   type        = string
