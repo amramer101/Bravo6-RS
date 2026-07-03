@@ -40,7 +40,7 @@ jobs:
       - name: Download Last Plan
         uses: dawidd6/action-download-artifact@v2
         with:
-          workflow: terraform-plan.yml
+          workflow: terraform_ci.yml
           name: tfplan                  
           path: ./terraform
           branch: main              
