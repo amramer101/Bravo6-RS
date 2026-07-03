@@ -16,7 +16,6 @@ service_bus_queue_name = "bravo6-queue"
 
 plan_name = "bravo6-functions-plan"
 sku_name  = "EP1"
-sku_kind  = "elastic"
 os_type   = "Linux"
 
 function_app_name    = "worker-fun-app"

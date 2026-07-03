@@ -22,8 +22,3 @@ variable "sku_name" {
   type        = string
   description = "The SKU for the plan (e.g., Y1 for Consumption, S1 for Standard)"
 }
-
-variable "sku_kind" {
-  type        = string
-  description = "The kind of the SKU for the plan (e.g., FunctionApp for Consumption, App for Standard)"
-}

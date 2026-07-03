@@ -52,7 +52,6 @@ module "app_service_plan" {
   source              = "./modules/app_service_plan"
   plan_name           = var.plan_name
   sku_name            = var.sku_name
-  sku_kind            = var.sku_kind
   os_type             = var.os_type
   resource_group_name = module.resource_group.name
   location            = module.resource_group.location

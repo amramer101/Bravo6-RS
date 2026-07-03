@@ -4,8 +4,7 @@ resource "azurerm_service_plan" "functions_plan" {
   location            = var.location
   os_type             = var.os_type
   sku_name            = var.sku_name
-  kind                = var.sku_kind
-
+  
   tags = {
     source = "terraform"
   }

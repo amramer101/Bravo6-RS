@@ -82,10 +82,6 @@ variable "function_report_name" {
   type = string
 }
 
-variable "sku_kind" {
-  type        = string
-  description = "The kind of the SKU for the plan (e.g., FunctionApp for Consumption, App for Standard)"
-}
 variable "plan_name" {
   type        = string
   description = "The name of the App Service Plan"
