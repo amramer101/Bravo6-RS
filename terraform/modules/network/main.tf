@@ -30,3 +30,29 @@ resource "azurerm_subnet" "functions_subnet" {
     }
   }
 }
+
+# ----------------------------------------------------
+# آٍNSG (Network Security Group) to enforce Zero Trust principles
+
+resource "azurerm_network_security_group" "nsg" {
+  name                = "${var.resource_group_name}-nsg"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+
+  security_rule {
+    name                       = "DenyAllInbound"
+    priority                   = 1000
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "nsg_association" {
+  subnet_id                 = azurerm_subnet.functions_subnet.id
+  network_security_group_id = azurerm_network_security_group.nsg.id
+}

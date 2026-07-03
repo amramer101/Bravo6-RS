@@ -9,6 +9,13 @@ permissions:
   id-token: write   
   contents: read    
 
+env:
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_USE_OIDC: "true"
+
+
 jobs: 
 
   # (CI)
@@ -52,21 +59,9 @@ jobs:
  
         # Generate Terraform Plan & Summary
       - name: Generate Terraform Plan & Summary
-        run: |
-          terraform plan -no-color -out=tfplan
-          terraform show -no-color tfplan > plan_output.txt
-          
-          echo "### Terraform Plan Output" >> $GITHUB_STEP_SUMMARY
-          echo "<details><summary>Click here to expand and review the infrastructure changes</summary>" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```hcl' >> $GITHUB_STEP_SUMMARY
-          cat plan_output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "</details>" >> $GITHUB_STEP_SUMMARY
-        working-directory: ./terraform
-        env:
-          TF_VAR_client_id: ${{ secrets.AZURE_CLIENT_ID }}
-
+        run: terraform plan 
+        working-directory: ./terraform   
+     
   # ==========================================
 
   # (CD)
