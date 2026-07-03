@@ -20,7 +20,7 @@ module "resource_group" {
 
 module "storage_account" {
   source                         = "./modules/storage_account"
-  storage_account_name           = "${var.storage_account_name}-${random_string.random_suffix.result}"
+  storage_account_name           = "${var.storage_account_name}${random_string.random_suffix.result}"
   resource_group_name            = module.resource_group.name
   location                       = module.resource_group.location
   storage_account_tier           = var.storage_account_tier
