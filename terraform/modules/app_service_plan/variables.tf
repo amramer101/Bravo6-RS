@@ -16,11 +16,14 @@ variable "location" {
 variable "os_type" {
   type        = string
   description = "The O/S type for the App Services to be hosted in this plan (Linux or Windows)"
-  default     = "Linux"
 }
 
 variable "sku_name" {
   type        = string
   description = "The SKU for the plan (e.g., Y1 for Consumption, S1 for Standard)"
-  default     = "Y1" # Serverless (Consumption)
+}
+
+variable "sku_kind" {
+  type        = string
+  description = "The kind of the SKU for the plan (e.g., FunctionApp for Consumption, App for Standard)"
 }

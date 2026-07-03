@@ -68,17 +68,6 @@ variable "service_bus_queue_name" {
   description = "service bus queue name"
 }
 
-variable "plan_name" {
-  type        = string
-  description = "The name of the App Service Plan"
-}
-
-variable "sku_name" {
-  type        = string
-  description = "The SKU for the plan (e.g., Y1 for Consumption, S1 for Standard)"
-  default     = "Y1" # Serverless (Consumption)
-}
-
 # --------------------------------------------- App Functions Variables
 
 variable "function_app_name" {
@@ -93,6 +82,24 @@ variable "function_report_name" {
   type = string
 }
 
+variable "sku_kind" {
+  type        = string
+  description = "The kind of the SKU for the plan (e.g., FunctionApp for Consumption, App for Standard)"
+}
+variable "plan_name" {
+  type        = string
+  description = "The name of the App Service Plan"
+}
+
+variable "sku_name" {
+  type        = string
+  description = "The SKU for the plan (e.g., Y1 for Consumption, S1 for Standard)"
+}
+
+variable "os_type" {
+  type        = string
+  description = "The O/S type for the App Services to be hosted in this plan (Linux or Windows)"
+}
 
 # --------------------------------------------- DB Variables
 
