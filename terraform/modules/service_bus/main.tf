@@ -5,6 +5,7 @@ resource "azurerm_servicebus_namespace" "service_bus" {
   sku                           = var.service_bus_sku
   capacity                      = 1
   public_network_access_enabled = false
+  premium_messaging_partitions = 1
 
   network_rule_set {
     default_action = "Deny"
