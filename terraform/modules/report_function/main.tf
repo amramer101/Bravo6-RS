@@ -8,6 +8,7 @@ resource "azurerm_linux_function_app" "report_function" {
   storage_account_name = var.storage_account_name
 
   storage_uses_managed_identity = true
+  public_network_access_enabled = false
 
   https_only = true
 

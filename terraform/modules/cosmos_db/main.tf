@@ -9,6 +9,7 @@ resource "azurerm_cosmosdb_account" "db" {
   free_tier_enabled                 = true
   automatic_failover_enabled        = false
   is_virtual_network_filter_enabled = true
+  public_network_access_enabled     = false
 
   consistency_policy {
     consistency_level = "Session"
