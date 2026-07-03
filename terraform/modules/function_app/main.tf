@@ -8,7 +8,9 @@ resource "azurerm_linux_function_app" "worker_function" {
   storage_account_name   = var.storage_account_name
 
   storage_uses_managed_identity = true
-
+  
+  https_only                 = true
+  
   identity {
     type = "SystemAssigned"
   }

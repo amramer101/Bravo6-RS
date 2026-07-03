@@ -9,6 +9,8 @@ resource "azurerm_linux_function_app" "api_function" {
 
   storage_uses_managed_identity = true
 
+  https_only                 = true
+
   identity {
     type = "SystemAssigned"
   }

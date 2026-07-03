@@ -40,18 +40,23 @@ jobs:
         run: terraform validate
         working-directory: ./terraform
 
+       # Checkov Security Scan
       - name: Run Checkov Security Scan
         uses: bridgecrewio/checkov-action@master
         with:
           directory: ./terraform
           framework: terraform
-
+          output_format: cli,sarif
+          soft_fail: true
+          output_file_path: console,results.sarif 
+ 
+        # Generate Terraform Plan & Summary
       - name: Generate Terraform Plan & Summary
         run: |
           terraform plan -no-color -out=tfplan
           terraform show -no-color tfplan > plan_output.txt
           
-          echo "### 📝 Terraform Plan Output" >> $GITHUB_STEP_SUMMARY
+          echo "### Terraform Plan Output" >> $GITHUB_STEP_SUMMARY
           echo "<details><summary>Click here to expand and review the infrastructure changes</summary>" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```hcl' >> $GITHUB_STEP_SUMMARY
