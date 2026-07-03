@@ -1,9 +1,10 @@
 resource "azurerm_storage_account" "functions_app_stg" {
-  name                     = var.storage_account_name
-  resource_group_name      = var.resource_group_name
-  location                 = var.location
-  account_tier             = var.storage_account_tier
-  account_replication_type = var.replication_type
+  name                          = var.storage_account_name
+  resource_group_name           = var.resource_group_name
+  location                      = var.location
+  account_tier                  = var.storage_account_tier
+  account_replication_type      = var.replication_type
+  public_network_access_enabled = false
 
   network_rules {
     default_action             = "Deny"
