@@ -10,7 +10,7 @@ resource "azurerm_key_vault" "keyvault" {
   purge_protection_enabled    = false
 
   sku_name = "standard"
-  
+
   network_acls {
     default_action             = "Deny"
     bypass                     = "AzureServices"
@@ -33,7 +33,7 @@ resource "azurerm_key_vault" "keyvault" {
       "Get",
     ]
   }
-  
+
   tags = {
     source = "terraform"
   }

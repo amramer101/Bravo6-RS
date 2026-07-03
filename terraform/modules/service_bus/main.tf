@@ -3,8 +3,8 @@ resource "azurerm_servicebus_namespace" "service_bus" {
   location            = var.location
   resource_group_name = var.resource_group_name
   sku                 = var.service_bus_sku
-  capacity = 1
-  
+  capacity            = 1
+
   network_rule_set {
     default_action = "Deny"
 

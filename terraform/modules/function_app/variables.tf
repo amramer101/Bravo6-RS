@@ -1,21 +1,21 @@
 variable "function_app_name" {
-  type        = string
+  type = string
 }
 
 variable "location" {
-  type        = string
+  type = string
 }
 
 variable "resource_group_name" {
-  type        = string
+  type = string
 }
 
 variable "service_plan_id" {
-  type        = string
+  type = string
 }
 
 variable "storage_account_name" {
-  type        = string
+  type = string
 }
 
 variable "service_bus_namespace" {
