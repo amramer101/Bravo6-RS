@@ -15,29 +15,6 @@ variable "project_name" {
   type        = string
 }
 
-#---------------------------------------------- Secret Variables From Azure Service Principal .tfvars file
-
-variable "subscription_id" {
-  type        = string
-  description = "The Azure Subscription ID"
-}
-
-variable "client_id" {
-  type        = string
-  description = "The Azure Service Principal Client ID"
-}
-
-variable "client_secret" {
-  type        = string
-  description = "The Azure Service Principal Client Secret"
-  sensitive   = true
-}
-
-variable "tenant_id" {
-  type        = string
-  description = "The Azure Tenant ID"
-}
-
 #---------------------------------------------- RG Variables
 
 variable "resource_group_name" {

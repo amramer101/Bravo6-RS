@@ -28,7 +28,6 @@ local.settings.json
 .terraform.lock.hcl
 terraform.tfstate
 terraform.tfstate.backup
-*.tfvars
 *.tfvars.json
 !example.tfvars
 override.tf
