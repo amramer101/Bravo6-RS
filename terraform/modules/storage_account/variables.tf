@@ -3,11 +3,6 @@ variable "storage_account_name" {
   type        = string
 }
 
-variable "storage_account_container_name" {
-  description = "The name of the Storage Account Container"
-  type        = string
-}
-
 variable "storage_account_tier" {
   description = "The tier of the Storage Account"
   type        = string
@@ -33,3 +28,4 @@ variable "functions_subnet_id" {
   type        = string
   description = "The ID of the Subnet"
 }
+

@@ -1,32 +1,33 @@
-resource "azurerm_linux_function_app" "worker_function" {
-  name                      = var.function_app_name
-  resource_group_name       = var.resource_group_name
-  location                  = var.location
-  virtual_network_subnet_id = var.service_endpoint_subnet_id
+resource "azurerm_function_app_flex_consumption" "worker_function" {
+  name                = var.function_app_name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  service_plan_id     = var.service_plan_id
 
-  service_plan_id      = var.service_plan_id
-  storage_account_name = var.storage_account_name
+  storage_container_type      = "blobContainer"
+  storage_container_endpoint  = "${var.storage_primary_blob_endpoint}${var.deployment_container_name}"
+  storage_authentication_type = "SystemAssignedIdentity"
 
-  storage_uses_managed_identity = true
+  runtime_name    = "python"
+  runtime_version = "3.11"
+
+  virtual_network_subnet_id     = var.service_endpoint_subnet_id
   public_network_access_enabled = false
   https_only                    = true
+
+  instance_memory_in_mb  = 2048
+  maximum_instance_count = 10
 
   identity {
     type = "SystemAssigned"
   }
 
   site_config {
-    application_stack {
-      python_version = "3.11"
-    }
     vnet_route_all_enabled = true
   }
 
   app_settings = {
-    "FUNCTIONS_WORKER_RUNTIME"                      = "python"
-    "AzureWebJobsStorage__accountName"              = var.storage_account_name
     "ServiceBusConnection__fullyQualifiedNamespace" = "${var.service_bus_namespace}.servicebus.windows.net"
-    "WEBSITE_RUN_FROM_PACKAGE"                      = "1"
   }
 
   tags = {

@@ -1,4 +1,4 @@
-resource "azurerm_storage_account" "functions_app_stg" {
+resource "azurerm_storage_account" "functions_stg" {
   name                          = var.storage_account_name
   resource_group_name           = var.resource_group_name
   location                      = var.location
@@ -15,9 +15,23 @@ resource "azurerm_storage_account" "functions_app_stg" {
     source = "terraform"
   }
 }
+# ------------------------------------------------------------------- containers -------------------------------------------------------------------
 
-resource "azurerm_storage_container" "app_container_stg" {
-  name                  = var.storage_account_container_name
-  storage_account_name  = var.storage_account_name
+
+resource "azurerm_storage_container" "worker_deploy" {
+  name                  = "worker-deploy"
+  storage_account_id    = azurerm_storage_account.functions_stg.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "api_deploy" {
+  name                  = "api-deploy"
+  storage_account_id    = azurerm_storage_account.functions_stg.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "report_deploy" {
+  name                  = "report-deploy"
+  storage_account_id    = azurerm_storage_account.functions_stg.id
   container_access_type = "private"
 }

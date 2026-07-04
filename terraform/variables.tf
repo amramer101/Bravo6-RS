@@ -29,11 +29,6 @@ variable "storage_account_name" {
   description = "The name of the Storage Account"
 }
 
-variable "storage_account_container_name" {
-  type        = string
-  description = "The name of the Storage Account Container"
-}
-
 variable "storage_account_tier" {
   type        = string
   description = "The tier of the Storage Account"
@@ -80,6 +75,16 @@ variable "function_api_name" {
 
 variable "function_report_name" {
   type = string
+}
+
+variable "storage_primary_blob_endpoint" {
+  type        = string
+  description = "Primary blob endpoint of the storage account used for Flex Consumption deployment"
+}
+
+variable "deployment_container_name" {
+  type        = string
+  description = "Name of the blob container holding the deployed package"
 }
 
 variable "plan_name" {
