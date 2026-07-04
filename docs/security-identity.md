@@ -85,7 +85,7 @@ Each function is granted the minimum set of permissions required to perform its 
 The Report Function has no permissions on Service Bus whatsoever — it cannot send, receive, peek, or manage the queue. This is the clearest expression of least privilege in the platform: even a fully compromised Report Function grants an attacker no foothold in the messaging layer.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#f0f4f8', 'primaryTextColor': '#1a1a1a', 'primaryBorderColor': '#2c3e50', 'lineColor': '#5d6d7e'}}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a1a', 'primaryTextColor': '#fff', 'primaryBorderColor': '#555', 'lineColor': '#aaa'}}}%%
 graph TD
     subgraph Identities[Managed Identities]
         API[API Function Identity]
@@ -107,15 +107,17 @@ graph TD
     Worker -->|Cosmos DB Data Contributor| Cosmos
     Report -->|Cosmos DB Data Contributor| Cosmos
 
-    API -->|Azure Service Bus Data Sender| SB
-    Worker -->|Azure Service Bus Data Receiver| SB
-    Report -.-x|Explicitly denied - no Sender or Receiver| SB
+    API -->|Service Bus Data Sender| SB
+    Worker -->|Service Bus Data Receiver| SB
+    Report -.->|Explicitly Denied - No Access| SB
 
-    classDef identity fill:#dbeafe,color:#1e3a5f,stroke:#1e3a5f,stroke-width:2px;
-    classDef resource fill:#d1fae5,color:#065f46,stroke:#065f46,stroke-width:2px;
+    classDef identity fill:#1a237e,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef resource fill:#1b5e20,color:#fff,stroke:#81c784,stroke-width:2px;
+    classDef denied fill:#bf360c,color:#fff,stroke:#ff8a65,stroke-width:2px,stroke-dasharray:5 5;
 
     class API,Worker,Report identity;
     class SB,Cosmos,Stg resource;
+    class Report denied;
 ```
 
 ---
@@ -147,40 +149,50 @@ All backend services are inaccessible from the public internet. Traffic reaches 
 ### Architecture Diagram
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#f0f4f8', 'primaryTextColor': '#1a1a1a', 'primaryBorderColor': '#2c3e50', 'lineColor': '#5d6d7e'}}}%%
-flowchart LR
-    User[Browser / User]
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a1a', 'primaryTextColor': '#fff', 'primaryBorderColor': '#555', 'lineColor': '#aaa'}}}%%
+graph TD
+    subgraph Public[Public Zone - User Facing]
+        User[Browser / User]
+        Frontend[Frontend Storage<br>public_network = true]
+        API[API Function<br>public_network = true]
+        Report[Report Function<br>public_network = true]
+    end
 
-    API[API Function<br>public network = true]
-    Report[Report Function<br>public network = true]
-    Worker[Worker Function<br>public network = false<br>VNet outbound only]
+    subgraph Private[Private Backend & Worker]
+        WorkerFunc[Worker Function<br>public_network = false]
+        SB[Service Bus Queue<br>default_action = Deny]
+        Cosmos[Cosmos DB<br>default_action = Deny]
+        BackendStg[Backend Storage<br>default_action = Deny]
+    end
 
-    SB[Service Bus Queue<br>default action = Deny]
-    Cosmos[Cosmos DB<br>default action = Deny]
-    BackendStg[Backend Storage<br>default action = Deny]
-
+    User -->|GET /| Frontend
     User -->|POST /api/scan| API
     User -->|GET /report/status| Report
-    User -.-x|No direct access| Worker
-    User -.-x|No direct access| SB
-    User -.-x|No direct access| Cosmos
-    User -.-x|No direct access| BackendStg
 
-    API -->|Send Message| SB
-    Worker -->|Receive and Process| SB
-    Worker -->|Write Results| Cosmos
-    Report -->|Read Results| Cosmos
+    Frontend -.->|AJAX| API
+    Frontend -.->|Polling| Report
+
+    API -->|Publish| SB
+    WorkerFunc -->|Consume| SB
+    WorkerFunc -->|Write| Cosmos
+    Report -->|Read| Cosmos
 
     API -->|Mount Code| BackendStg
-    Worker -->|Mount Code| BackendStg
+    WorkerFunc -->|Mount Code| BackendStg
     Report -->|Mount Code| BackendStg
 
-    classDef allowed fill:#d1fae5,color:#065f46,stroke:#065f46,stroke-width:2px;
-    classDef public fill:#dbeafe,color:#1e3a5f,stroke:#1e3a5f,stroke-width:2px;
-    classDef private fill:#fef3c7,color:#78350f,stroke:#78350f,stroke-width:2px;
+    User -.->|No Direct Access| WorkerFunc
+    User -.->|No Direct Access| SB
+    User -.->|No Direct Access| Cosmos
+    User -.->|No Direct Access| BackendStg
 
-    class API,Report,User public;
-    class Worker,SB,Cosmos,BackendStg private;
+    classDef public fill:#1a237e,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef frontend fill:#01579b,color:#fff,stroke:#4fc3f7,stroke-width:2px;
+    classDef private fill:#bf360c,color:#fff,stroke:#ff8a65,stroke-width:2px;
+
+    class User,API,Report public;
+    class Frontend frontend;
+    class WorkerFunc,SB,Cosmos,BackendStg private;
 ```
 
 ---

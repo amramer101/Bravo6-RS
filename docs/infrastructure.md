@@ -78,7 +78,76 @@ The three diagrams referenced below are stored under `docs/` and describe the in
 
 ### 1. Resource Dependency Graph
 
-![Resource Dependency Graph](images/Resource_Dependency_Graph.svg)
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#f0f4f8', 'primaryTextColor': '#1a1a1a', 'primaryBorderColor': '#2c3e50', 'lineColor': '#5d6d7e'}}}%%
+graph TD
+    Root[Root Module main.tf Orchestration]
+
+    Root --> RG[Resource Group]
+    Root --> Network[Network Module]
+    Root --> Plan[Service Plan FC1 Linux]
+    Root --> BackendStg[Backend Storage private]
+    Root --> FrontendStg[Frontend Storage public]
+    Root --> ServiceBus[Service Bus Premium]
+    Root --> Cosmos[Cosmos DB Free Tier]
+    Root --> IAM[IAM Role Assignments]
+
+    Network --> VNet[Virtual Network 10.0.0.0/16]
+    Network --> Subnet[Subnet 10.0.1.0/24]
+    Network --> NSG[Network Security Group]
+
+    Subnet --> Delegation[Delegation Microsoft.App/environments]
+    Subnet --> Endpoints[Service Endpoints]
+
+    BackendStg --> ContAPI[Container api-deploy]
+    BackendStg --> ContWorker[Container worker-deploy]
+    BackendStg --> ContReport[Container report-deploy]
+
+    FrontendStg --> StaticSite[Static Website index.html]
+
+    ServiceBus --> SBQueue[Queue bravo6-queue]
+    ServiceBus --> SBRules[Network Rules Deny]
+
+    Cosmos --> CosmosDB[Database bravo6-db]
+    CosmosDB --> CosmosScans[Container scans /scanId]
+    CosmosDB --> CosmosUsers[Container users /userId]
+
+    Plan --> APIFunc[API Function public=true]
+    Plan --> WorkerFunc[Worker Function public=false]
+    Plan --> ReportFunc[Report Function public=true]
+
+    APIFunc --> Subnet
+    WorkerFunc --> Subnet
+    ReportFunc --> Subnet
+
+    APIFunc --> ContAPI
+    WorkerFunc --> ContWorker
+    ReportFunc --> ContReport
+
+    IAM --> APIRoles[API: Storage + Cosmos + Sender]
+    IAM --> WorkerRoles[Worker: Storage + Cosmos + Receiver]
+    IAM --> ReportRoles[Report: Storage + Cosmos + No SB]
+
+    APIFunc --> APIRoles
+    WorkerFunc --> WorkerRoles
+    ReportFunc --> ReportRoles
+
+    classDef root fill:#1a237e,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef network fill:#0d47a1,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef storage fill:#1b5e20,color:#fff,stroke:#81c784,stroke-width:2px;
+    classDef messaging fill:#e65100,color:#fff,stroke:#ffb74d,stroke-width:2px;
+    classDef compute fill:#4a148c,color:#fff,stroke:#ce93d8,stroke-width:2px;
+    classDef iam fill:#880e4f,color:#fff,stroke:#f48fb1,stroke-width:2px;
+
+    class Root root;
+    class RG,Network,VNet,Subnet,NSG,Delegation,Endpoints network;
+    class BackendStg,FrontendStg,ContAPI,ContWorker,ContReport,StaticSite storage;
+    class ServiceBus,SBQueue,SBRules messaging;
+    class Plan,APIFunc,WorkerFunc,ReportFunc compute;
+    class IAM,APIRoles,WorkerRoles,ReportRoles iam;
+```
+
+
 
 This diagram shows how the root module composes the ten child modules and how resources within each module depend on one another.
 
@@ -93,7 +162,41 @@ This diagram shows how the root module composes the ten child modules and how re
 
 ### 2. IAM Role Assignments
 
-![IAM Role Assignments](images/IAM_Role_Assignments.svg)
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#f0f4f8', 'primaryTextColor': '#1a1a1a', 'primaryBorderColor': '#2c3e50', 'lineColor': '#5d6d7e'}}}%%
+graph TD
+    subgraph Identities[Managed Identities]
+        API[API Identity]
+        Worker[Worker Identity]
+        Report[Report Identity]
+    end
+
+    subgraph Resources[Protected Resources]
+        SB[Service Bus Queue]
+        Cosmos[Cosmos DB]
+        Stg[Backend Storage]
+    end
+
+    API -->|Storage Blob Data Contributor| Stg
+    Worker -->|Storage Blob Data Contributor| Stg
+    Report -->|Storage Blob Data Contributor| Stg
+
+    API -->|Cosmos DB Data Contributor| Cosmos
+    Worker -->|Cosmos DB Data Contributor| Cosmos
+    Report -->|Cosmos DB Data Contributor| Cosmos
+
+    API -->|Service Bus Data Sender| SB
+    Worker -->|Service Bus Data Receiver| SB
+    Report -.->|Explicitly Denied - No Access| SB
+
+    classDef identity fill:#1a237e,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef resource fill:#1b5e20,color:#fff,stroke:#81c784,stroke-width:2px;
+    classDef denied fill:#bf360c,color:#fff,stroke:#ff8a65,stroke-width:2px,stroke-dasharray:5 5;
+
+    class API,Worker,Report identity;
+    class SB,Cosmos,Stg resource;
+    class Report denied;
+```
 
 This diagram documents the least-privilege access model applied to the three function managed identities against the protected backend resources.
 
@@ -112,7 +215,51 @@ Key points enforced by this design:
 
 ### 3. Network Exposure and Isolation
 
-![Network Exposure and Isolation](images/Network_Exposure_Isolation.svg)
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#f0f4f8', 'primaryTextColor': '#1a1a1a', 'primaryBorderColor': '#2c3e50', 'lineColor': '#5d6d7e'}}}%%
+graph TD
+    User[Browser / User]
+
+    Frontend[Frontend Storage<br>public_network = true]
+    API[API Function<br>public_network = true]
+    Report[Report Function<br>public_network = true]
+    Worker[Worker Function<br>public_network = false<br>VNet Outbound Only]
+
+    SB[Service Bus Queue<br>default_action = Deny]
+    Cosmos[Cosmos DB<br>default_action = Deny]
+    BackendStg[Backend Storage<br>default_action = Deny]
+
+    User -->|1. GET / HTML/CSS/JS| Frontend
+    User -->|2. POST /api/scan| API
+    User -->|3. GET /report/status| Report
+    User -.->|No Direct Access| Worker
+    User -.->|No Direct Access| SB
+    User -.->|No Direct Access| Cosmos
+    User -.->|No Direct Access| BackendStg
+
+    Frontend -.->|AJAX Calls| API
+    Frontend -.->|Polling| Report
+
+    API -->|Publish Message| SB
+    Worker -->|Consume Message| SB
+    Worker -->|Write Results| Cosmos
+    Report -->|Read Results| Cosmos
+
+    API -->|Mount Code| BackendStg
+    Worker -->|Mount Code| BackendStg
+    Report -->|Mount Code| BackendStg
+
+    classDef user fill:#1a237e,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef frontend fill:#01579b,color:#fff,stroke:#4fc3f7,stroke-width:2px;
+    classDef public fill:#0d47a1,color:#fff,stroke:#64b5f6,stroke-width:2px;
+    classDef private fill:#bf360c,color:#fff,stroke:#ff8a65,stroke-width:2px;
+    classDef backend fill:#1b5e20,color:#fff,stroke:#81c784,stroke-width:2px;
+
+    class User user;
+    class Frontend frontend;
+    class API,Report public;
+    class Worker,SB,Cosmos,BackendStg private;
+```
 
 This diagram maps out what is reachable from the public internet versus what is confined to the Virtual Network.
 

@@ -168,36 +168,38 @@ A virtual machine is billed for 24/7 compute whether it is used or not. Serverle
 ## Cost Optimisation Overview
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#f0f4f8', 'primaryTextColor': '#1a1a1a', 'primaryBorderColor': '#2c3e50', 'lineColor': '#5d6d7e'}}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'primaryColor': '#1a1a1a', 'primaryTextColor': '#fff', 'primaryBorderColor': '#555', 'lineColor': '#aaa'}}}%%
 graph TD
     subgraph Frontend[Frontend Hosting Options]
-        AppService[App Service B1<br>13.14 USD per month<br>Always-on]
-        Storage[Storage Static Website<br>0.01-0.50 USD per month<br>Pay-as-you-go]
-        Storage -->|95-99 percent cheaper| AppService
+        AppService[App Service B1<br>13.14 USD/month<br>Always-on]
+        Storage[Storage Static Website<br>0.01-0.50 USD/month<br>Pay-as-you-go]
+        Storage -->|95-99% cheaper| AppService
     end
 
     subgraph Compute[Compute Options]
-        VM[Virtual Machine B1s<br>7.59-30 USD per month<br>Always-on]
-        Functions[Azure Functions Flex Consumption<br>near zero when idle<br>Pay-per-execution]
-        Functions -->|Saves 90-360 USD per year| VM
+        VM[Virtual Machine B1s<br>7.59-30 USD/month<br>Always-on]
+        Functions[Azure Functions Flex Consumption<br>~0 USD when idle<br>Pay-per-execution]
+        Functions -->|Saves 90-360 USD/year| VM
     end
 
     subgraph Total[Total Monthly Cost]
-        Current[Current Architecture<br>80-81 USD per month]
-        WithAppService[With App Service<br>93-94 USD per month]
-        WithVM[With VMs<br>103-171 USD per month]
-        Worst[App Service plus VMs<br>116-184 USD per month]
+        Current[Current Architecture<br>80-81 USD/month]
+        WithAppService[With App Service<br>93-94 USD/month]
+        WithVM[With VMs<br>103-171 USD/month]
+        Worst[App Service + VMs<br>116-184 USD/month]
 
-        Current -->|Saves 12-13 USD per month| WithAppService
-        Current -->|Saves 23-90 USD per month| WithVM
-        Current -->|Saves 36-103 USD per month| Worst
+        Current -->|Saves 12-13 USD/month| WithAppService
+        Current -->|Saves 23-90 USD/month| WithVM
+        Current -->|Saves 36-103 USD/month| Worst
     end
 
-    classDef savings fill:#d1fae5,color:#065f46,stroke:#065f46,stroke-width:2px;
-    classDef cost fill:#fef2f2,color:#991b1b,stroke:#991b1b,stroke-width:2px;
+    classDef savings fill:#2e7d32,color:#fff,stroke:#81c784,stroke-width:2px;
+    classDef cost fill:#c62828,color:#fff,stroke:#ef9a9a,stroke-width:2px;
+    classDef current fill:#1565c0,color:#fff,stroke:#64b5f6,stroke-width:2px;
 
-    class Storage,Functions,Current savings;
+    class Storage,Functions savings;
     class AppService,VM,Worst,WithAppService,WithVM cost;
+    class Current current;
 ```
 
 ---
