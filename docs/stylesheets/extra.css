@@ -1,6 +1,14 @@
-/* ============================================
-   خلفية سوداء نقية
-   ============================================ */
+/* ================================================================
+   BRAVO6 DOCS — DARK-ONLY THEME
+   This site ships a single visual identity: pure black + cyan accent.
+   There is no light-mode toggle (see mkdocs.yml), so every rule below
+   targets [data-md-color-scheme="slate"] deliberately — that attribute
+   is always present since "slate" is the only palette defined.
+   ================================================================ */
+
+/* ----------------------------------------------------------------
+   1. Color tokens
+   ---------------------------------------------------------------- */
 [data-md-color-scheme="slate"] {
   --md-default-bg-color: #000000;
   --md-default-bg-color--light: #0a0a0a;
@@ -11,6 +19,10 @@
   --md-typeset-color: #ffffff;
   --md-typeset-a-color: #4fc3f7;
   --md-code-bg-color: #0d0d0d;
+
+  --bravo-accent: #00e5ff;
+  --bravo-link-hover: #ffab40;
+  --bravo-border: #2a2a2a;
 }
 
 body,
@@ -18,12 +30,12 @@ body,
 .md-content,
 .md-typeset,
 .md-container {
-  background-color: #000000 !important;
+  background-color: var(--md-default-bg-color) !important;
 }
 
-/* ============================================
-   عرض الصفحة (مريح للقراءة)
-   ============================================ */
+/* ----------------------------------------------------------------
+   2. Layout — page width, sidebar, content padding
+   ---------------------------------------------------------------- */
 .md-grid {
   max-width: 1600px !important;
 }
@@ -36,9 +48,9 @@ body,
   padding: 2rem 2.5rem !important;
 }
 
-/* ============================================
-   حجم الخط الأساسي (16px = الحجم المثالي)
-   ============================================ */
+/* ----------------------------------------------------------------
+   3. Typography — base
+   ---------------------------------------------------------------- */
 html {
   font-size: 16px !important;
 }
@@ -52,32 +64,33 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* النصوص العادية */
 .md-typeset p,
 .md-typeset li,
 .md-typeset td,
 .md-typeset th {
-  font-size: 1rem !important;  /* 16px */
+  font-size: 1rem !important;
   line-height: 1.8 !important;
 }
 
-/* العناوين المتناسقة */
+/* ----------------------------------------------------------------
+   4. Typography — headings
+   ---------------------------------------------------------------- */
 .md-typeset h1 {
   font-family: 'Inter', sans-serif !important;
-  font-size: 2rem !important;  /* 32px */
+  font-size: 2rem !important;
   font-weight: 700 !important;
   letter-spacing: -0.5px;
-  color: #ffffff;
+  color: var(--md-default-fg-color);
   margin-top: 1.5rem;
   margin-bottom: 1.5rem;
 }
 
 .md-typeset h2 {
   font-family: 'Inter', sans-serif !important;
-  font-size: 1.5rem !important;  /* 24px */
+  font-size: 1.5rem !important;
   font-weight: 600 !important;
-  color: #e0e0e0;
-  border-bottom: 2px solid #00e5ff;
+  color: var(--md-default-fg-color--light);
+  border-bottom: 2px solid var(--bravo-accent);
   padding-bottom: 8px;
   margin-top: 2.5rem;
   margin-bottom: 1.2rem;
@@ -85,7 +98,7 @@ body {
 
 .md-typeset h3 {
   font-family: 'Inter', sans-serif !important;
-  font-size: 1.2rem !important;  /* 19.2px */
+  font-size: 1.2rem !important;
   font-weight: 600 !important;
   color: #b0b0b0;
   margin-top: 2rem;
@@ -100,9 +113,23 @@ body {
   margin-top: 1.5rem;
 }
 
-/* ============================================
-   الرسومات (بحجم طبيعي مع حدود عرض)
-   ============================================ */
+/* Anchor links added by toc.permalink — hidden until hover, matches accent */
+.md-typeset .headerlink {
+  color: var(--bravo-accent) !important;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.md-typeset h1:hover .headerlink,
+.md-typeset h2:hover .headerlink,
+.md-typeset h3:hover .headerlink,
+.md-typeset h4:hover .headerlink {
+  opacity: 1;
+}
+
+/* ----------------------------------------------------------------
+   5. Diagrams (Mermaid)
+   ---------------------------------------------------------------- */
 .mermaid {
   margin: 2.5rem auto !important;
   padding: 1.5rem 0 !important;
@@ -115,18 +142,18 @@ body {
 .mermaid svg {
   max-width: 90% !important;
   height: auto !important;
-  background-color: #000000 !important;
+  background-color: var(--md-default-bg-color) !important;
   border-radius: 8px;
   padding: 0.5rem;
 }
 
-/* ============================================
-   تحسين الجداول
-   ============================================ */
+/* ----------------------------------------------------------------
+   6. Tables
+   ---------------------------------------------------------------- */
 .md-typeset table:not([class]) {
   font-size: 0.9rem !important;
-  background-color: #0a0a0a;
-  border: 1px solid #2a2a2a;
+  background-color: var(--md-default-bg-color--light);
+  border: 1px solid var(--bravo-border);
   width: 100%;
   margin: 1.5rem 0;
 }
@@ -134,20 +161,24 @@ body {
 .md-typeset table:not([class]) th {
   font-size: 0.95rem !important;
   font-weight: 700 !important;
-  background-color: #141414;
-  color: #ffffff;
+  background-color: var(--md-default-bg-color--lighter);
+  color: var(--md-default-fg-color);
   padding: 10px 14px;
 }
 
 .md-typeset table:not([class]) td {
   font-size: 0.9rem !important;
-  color: #e0e0e0;
+  color: var(--md-default-fg-color--light);
   padding: 8px 14px;
 }
 
-/* ============================================
-   تحسين الشريط الجانبي
-   ============================================ */
+.md-typeset table:not([class]) tr:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+/* ----------------------------------------------------------------
+   7. Sidebar navigation
+   ---------------------------------------------------------------- */
 .md-nav__item .md-nav__link {
   font-size: 0.95rem !important;
   font-weight: 500 !important;
@@ -160,15 +191,20 @@ body {
   background-color: rgba(255, 255, 255, 0.05);
 }
 
+.md-nav__item .md-nav__link--active {
+  color: var(--bravo-accent) !important;
+  font-weight: 700 !important;
+}
+
 .md-nav__title {
   font-size: 1rem !important;
   font-weight: 700 !important;
   padding: 0.5rem 0.5rem 0.5rem 0 !important;
 }
 
-/* ============================================
-   الكود
-   ============================================ */
+/* ----------------------------------------------------------------
+   8. Code blocks
+   ---------------------------------------------------------------- */
 .md-typeset code,
 .md-typeset pre {
   font-size: 0.85rem !important;
@@ -178,35 +214,9 @@ body {
   font-size: 0.85rem !important;
 }
 
-/* ============================================
-   الروابط
-   ============================================ */
-.md-typeset a {
-  color: #4fc3f7;
-  text-decoration: none;
-}
-
-.md-typeset a:hover {
-  color: #ffab40;
-  text-decoration: underline;
-}
-
-/* ============================================
-   التنبيهات
-   ============================================ */
-.md-typeset .admonition {
-  background-color: #0a0a0a;
-  border-left-color: #00bcd4;
-  font-size: 0.95rem !important;
-  padding: 0.8rem 1.2rem !important;
-}
-
-/* ============================================
-   زر النسخ
-   ============================================ */
 .md-clipboard {
-  color: #ffffff !important;
-  background-color: #1a1a1a !important;
+  color: var(--md-default-fg-color) !important;
+  background-color: var(--md-default-bg-color--lightest) !important;
   border-radius: 4px !important;
 }
 
@@ -214,9 +224,47 @@ body {
   color: #00bcd4 !important;
 }
 
-/* ============================================
-   تحسين التجاوب (شاشات صغيرة)
-   ============================================ */
+/* ----------------------------------------------------------------
+   9. Links
+   ---------------------------------------------------------------- */
+.md-typeset a {
+  color: var(--md-typeset-a-color);
+  text-decoration: none;
+}
+
+.md-typeset a:hover {
+  color: var(--bravo-link-hover);
+  text-decoration: underline;
+}
+
+/* ----------------------------------------------------------------
+   10. Admonitions (!!! note, !!! warning, etc.)
+   ---------------------------------------------------------------- */
+.md-typeset .admonition {
+  background-color: var(--md-default-bg-color--light);
+  border-left-color: #00bcd4;
+  font-size: 0.95rem !important;
+  padding: 0.8rem 1.2rem !important;
+}
+
+/* ----------------------------------------------------------------
+   11. Footer navigation (Previous/Next — enabled via navigation.footer)
+   ---------------------------------------------------------------- */
+.md-footer {
+  background-color: var(--md-default-bg-color--lighter) !important;
+}
+
+.md-footer-nav__link {
+  color: var(--md-default-fg-color--light) !important;
+}
+
+.md-footer-nav__link:hover {
+  color: var(--bravo-accent) !important;
+}
+
+/* ----------------------------------------------------------------
+   12. Responsive (narrow screens)
+   ---------------------------------------------------------------- */
 @media screen and (max-width: 76.1875em) {
   .md-sidebar {
     width: 15rem !important;
