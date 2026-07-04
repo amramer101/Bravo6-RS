@@ -132,17 +132,21 @@ variable "db_name" {
 
 # --------------------------------------------- Static Web App  Variables
 
-variable "static_web_app_name" {
-  description = "The name of the static web app"
+variable "frontend_plan_name" {
+  description = "The name of the frontend service plan"
   type        = string
 }
 
 
-variable "static_web_app_sku" {
+variable "frontend_plan_sku" {
   type        = string
-  description = "static web app sku"
+  description = "frontend service plan sku"
 }
 
+variable "frontend_app_name" {
+  description = "The name of the frontend web app"
+  type        = string
+}
 
 # --------------------------------------------- Network Variables
 

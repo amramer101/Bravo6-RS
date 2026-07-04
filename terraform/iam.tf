@@ -51,12 +51,3 @@ resource "azurerm_role_assignment" "worker_sb_receiver" {
   role_definition_name = "Azure Service Bus Data Receiver"
   principal_id         = module.function_app.worker_principal_id
 }
-
-# ----------------------------------------------
-# Report (Receiver)
-# ----------------------------------------------
-resource "azurerm_role_assignment" "report_sb_receiver" {
-  scope                = module.service_bus.service_bus_id
-  role_definition_name = "Azure Service Bus Data Receiver"
-  principal_id         = module.report_function.report_principal_id
-}

@@ -25,7 +25,8 @@ function_report_name = "report-fun-app"
 cosmosdb_name = "bravo6-db"
 db_name       = "bravo6-db"
 
-static_web_app_name = "bravo6-frontend"
-static_web_app_sku  = "Standard"
+frontend_plan_name = "bravo6-frontend-plan"
+frontend_plan_sku  = "B1"
+frontend_app_name  = "bravo6-frontend-app"
 
 vnet_name = "bravo6-vnet"

@@ -105,12 +105,14 @@ module "report_function" {
 
 }
 
-module "static_website" {
-  source              = "./modules/static_website"
-  static_web_app_name = var.static_web_app_name
-  static_web_app_sku  = var.static_web_app_sku
-  resource_group_name = module.resource_group.name
-  location            = module.resource_group.location
+module "app_services" {
+  source                     = "./modules/app_services"
+  frontend_plan_name         = var.frontend_plan_name
+  frontend_plan_sku          = var.frontend_plan_sku
+  frontend_app_name          = var.frontend_app_name
+  resource_group_name        = module.resource_group.name
+  location                   = module.resource_group.location
+  service_endpoint_subnet_id = module.network.functions_subnet_id
 }
 
 module "network" {
