@@ -112,7 +112,7 @@ module "app_services" {
   frontend_app_name          = var.frontend_app_name
   resource_group_name        = module.resource_group.name
   location                   = module.resource_group.location
-  service_endpoint_subnet_id = module.network.functions_subnet_id
+  service_endpoint_subnet_id = module.network.appservice_subnet_id
 }
 
 module "network" {

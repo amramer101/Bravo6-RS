@@ -19,7 +19,6 @@ resource "azurerm_linux_web_app" "frontend_app" {
     }
 
     # VNet Integration
-    virtual_network_subnet_id = var.service_endpoint_subnet_id
     vnet_route_all_enabled    = true
   }
 

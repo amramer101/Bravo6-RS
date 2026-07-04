@@ -32,6 +32,22 @@ resource "azurerm_subnet" "functions_subnet" {
 
 }
 
+resource "azurerm_subnet" "appservice_subnet" {
+  name                 = "appservice-subnet"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.vnet_bravo6.name
+  address_prefixes     = ["10.0.1.0/26"]
+
+  delegation {
+      name = "appservice-delegation"
+      service_delegation {
+        name    = "Microsoft.Web/serverFarms"
+        actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+      }
+    }
+
+}
+
 # ----------------------------------------------------
 # آٍNSG (Network Security Group) to enforce Zero Trust principles
 
