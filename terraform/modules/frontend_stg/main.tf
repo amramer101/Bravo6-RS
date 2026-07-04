@@ -19,24 +19,57 @@ resource "azurerm_storage_account_static_website" "frontend_website" {
   error_404_document = "index.html"
 }
 
-resource "azurerm_cdn_profile" "frontend_cdn_profile" {
+# Azure Front Door Profile
+resource "azurerm_cdn_frontdoor_profile" "frontend_fd_profile" {
   name                = var.cdn_profile_name
-  location            = "global"
   resource_group_name = var.resource_group_name
-  sku                 = "Standard_Microsoft"
+  sku_name            = "Standard_AzureFrontDoor"
 }
 
-# CDN Endpoint
-resource "azurerm_cdn_endpoint" "frontend_cdn_endpoint" {
-  name                = var.cdn_endpoint_name
-  profile_name        = azurerm_cdn_profile.frontend_cdn_profile.name
-  location            = "global"
-  resource_group_name = var.resource_group_name
+# Endpoint
+resource "azurerm_cdn_frontdoor_endpoint" "frontend_fd_endpoint" {
+  name                     = var.cdn_endpoint_name
+  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.frontend_fd_profile.id
+}
 
-  origin {
-    name      = "frontend-origin"
-    host_name = azurerm_storage_account.frontend_storage.primary_web_host
+# Origin Group
+resource "azurerm_cdn_frontdoor_origin_group" "frontend_fd_origin_group" {
+  name                     = "frontend-origin-group"
+  cdn_frontdoor_profile_id = azurerm_cdn_frontdoor_profile.frontend_fd_profile.id
+  session_affinity_enabled = false
+
+  load_balancing {
+    sample_size                 = 4
+    successful_samples_required = 3
   }
 
-  origin_host_header = azurerm_storage_account.frontend_storage.primary_web_host
+  health_probe {
+    path                = "/"
+    protocol            = "Https"
+    interval_in_seconds = 100
+  }
+}
+
+
+resource "azurerm_cdn_frontdoor_origin" "frontend_fd_origin" {
+  name                          = "frontend-origin"
+  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.frontend_fd_origin_group.id
+
+  enabled                        = true
+  host_name                      = azurerm_storage_account.frontend_storage.primary_web_host
+  origin_host_header             = azurerm_storage_account.frontend_storage.primary_web_host
+  certificate_name_check_enabled = true
+}
+
+resource "azurerm_cdn_frontdoor_route" "frontend_fd_route" {
+  name                          = "frontend-route"
+  cdn_frontdoor_endpoint_id     = azurerm_cdn_frontdoor_endpoint.frontend_fd_endpoint.id
+  cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.frontend_fd_origin_group.id
+  cdn_frontdoor_origin_ids      = [azurerm_cdn_frontdoor_origin.frontend_fd_origin.id]
+
+  supported_protocols    = ["Http", "Https"]
+  patterns_to_match      = ["/*"]
+  forwarding_protocol    = "HttpsOnly"
+  link_to_default_domain = true
+  https_redirect_enabled = true
 }

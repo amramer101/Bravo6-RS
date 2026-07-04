@@ -109,7 +109,7 @@ module "network" {
 
 
 module "frontend_stg" {
-  source              = "./modules/frontend_stg"
+  source               = "./modules/frontend_stg"
   storage_account_name = var.storage_account_name
   resource_group_name  = module.resource_group.name
   location             = module.resource_group.location

@@ -1,9 +1,4 @@
-output "storage_website_url" {
-  description = "The primary web endpoint of the storage account"
-  value       = module.frontend_stg.frontend_website_endpoint
-}
-
-output "cdn_endpoint_url" {
-  description = "The URL of the CDN Endpoint to access the React app globally"
-  value       = module.frontend_stg.frontend_cdn_endpoint_url
+output "frontdoor_endpoint_url" {
+  description = "The URL of the Front Door Endpoint to access the React app globally"
+  value       = module.frontend_stg.frontdoor_endpoint_url
 }
