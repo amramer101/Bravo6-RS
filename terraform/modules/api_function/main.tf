@@ -12,7 +12,7 @@ resource "azurerm_function_app_flex_consumption" "api_function" {
   runtime_version = "3.11"
 
   virtual_network_subnet_id     = var.service_endpoint_subnet_id
-  public_network_access_enabled = false
+  public_network_access_enabled = true
   https_only                    = true
 
   instance_memory_in_mb  = 512

@@ -39,13 +39,6 @@ variable "replication_type" {
   description = "The replication type for the Storage Account"
 }
 
-# --------------------------------------------- Key Vault Variables
-
-variable "key_vault_name" {
-  description = "The name of the Key Vault"
-  type        = string
-}
-
 # --------------------------------------------- Service Bus Variables
 
 variable "service_bus_name" {

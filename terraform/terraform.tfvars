@@ -8,8 +8,6 @@ storage_account_tier = "Standard"
 replication_type     = "LRS"
 
 
-key_vault_name = "bravo6-keyvault"
-
 service_bus_name       = "bravo6-servicebus"
 service_bus_sku        = "Premium"
 service_bus_queue_name = "bravo6-queue"

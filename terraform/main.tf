@@ -48,8 +48,8 @@ module "cosmos_db" {
   service_endpoint_subnet_id = module.network.functions_subnet_id
 }
 
-module "app_service_plan" {
-  source              = "./modules/app_service_plan"
+module "functions_plan" {
+  source              = "./modules/functions_plan"
   plan_name           = var.plan_name
   sku_name            = var.sku_name
   os_type             = var.os_type
@@ -62,7 +62,7 @@ module "function_app" {
   function_app_name             = "${var.function_app_name}-${random_string.random_suffix.result}"
   resource_group_name           = module.resource_group.name
   location                      = module.resource_group.location
-  service_plan_id               = module.app_service_plan.plan_id
+  service_plan_id               = module.functions_plan.plan_id
   storage_account_name          = module.storage_account.stg_name
   service_bus_namespace         = module.service_bus.service_bus_namespace
   service_endpoint_subnet_id    = module.network.functions_subnet_id
@@ -70,20 +70,12 @@ module "function_app" {
   deployment_container_name     = module.storage_account.worker_container_name
 }
 
-module "keyvault" {
-  source                     = "./modules/keyvault"
-  key_vault_name             = "${var.key_vault_name}-${random_string.random_suffix.result}"
-  resource_group_name        = module.resource_group.name
-  location                   = module.resource_group.location
-  service_endpoint_subnet_id = module.network.functions_subnet_id
-}
-
 module "api_function" {
   source                        = "./modules/api_function"
   function_api_name             = "${var.function_api_name}-${random_string.random_suffix.result}"
   resource_group_name           = module.resource_group.name
   location                      = module.resource_group.location
-  service_plan_id               = module.app_service_plan.plan_id
+  service_plan_id               = module.functions_plan.plan_id
   storage_account_name          = module.storage_account.stg_name
   service_endpoint_subnet_id    = module.network.functions_subnet_id
   service_bus_namespace         = module.service_bus.service_bus_namespace
@@ -96,23 +88,13 @@ module "report_function" {
   function_report_name          = "${var.function_report_name}-${random_string.random_suffix.result}"
   resource_group_name           = module.resource_group.name
   location                      = module.resource_group.location
-  service_plan_id               = module.app_service_plan.plan_id
+  service_plan_id               = module.functions_plan.plan_id
   storage_account_name          = module.storage_account.stg_name
   service_endpoint_subnet_id    = module.network.functions_subnet_id
   service_bus_namespace         = module.service_bus.service_bus_namespace
   storage_primary_blob_endpoint = module.storage_account.primary_blob_endpoint
   deployment_container_name     = module.storage_account.report_container_name
 
-}
-
-module "app_services" {
-  source                     = "./modules/app_services"
-  frontend_plan_name         = var.frontend_plan_name
-  frontend_plan_sku          = var.frontend_plan_sku
-  frontend_app_name          = var.frontend_app_name
-  resource_group_name        = module.resource_group.name
-  location                   = module.resource_group.location
-  service_endpoint_subnet_id = module.network.appservice_subnet_id
 }
 
 module "network" {
