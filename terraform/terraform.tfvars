@@ -3,12 +3,10 @@ environment         = "dev"
 location            = "centralindia"
 resource_group_name = "bravo6-rg"
 
-storage_account_name             = "bravo6stgacc"
-storage_account_tier             = "Standard"
-replication_type                 = "LRS"
-api_deployment_container_name    = "api-deploy"
-worker_deployment_container_name = "worker-deploy"
-report_deployment_container_name = "report-deploy"
+storage_account_name = "bravo6stgacc"
+storage_account_tier = "Standard"
+replication_type     = "LRS"
+
 
 key_vault_name = "bravo6-keyvault"
 
