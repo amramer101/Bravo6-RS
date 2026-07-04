@@ -31,7 +31,6 @@ resource "azurerm_subnet" "functions_subnet" {
 }
 
 # ----------------------------------------------------
-# NSG لتطبيق مبدأ Zero Trust على الـ subnet
 resource "azurerm_network_security_group" "nsg" {
   name                = "${var.resource_group_name}-nsg"
   location            = var.location

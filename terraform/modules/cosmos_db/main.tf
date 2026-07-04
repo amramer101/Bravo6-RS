@@ -10,7 +10,6 @@ resource "azurerm_cosmosdb_account" "db" {
   automatic_failover_enabled        = false
   is_virtual_network_filter_enabled = true
   public_network_access_enabled     = false
-  local_authentication_disabled     = true
 
   consistency_policy {
     consistency_level = "Session"

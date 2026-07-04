@@ -70,11 +70,6 @@ variable "function_report_name" {
   type = string
 }
 
-variable "storage_primary_blob_endpoint" {
-  type        = string
-  description = "Primary blob endpoint of the storage account used for Flex Consumption deployment"
-}
-
 variable "api_deployment_container_name" {
   type        = string
   description = "Name of the blob container holding the deployed package"
