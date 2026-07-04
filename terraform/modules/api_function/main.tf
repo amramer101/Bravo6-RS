@@ -15,7 +15,7 @@ resource "azurerm_function_app_flex_consumption" "api_function" {
   public_network_access_enabled = false
   https_only                    = true
 
-  instance_memory_in_mb  = 2048
+  instance_memory_in_mb  = 512
   maximum_instance_count = 10
 
   identity {
