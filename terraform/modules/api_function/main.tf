@@ -5,7 +5,7 @@ resource "azurerm_function_app_flex_consumption" "api_function" {
   service_plan_id     = var.service_plan_id
 
   storage_container_type      = "blobContainer"
-  storage_container_endpoint  = "${var.storage_primary_blob_endpoint}${var.deployment_container_name}"
+  storage_container_endpoint  = "${var.storage_primary_blob_endpoint}${var.api_deployment_container_name}"
   storage_authentication_type = "SystemAssignedIdentity"
 
   runtime_name    = "python"

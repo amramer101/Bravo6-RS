@@ -33,7 +33,7 @@ variable "storage_primary_blob_endpoint" {
   description = "Primary blob endpoint of the storage account used for Flex Consumption deployment"
 }
 
-variable "deployment_container_name" {
+variable "api_deployment_container_name" {
   type        = string
   description = "Name of the blob container holding the deployed package"
 }

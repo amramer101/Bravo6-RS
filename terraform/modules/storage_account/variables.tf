@@ -29,3 +29,17 @@ variable "functions_subnet_id" {
   description = "The ID of the Subnet"
 }
 
+variable "api_deployment_container_name" {
+  type        = string
+  description = "Name of the blob container holding the deployed package"
+}
+
+variable "worker_deployment_container_name" {
+  type        = string
+  description = "Name of the blob container holding the deployed package"
+}
+
+variable "report_deployment_container_name" {
+  type        = string
+  description = "Name of the blob container holding the deployed package"
+}

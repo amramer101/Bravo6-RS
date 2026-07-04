@@ -19,13 +19,16 @@ module "resource_group" {
 }
 
 module "storage_account" {
-  source               = "./modules/storage_account"
-  storage_account_name = "${var.storage_account_name}${random_string.random_suffix.result}"
-  resource_group_name  = module.resource_group.name
-  location             = module.resource_group.location
-  storage_account_tier = var.storage_account_tier
-  replication_type     = var.replication_type
-  functions_subnet_id  = module.network.functions_subnet_id
+  source                           = "./modules/storage_account"
+  storage_account_name             = "${var.storage_account_name}${random_string.random_suffix.result}"
+  resource_group_name              = module.resource_group.name
+  location                         = module.resource_group.location
+  storage_account_tier             = var.storage_account_tier
+  replication_type                 = var.replication_type
+  functions_subnet_id              = module.network.functions_subnet_id
+  worker_deployment_container_name = var.worker_deployment_container_name
+  api_deployment_container_name    = var.api_deployment_container_name
+  report_deployment_container_name = var.report_deployment_container_name
 
 }
 
@@ -58,16 +61,16 @@ module "functions_plan" {
 }
 
 module "function_app" {
-  source                        = "./modules/function_app"
-  function_app_name             = "${var.function_app_name}-${random_string.random_suffix.result}"
-  resource_group_name           = module.resource_group.name
-  location                      = module.resource_group.location
-  service_plan_id               = module.functions_plan.plan_id
-  storage_account_name          = module.storage_account.stg_name
-  service_bus_namespace         = module.service_bus.service_bus_namespace
-  service_endpoint_subnet_id    = module.network.functions_subnet_id
-  storage_primary_blob_endpoint = module.storage_account.primary_blob_endpoint
-  deployment_container_name     = module.storage_account.worker_container_name
+  source                           = "./modules/function_app"
+  function_app_name                = "${var.function_app_name}-${random_string.random_suffix.result}"
+  resource_group_name              = module.resource_group.name
+  location                         = module.resource_group.location
+  service_plan_id                  = module.functions_plan.plan_id
+  storage_account_name             = module.storage_account.stg_name
+  service_bus_namespace            = module.service_bus.service_bus_namespace
+  service_endpoint_subnet_id       = module.network.functions_subnet_id
+  storage_primary_blob_endpoint    = module.storage_account.primary_blob_endpoint
+  worker_deployment_container_name = var.worker_deployment_container_name
 }
 
 module "api_function" {
@@ -80,20 +83,20 @@ module "api_function" {
   service_endpoint_subnet_id    = module.network.functions_subnet_id
   service_bus_namespace         = module.service_bus.service_bus_namespace
   storage_primary_blob_endpoint = module.storage_account.primary_blob_endpoint
-  deployment_container_name     = module.storage_account.api_container_name
+  api_deployment_container_name = var.api_deployment_container_name
 }
 
 module "report_function" {
-  source                        = "./modules/report_function"
-  function_report_name          = "${var.function_report_name}-${random_string.random_suffix.result}"
-  resource_group_name           = module.resource_group.name
-  location                      = module.resource_group.location
-  service_plan_id               = module.functions_plan.plan_id
-  storage_account_name          = module.storage_account.stg_name
-  service_endpoint_subnet_id    = module.network.functions_subnet_id
-  service_bus_namespace         = module.service_bus.service_bus_namespace
-  storage_primary_blob_endpoint = module.storage_account.primary_blob_endpoint
-  deployment_container_name     = module.storage_account.report_container_name
+  source                           = "./modules/report_function"
+  function_report_name             = "${var.function_report_name}-${random_string.random_suffix.result}"
+  resource_group_name              = module.resource_group.name
+  location                         = module.resource_group.location
+  service_plan_id                  = module.functions_plan.plan_id
+  storage_account_name             = module.storage_account.stg_name
+  service_endpoint_subnet_id       = module.network.functions_subnet_id
+  service_bus_namespace            = module.service_bus.service_bus_namespace
+  storage_primary_blob_endpoint    = module.storage_account.primary_blob_endpoint
+  report_deployment_container_name = var.report_deployment_container_name
 
 }
 

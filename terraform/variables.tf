@@ -90,13 +90,6 @@ variable "report_deployment_container_name" {
   description = "Name of the blob container holding the deployed package"
 }
 
-
-variable "deployment_container_name" {
-  type        = string
-  description = "Name of the blob container holding the deployed package"
-}
-
-
 variable "plan_name" {
   type        = string
   description = "The name of the App Service Plan"
@@ -120,25 +113,6 @@ variable "cosmosdb_name" {
 
 variable "db_name" {
   type = string
-}
-
-
-# --------------------------------------------- Static Web App  Variables
-
-variable "frontend_plan_name" {
-  description = "The name of the frontend service plan"
-  type        = string
-}
-
-
-variable "frontend_plan_sku" {
-  type        = string
-  description = "frontend service plan sku"
-}
-
-variable "frontend_app_name" {
-  description = "The name of the frontend web app"
-  type        = string
 }
 
 # --------------------------------------------- Network Variables
