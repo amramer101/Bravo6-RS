@@ -1,0 +1,76 @@
+site_name: Bravo6 Platform
+site_description: Production-ready Azure Security Scanning Platform
+site_url: https://your-username.github.io/bravo6-docs
+repo_url: https://github.com/your-username/bravo6
+repo_name: bravo6
+
+theme:
+  name: material
+  language: en
+  
+  # إعدادات الألوان والثيم (داكن بشكل افتراضي)
+  palette:
+    # الثيم الداكن (الافتراضي - هيظهر أول ما تفتح الموقع)
+    - scheme: slate
+      primary: cyan
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    # الثيم الفاتح (لو المستخدم ضغط على الزر)
+    - scheme: default
+      primary: indigo
+      accent: deep-orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+
+  # خطوط مناسبة للمطورين (قوية وواضحة)
+  font:
+    text: JetBrains Mono
+    code: JetBrains Mono
+
+  # مميزات تحسن شكل الموقع وتجربة المستخدم
+  features:
+    - navigation.instant          # تنقل سريع بدون تحميل الصفحة
+    - navigation.tracking         # تحديد مكانك في الشريط الجانبي
+    - navigation.tabs             # تبويبات في الأعلى
+    - navigation.sections         # تقسيم الأقسام في الجانب
+    - navigation.expand           # فتح القوائم الجانبية تلقائياً
+    - search.highlight            # تظليل كلمات البحث
+    - search.share                # مشاركة روابط البحث
+    - content.code.copy           # زر نسخ للكود
+    - content.code.annotate       # تعليقات على الكود
+    - toc.follow                  # متابعة التنقل
+
+# إضافات لكتابة الـ Markdown (بتشغل الـ Mermaid والجداول)
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - attr_list
+  - md_in_html
+  - admonition
+  - pymdownx.details
+  - tables
+
+# الإضافات (شلنا الـ git-revision عشان خطأ التثبيت)
+plugins:
+  - search
+  - mermaid2:
+      version: "10.6.1"
+
+# هيكل الموقع (الترتيب في الشريط الجانبي)
+nav:
+  - Home: index.md
+  - Infrastructure (Terraform): TERRAFORM.md
+  - Architecture: architecture.md
+  - Security & Identity: SECURITY_IDENTITY.md
+  - Data Flow: DATA_FLOW.md
+  - Cost & FinOps: COST_FINOPS.md

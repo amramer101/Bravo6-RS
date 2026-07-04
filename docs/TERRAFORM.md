@@ -58,7 +58,6 @@ terraform/
 ├── provider.tf
 ├── terraform.tfvars
 ├── variables.tf
-└── README.md
 ```
 
 | File | Responsibility |
@@ -79,7 +78,7 @@ The three diagrams referenced below are stored under `docs/` and describe the in
 
 ### 1. Resource Dependency Graph
 
-![Resource Dependency Graph](../docs/Resource_Dependency_Graph.svg)
+![Resource Dependency Graph](images/Resource_Dependency_Graph.svg)
 
 This diagram shows how the root module composes the ten child modules and how resources within each module depend on one another.
 
@@ -94,7 +93,7 @@ This diagram shows how the root module composes the ten child modules and how re
 
 ### 2. IAM Role Assignments
 
-![IAM Role Assignments](../docs/IAM_Role_Assignments.svg)
+![IAM Role Assignments](images/IAM_Role_Assignments.svg)
 
 This diagram documents the least-privilege access model applied to the three function managed identities against the protected backend resources.
 
@@ -113,7 +112,7 @@ Key points enforced by this design:
 
 ### 3. Network Exposure and Isolation
 
-![Network Exposure and Isolation](../docs/Network_Exposure_Isolation.svg)
+![Network Exposure and Isolation](images/Network_Exposure_Isolation.svg)
 
 This diagram maps out what is reachable from the public internet versus what is confined to the Virtual Network.
 
