@@ -17,7 +17,6 @@ resource "azurerm_subnet" "functions_subnet" {
 
   service_endpoints = [
     "Microsoft.AzureCosmosDB",
-    "Microsoft.KeyVault",
     "Microsoft.Storage",
     "Microsoft.ServiceBus"
   ]
@@ -25,7 +24,7 @@ resource "azurerm_subnet" "functions_subnet" {
   delegation {
     name = "functions-delegation"
     service_delegation {
-      name    = "Microsoft.App/environments" # ✅ اتصلحت من serverFarms
+      name    = "Microsoft.App/environments"
       actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
     }
   }
