@@ -1,13 +1,14 @@
+
 name: Terraform Plan
 
 on:
-  pull_request:
-    paths:
-      - 'terraform/**'
-  push:
-    branches: [ main ]
-    paths:
-      - 'terraform/**'
+  # pull_request:
+  #  paths:
+  #    - 'terraform/**'
+  # push:
+  #  branches: [ main ]
+  #  paths:
+  #   - 'terraform/**'
   workflow_dispatch:     # Manual trigger
     
 
@@ -71,3 +72,4 @@ jobs:
           name: tfplan
           path: ./terraform/tfplan.binary
           retention-days: 7
+

@@ -25,10 +25,11 @@ resource "azurerm_subnet" "functions_subnet" {
   delegation {
     name = "functions-delegation"
     service_delegation {
-      name    = "Microsoft.Web/serverFarms"
+      name    = "Microsoft.App/environments"
       actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
     }
   }
+
 }
 
 # ----------------------------------------------------
