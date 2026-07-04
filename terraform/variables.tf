@@ -116,3 +116,16 @@ variable "vnet_name" {
   type        = string
   description = "The name of the virtual network"
 }
+
+
+# --------------------------------------------- Frontend Variables
+
+variable "cdn_profile_name" {
+  type        = string
+  description = "The name of the CDN Profile"
+}
+
+variable "cdn_endpoint_name" {
+  type        = string
+  description = "The name of the CDN Endpoint"
+}

@@ -26,3 +26,6 @@ cosmosdb_name = "bravo6-db"
 db_name       = "bravo6-db"
 
 vnet_name = "bravo6-vnet"
+
+cdn_profile_name = "bravo6-cdn-profile"
+cdn_endpoint_name = "bravo6-cdn-endpoint"

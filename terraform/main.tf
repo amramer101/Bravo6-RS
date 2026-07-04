@@ -108,3 +108,15 @@ module "network" {
 }
 
 
+module "frontend_stg" {
+  source              = "./modules/frontend_stg"
+  storage_account_name = var.storage_account_name
+  resource_group_name  = module.resource_group.name
+  location             = module.resource_group.location
+  storage_account_tier = var.storage_account_tier
+  replication_type     = var.replication_type
+  cdn_profile_name     = var.cdn_profile_name
+  cdn_endpoint_name    = var.cdn_endpoint_name
+}
+
+
