@@ -33,7 +33,7 @@ This is not a weekend script. It's a production-grade, cloud-native system, arch
 
 Architecture decisions, infrastructure-as-code, data flow, security model, and cost analysis are documented in full here:
 
-📖 **[Bravo6 Documentation](#)** <!-- replace with actual docs URL -->
+📖 **[Bravo6 Documentation](#)** <!-- https://bravo6.amrmedhatamer100.workers.dev/ -->
 
 ## Status
 
