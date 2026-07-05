@@ -62,3 +62,9 @@ security_report.html
 # Node (for static website)
 node_modules/
 package-lock.json
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
