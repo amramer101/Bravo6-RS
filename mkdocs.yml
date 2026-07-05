@@ -1,0 +1,87 @@
+site_name: Bravo6 Platform
+site_description: Production-ready Azure Security Scanning Platform
+site_url: https://your-username.github.io/bravo6-docs
+repo_url: https://github.com/your-username/bravo6
+repo_name: bravo6
+
+extra_css:
+  - stylesheets/extra.css
+
+theme:
+  name: material
+  language: en
+
+  # Dark-only palette. No light/dark toggle: the site has exactly one
+  # visual identity (pure black + cyan accent), so there is nothing to
+  # switch to. If a light scheme is added later, extra.css must define
+  # a matching [data-md-color-scheme="default"] block before the toggle
+  # is re-enabled — otherwise light mode falls back to unstyled Material
+  # defaults that clash with the rest of the site.
+  palette:
+    scheme: slate
+    primary: black
+    accent: cyan
+
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+  # Uncomment once the assets exist:
+  # logo: assets/logo.png
+  # favicon: assets/favicon.png
+
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.tooltips
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - admonition
+  - pymdownx.details
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mermaid2:
+      version: "10.6.1"
+
+# Only pages that exist today. Add software-architecture.md, cicd.md,
+# and deployment.md back here once they're written — an entry pointing
+# at a missing file breaks the build (or 404s on GitHub Pages).
+
+nav:
+  - Home: index.md
+  - Infrastructure as Code: infrastructure.md
+  - Architecture Overview: architecture-overview.md
+  - Architecture Decisions: architecture-decisions.md
+  - Software Architecture: software-architecture.md
+  - Security & Identity: security-identity.md
+  - Data Flow: data-flow.md
+  - Cost & FinOps: cost-finops.md
+  - CI/CD Pipeline: cicd.md
+  - Deployment Guide: deployment.md
