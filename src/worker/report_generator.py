@@ -66,10 +66,8 @@ def _effort(category: str) -> str:
         if "active" in cat:
             return "Medium"
         return "Hard"
-    # Infer from other signals when category is absent
     return "Medium"  # default changed from "Hard" to "Medium" per requirements
 
-# FIX #4 continued: Actual inference logic moved to where we have finding context
 def _effort_from_finding(f: Dict) -> str:
     """
     Infer effort level from finding fields when category is missing.
@@ -77,31 +75,26 @@ def _effort_from_finding(f: Dict) -> str:
     category = f.get("category", "")
     if category:
         return _effort(category)
-    # Check title and remediation for keywords
     title = (f.get("title") or "").lower()
     remediation = (f.get("remediation") or "").lower()
     cwe = (f.get("cwe") or "").lower()
     owasp = (f.get("owasp") or "").lower()
     combined = f"{title} {remediation} {cwe} {owasp}"
-    # Easy patterns
-    easy_keywords = ["header", "add header", "config", "flag", "enable", "disable", 
+    easy_keywords = ["header", "add header", "config", "flag", "enable", "disable",
                      "set ", "add ", "remove ", "update ", "patch", "cve", "vulnerable"]
     for kw in easy_keywords:
         if kw in combined:
             return "Easy"
-    # Medium patterns
-    medium_keywords = ["certificate", "tls", "protocol", "cipher", "ssl", "encryption", 
+    medium_keywords = ["certificate", "tls", "protocol", "cipher", "ssl", "encryption",
                        "key", "signature", "algorithm", "hsts", "csp"]
     for kw in medium_keywords:
         if kw in combined:
             return "Medium"
-    # Hard patterns
     hard_keywords = ["authentication", "architecture", "redesign", "rewrite", "migrate",
                      "refactor", "rebuild", "re-architect"]
     for kw in hard_keywords:
         if kw in combined:
             return "Hard"
-    # Default to Medium (not Hard) per requirements
     return "Medium"
 
 def _impact(sev: str) -> str:
@@ -149,22 +142,23 @@ def _gauge_svg(score: int, grade: str) -> str:
     r, cx, cy = 52, 70, 70
     circ = 2 * 3.14159 * r
     filled = circ * score / 100
+    # FIX: use Inter font-family for consistency
     return f"""<svg viewBox="0 0 140 140" width="140" height="140" xmlns="http://www.w3.org/2000/svg">
   <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="#e9ecef" stroke-width="12"/>
   <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{color}" stroke-width="12"
           stroke-dasharray="{filled:.1f} {circ:.1f}"
           stroke-dashoffset="{circ/4:.1f}"
           stroke-linecap="round"/>
-  <text x="{cx}" y="{cy-8}" text-anchor="middle" font-size="26" font-weight="700" fill="{color}" font-family="Segoe UI,sans-serif">{_esc(score)}</text>
-  <text x="{cx}" y="{cy+14}" text-anchor="middle" font-size="13" fill="#6c757d" font-family="Segoe UI,sans-serif">/100</text>
-  <text x="{cx}" y="{cy+32}" text-anchor="middle" font-size="16" font-weight="700" fill="{color}" font-family="Segoe UI,sans-serif">Grade {_esc(grade)}</text>
+  <text x="{cx}" y="{cy-8}" text-anchor="middle" font-size="26" font-weight="700" fill="{color}" font-family="'Inter',-apple-system,sans-serif">{_esc(score)}</text>
+  <text x="{cx}" y="{cy+14}" text-anchor="middle" font-size="13" fill="#6c757d" font-family="'Inter',-apple-system,sans-serif">/100</text>
+  <text x="{cx}" y="{cy+32}" text-anchor="middle" font-size="16" font-weight="700" fill="{color}" font-family="'Inter',-apple-system,sans-serif">Grade {_esc(grade)}</text>
 </svg>"""
 
 # ── TLS Certificate Card ──────────────────────────────────────────────────────
 def _tls_card(test_04: Optional[Dict]) -> str:
     if not test_04 or test_04.get("status") == "error":
         return """<div class="card p-3 h-100">
-            <h6 class="fw-bold text-muted text-uppercase mb-3" style="font-size:.7rem;letter-spacing:.1em">TLS Certificate</h6>
+            <div class="section-title">TLS Certificate</div>
             <p class="text-muted small">TLS data unavailable</p>
         </div>"""
     details = test_04.get("details", {})
@@ -193,7 +187,7 @@ def _tls_card(test_04: Optional[Dict]) -> str:
         elif days_left <= 14:
             expiry_html = f'<span class="badge bg-danger">CRITICAL – EXPIRES SOON ({days_left}d)</span>'
         elif days_left <= 45:
-            expiry_html = f'<span class="badge bg-warning text-dark">⚠ {days_left} days remaining</span>'
+            expiry_html = f'<span class="badge bg-warning text-dark">{days_left} days remaining</span>'
         else:
             expiry_html = f'<span class="badge bg-success">{days_left} days</span>'
 
@@ -206,7 +200,7 @@ def _tls_card(test_04: Optional[Dict]) -> str:
     pfs_badge = "✅ Supported" if pfs else "❌ Not supported"
 
     return f"""<div class="card p-3 h-100">
-    <h6 class="fw-bold text-muted text-uppercase mb-3" style="font-size:.7rem;letter-spacing:.1em">TLS Certificate</h6>
+    <div class="section-title">TLS Certificate</div>
     <div class="small">
         <p class="mb-1"><strong>Subject:</strong> {subject}</p>
         <p class="mb-1"><strong>Issuer:</strong> {issuer}</p>
@@ -258,8 +252,6 @@ def _module_bars(tests: Dict) -> str:
     return bars if bars else '<p class="text-muted small">No module scores available</p>'
 
 # ── Test modules summary table ────────────────────────────────────────────────
-# FIX #7: Added tailored branch for test_06_info_disclosure
-# FIX #6: Added fetch_failures for test_01, partial scan warning for test_06
 def _test_summary(key: str, t: Dict) -> str:
     """Format a human-readable summary for the test module table."""
     summary_data = t.get("summary", {})
@@ -279,7 +271,6 @@ def _test_summary(key: str, t: Dict) -> str:
         vuln = t.get("vulnerable_count", 0)
         return f"{libs} libraries detected | {vuln} vulnerable"
     if key == "test_06_info_disclosure":
-        # FIX #7: Use actual summary_stats structure
         summary_stats = summary_data.get("summary_stats", {}) if isinstance(summary_data, dict) else {}
         total_findings = summary_stats.get("total_findings", 0)
         paths_checked = summary_stats.get("paths_checked", 0)
@@ -288,9 +279,9 @@ def _test_summary(key: str, t: Dict) -> str:
         parts = [f"{total_findings} findings across {paths_checked}/{paths_total} paths checked"]
         if partial:
             remaining = paths_total - paths_checked
+            # allowed: single ⚠ for partial-scan warning
             parts.append(f"⚠ Partial scan – {remaining} paths not checked")
         return " | ".join(parts)
-    # fallback: summary text or title
     if isinstance(summary_data, dict):
         return " | ".join(f"{_esc(k)}: {_esc(v)}" for k, v in summary_data.items())
     return _esc(t.get("title", "—"))
@@ -326,7 +317,6 @@ def _test_rows(tests: Dict) -> str:
     return rows or '<tr><td colspan="5" class="text-muted text-center">No test data</td></tr>'
 
 # ── TLS Details collapsible section ──────────────────────────────────────────
-# FIX #2: Corrected OCSP/CT SCTs key names and chain_valid rendering
 def _tls_details_section(test_04: Optional[Dict]) -> str:
     if not test_04 or test_04.get("status") == "error":
         return ""
@@ -335,20 +325,14 @@ def _tls_details_section(test_04: Optional[Dict]) -> str:
     ciphers = details.get("ciphers", {})
     protocols = details.get("protocols", {})
     
-    # FIX #2: Use correct key names from test_04_ssl_tls.py output
     ocsp_stapling = details.get("ocsp_stapling")
     ct_total = details.get("ct_scts_total", 0)
     ct_tls_ext = details.get("ct_scts_tls_ext", 0)
     ct_cert = details.get("ct_scts_cert", 0)
     chain_valid = details.get("chain_valid")
     
-    # FIX #2: Render OCSP stapling properly
     ocsp_html = "✅ Supported" if ocsp_stapling else "❌ Not supported"
-    
-    # FIX #2: Render CT SCTs with breakdown
     ct_html = f"{ct_total} total (TLS extension: {ct_tls_ext}, embedded in cert: {ct_cert})" if ct_total > 0 else "—"
-    
-    # FIX #2: Render chain_valid as badge
     chain_html = '✅ <span class="badge bg-success">Valid</span>' if chain_valid else '❌ <span class="badge bg-danger">Invalid</span>'
 
     breakdown_rows = ""
@@ -374,9 +358,9 @@ def _tls_details_section(test_04: Optional[Dict]) -> str:
         proto_rows += f'<tr><td>{proto_esc}</td><td>{icon}</td></tr>'
 
     return f"""<div class="card mb-4">
-    <div class="card-header">
-        <button class="btn btn-link text-decoration-none p-0 w-100 text-start" type="button" data-bs-toggle="collapse" data-bs-target="#tlsDetailsCollapse">
-            🔐 TLS Detailed Analysis
+    <div class="card-header py-2">
+        <button class="btn btn-link text-decoration-none p-0 w-100 text-start section-title" type="button" data-bs-toggle="collapse" data-bs-target="#tlsDetailsCollapse">
+            TLS Detailed Analysis
         </button>
     </div>
     <div class="collapse" id="tlsDetailsCollapse">
@@ -404,7 +388,6 @@ def _tls_details_section(test_04: Optional[Dict]) -> str:
 </div>"""
 
 # ── Library Detail Card ───────────────────────────────────────────────────────
-# FIX #6: New card showing library details from test_02_frontend_libs
 def _library_card(test_02: Optional[Dict]) -> str:
     if not test_02 or test_02.get("status") == "error":
         return ""
@@ -421,7 +404,6 @@ def _library_card(test_02: Optional[Dict]) -> str:
         vulnerable = lib.get("vulnerable", False)
         cve = _esc(lib.get("cve", ""))
         sev = lib.get("severity", "")
-        sev_color = SEV_COLORS.get(sev.lower(), "#6c757d")
         
         if vulnerable and cve:
             status_badge = f'<span class="badge bg-danger">Vulnerable ({cve})</span>'
@@ -443,7 +425,7 @@ def _library_card(test_02: Optional[Dict]) -> str:
         return ""
     
     return f"""<div class="card p-3 h-100">
-    <h6 class="fw-bold text-muted text-uppercase mb-3" style="font-size:.7rem;letter-spacing:.1em">Frontend Libraries</h6>
+    <div class="section-title">Frontend Libraries</div>
     <div class="table-responsive">
         <table class="table table-sm table-bordered mb-0">
             <thead>
@@ -469,19 +451,18 @@ def _tech_stack_card(data: Dict) -> str:
     waf = _esc(data.get("waf") or "None detected")
     test_01 = tests.get("test_01_secrets", {})
     scanned_js = test_01.get("summary", {}).get("scanned_urls", [])
-    # Filter sensitive paths (simplified: keep only .js files)
-    js_list = [url for url in scanned_js if isinstance(url, str) and url.endswith(".js")][:10]  # max 10
+    js_list = [url for url in scanned_js if isinstance(url, str) and url.endswith(".js")][:10]
     js_html = "<br>".join(_esc(url) for url in js_list) if js_list else "None"
 
     resources = test_01.get("summary", {}).get("resources_scanned", 0)
     dedup_count = data.get("deduplicated_count", 0)
 
     return f"""<div class="card mb-4">
-    <div class="card-header"><strong>🧰 Tech Stack &amp; Scan Metadata</strong></div>
+    <div class="card-header py-2"><div class="section-title">Tech Stack &amp; Scan Metadata</div></div>
     <div class="card-body">
         <p><strong>Tech Stack Detected:</strong> {tech_items}</p>
         <p><strong>WAF Detected:</strong> {waf}</p>
-        <p><strong>Scanned JS Files (sample):</strong><br><code class="small">{js_html}</code></p>
+        <p><strong>Scanned JS Files (sample):</strong><br><code class="small mono">{js_html}</code></p>
         <p><strong>Resources Scanned:</strong> {resources}</p>
         <p><strong>Deduplicated Findings Count:</strong> {dedup_count}</p>
     </div>
@@ -493,7 +474,7 @@ def _evidence_html(f: Dict) -> str:
     if not evidence:
         return "—"
     evidence_esc = _esc(evidence)
-    return f'''<details><summary class="small text-muted" style="cursor:pointer">Show evidence</summary><pre class="p-2 bg-light rounded small mt-1">{evidence_esc}</pre></details>'''
+    return f'''<details><summary class="small text-muted" style="cursor:pointer">Show evidence</summary><pre class="p-2 bg-light rounded small mt-1 mono">{evidence_esc}</pre></details>'''
 
 # ── PoC expandable ───────────────────────────────────────────────────────────
 def _poc_html(f: Dict) -> str:
@@ -501,10 +482,9 @@ def _poc_html(f: Dict) -> str:
     if not poc:
         return "—"
     poc_esc = _esc(poc)
-    return f'''<details><summary class="small text-danger" style="cursor:pointer">▶ PoC</summary><div class="bg-dark rounded p-2 mt-1"><code class="text-light small">{poc_esc}</code></div></details>'''
+    return f'''<details><summary class="small text-danger" style="cursor:pointer">▶ PoC</summary><div class="bg-dark rounded p-2 mt-1"><code class="text-light small mono">{poc_esc}</code></div></details>'''
 
 # ── Remediation expandable ──────────────────────────────────────────────────
-# FIX #5: Replaced hard truncation with expandable details pattern
 def _remediation_html(f: Dict) -> str:
     remediation = f.get("remediation", "")
     if not remediation:
@@ -513,21 +493,20 @@ def _remediation_html(f: Dict) -> str:
     preview = remediation_esc[:100]
     if len(remediation_esc) > 100:
         preview += "…"
-    return f'''<details><summary class="small" style="cursor:pointer">{preview}</summary><pre class="p-2 bg-light rounded small mt-1">{remediation_esc}</pre></details>'''
+    return f'''<details><summary class="small" style="cursor:pointer">{preview}</summary><pre class="p-2 bg-light rounded small mt-1 mono">{remediation_esc}</pre></details>'''
 
 # ── Findings table row ───────────────────────────────────────────────────────
-# FIX #4: Use _effort_from_finding for robust effort classification
 def _findings_row(i: int, f: Dict) -> str:
     sev = (f.get("severity") or "info").lower()
     color = _severity_color(sev)
     p_label, timeframe, p_color = _priority(sev)
     impact = _impact(sev)
-    effort = _effort_from_finding(f)  # FIX #4: Use context-aware effort inference
+    effort = _effort_from_finding(f)
     evidence = _evidence_html(f)
     poc = _poc_html(f)
     title = _esc(f.get("title", "No title"))
     desc = _esc(f.get("description", ""))
-    remediation = _remediation_html(f)  # FIX #5: Expandable remediation
+    remediation = _remediation_html(f)
     cwe = f.get("cwe", "")
     owasp = f.get("owasp", "")
     # CWE link
@@ -556,6 +535,97 @@ def _findings_row(i: int, f: Dict) -> str:
         <td>{poc}</td>
     </tr>"""
 
+# ── Findings by Module collapsible section ──────────────────────────────────
+# ADDITION: Groups findings per test module, auto-expands critical/high.
+def _findings_by_module(tests: Dict) -> str:
+    """
+    Generates a collapsible section with one <details> block per module.
+    Each block shows that module's own findings in a mini-table.
+    Expands modules containing critical or high findings by default.
+    Uses the findings list stored in each test module (not the global aggregated list).
+    """
+    order = [
+        ("test_01_secrets", "Secrets Detection"),
+        ("test_02_frontend_libs", "Frontend Libraries"),
+        ("test_04_ssl_tls", "SSL/TLS"),
+        ("test_05_security_headers", "Security Headers"),
+        ("test_06_info_disclosure", "Info Disclosure"),
+    ]
+    blocks = ""
+    for key, label in order:
+        t = tests.get(key)
+        if not t:
+            continue
+        # Module overall status
+        status = t.get("status", "unknown")
+        icon = STATUS_ICON.get(status.lower(), "❓")
+        severity = t.get("severity", "info")
+        score = t.get("score")
+        grade = t.get("grade", "")
+        score_display = ""
+        if score is not None:
+            score_display = f"{score}/100"
+            if grade:
+                score_display += f" ({_esc(grade)})"
+        else:
+            score_display = _esc(status).upper()
+
+        # Get this module's own findings, deduplicate
+        raw_mod_findings = t.get("findings", [])
+        mod_findings = _deduplicate(raw_mod_findings)
+        has_crit_high = any(
+            f.get("severity", "").lower() in ("critical", "high")
+            for f in mod_findings
+        )
+        # Build header row
+        sev_color = SEV_COLORS.get(severity.lower(), "#6c757d")
+        header_html = f"""<div class="d-flex justify-content-between align-items-center">
+            <span>{label}</span>
+            <span>
+                {icon}
+                <span class="badge" style="background:{sev_color}">{_esc(severity).upper()}</span>
+                <span class="ms-2">{score_display}</span>
+            </span>
+        </div>"""
+
+        rows = ""
+        idx = 1
+        for f in mod_findings:
+            rows += _findings_row(idx, f)
+            idx += 1
+        if not rows:
+            rows = '<tr><td colspan="11" class="text-muted text-center py-2">No findings recorded</td></tr>'
+
+        open_attr = "open" if has_crit_high else ""
+        blocks += f"""<details class="card mb-3" {open_attr}>
+            <summary class="card-header py-2" style="cursor:pointer; list-style:none;">
+                <div class="section-title mb-0" style="border-bottom:none;">{header_html}</div>
+            </summary>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>#</th>
+                                <th>Severity</th>
+                                <th>Finding</th>
+                                <th>Evidence</th>
+                                <th>Impact</th>
+                                <th>Effort</th>
+                                <th>Priority</th>
+                                <th>Recommendation</th>
+                                <th>OWASP</th>
+                                <th>CWE</th>
+                                <th>PoC</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                </div>
+            </div>
+        </details>"""
+    return blocks or '<p class="text-muted">No module data available.</p>'
+
 # ── Main HTML builder ─────────────────────────────────────────────────────────
 def build_html(data: Dict[str, Any]) -> str:
     # FIX #1: All dynamic values are now escaped via _esc() helper throughout
@@ -579,9 +649,9 @@ def build_html(data: Dict[str, Any]) -> str:
     #   - passing_info: status=pass, severity=info  -> excluded from table, shown in "Passing Checks"
     #   - hidden_info: severity=info, status!=pass   -> hidden by default but available via filter
     #   - actionable: rest (non-info, non-pass)
-    passing_info = []      # pass+info
-    hidden_info = []       # info, not pass
-    actionable = []        # everything else
+    passing_info = []
+    hidden_info = []
+    actionable = []
 
     for f in all_unique:
         sev = (f.get("severity") or "").lower()
@@ -593,20 +663,14 @@ def build_html(data: Dict[str, Any]) -> str:
         else:
             actionable.append(f)
 
-    # FIX #3: Also pull passing checks from each module's passing_checks key
-    # This addresses data-loss from test_05_security_headers which returns passing
-    # checks separately instead of mixing them into findings.
-    # Ideally main_scanner.py should fold each module's passing_checks into the
-    # unified findings list (as status="pass") so future modules don't need this.
+    # Also pull passing checks from each module's passing_checks key
     for module_data in tests_dict.values():
         if not isinstance(module_data, dict):
             continue
         module_passing = module_data.get("passing_checks", [])
         for f in module_passing:
-            # Normalize to dict if needed
             if not isinstance(f, dict):
                 continue
-            # Deduplicate by title against existing passing_info
             title = (f.get("title") or "").strip().lower()
             if title:
                 already_exists = any(
@@ -614,7 +678,6 @@ def build_html(data: Dict[str, Any]) -> str:
                     for p in passing_info
                 )
                 if not already_exists:
-                    # Ensure it has severity=info, status=pass for consistency
                     normalized = dict(f)
                     normalized.setdefault("severity", "info")
                     normalized.setdefault("status", "pass")
@@ -684,17 +747,12 @@ def build_html(data: Dict[str, Any]) -> str:
             rec_short.add(rem)
         else:
             rec_long.add(rem)
-    # Deduplicate across buckets: remove lower-priority duplicates
+    # Deduplicate across buckets
     rec_short -= rec_imm
     rec_long -= rec_imm | rec_short
     rec_imm_html = "".join(f'<li class="list-group-item">{_esc(r)}</li>' for r in sorted(rec_imm)) or '<li class="list-group-item text-muted">No immediate actions</li>'
     rec_short_html = "".join(f'<li class="list-group-item">{_esc(r)}</li>' for r in sorted(rec_short)) or '<li class="list-group-item text-muted">No short-term actions</li>'
     rec_long_html = "".join(f'<li class="list-group-item">{_esc(r)}</li>' for r in sorted(rec_long)) or '<li class="list-group-item text-muted">No long-term actions</li>'
-
-    # Chart data
-    sev_labels = ["Critical", "High", "Medium", "Low"]
-    sev_data = [summary_counts["critical"], summary_counts["high"], summary_counts["medium"], summary_counts["low"]]
-    sev_colors_js = [SEV_COLORS[c] for c in ["critical", "high", "medium", "low"]]
 
     # Module scores bars
     bars = _module_bars(tests_dict)
@@ -703,7 +761,7 @@ def build_html(data: Dict[str, Any]) -> str:
     test_04 = tests_dict.get("test_04_ssl_tls")
     tls_card = _tls_card(test_04)
 
-    # FIX #6: Library detail card
+    # Library detail card
     test_02 = tests_dict.get("test_02_frontend_libs")
     library_card = _library_card(test_02)
 
@@ -719,6 +777,9 @@ def build_html(data: Dict[str, Any]) -> str:
     # Gauge
     gauge = _gauge_svg(score, grade)
 
+    # Findings by module (new)
+    findings_by_module = _findings_by_module(tests_dict)
+
     # Build HTML
     html_output = f"""<!DOCTYPE html>
 <html lang="en">
@@ -727,24 +788,64 @@ def build_html(data: Dict[str, Any]) -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bravo6 Security Report — {url}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
         :root {{
             --brand-dark: #0f172a;
             --brand-accent: #3b82f6;
         }}
-        body {{ background: #f1f5f9; font-family: 'Segoe UI', system-ui, sans-serif; font-size: .9rem; }}
+        body {{
+            background: #f1f5f9;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: .9rem;
+        }}
+        .mono, code, pre {{
+            font-family: 'JetBrains Mono', 'Consolas', monospace;
+        }}
         .bravo-header {{ background: var(--brand-dark); color: #fff; padding: 1.5rem 1rem .75rem; }}
         .bravo-header h1 {{ font-size: 1.4rem; font-weight: 700; letter-spacing: .05em; }}
-        .confidential-bar {{ background: #dc3545; color: #fff; font-size: .72rem; letter-spacing: .15em; font-weight: 600; text-align: center; padding: .25rem; }}
+        .confidential-bar {{
+            background: #dc3545; color: #fff; font-size: .72rem; letter-spacing: .15em;
+            font-weight: 600; text-align: center; padding: .25rem;
+        }}
         .card {{ border: none; box-shadow: 0 1px 3px rgba(0,0,0,.08); border-radius: .5rem; }}
         .stat-card {{ border-left: 4px solid; }}
+        /* FIX #3: Section title typography — prominent, high-contrast, with accent underline */
+        .section-title {{
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--brand-dark);
+            letter-spacing: 0;
+            margin-bottom: .5rem;
+            padding-bottom: .4rem;
+            border-bottom: 2px solid var(--brand-accent);
+            display: block;
+        }}
+        /* card-header adjustments for density and title integration */
+        .card-header {{
+            padding-top: .5rem;
+            padding-bottom: .5rem;
+        }}
+        .card-header .section-title {{
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
+        }}
         th {{ cursor: pointer; user-select: none; white-space: nowrap; }}
         th:hover {{ background: rgba(0,0,0,.05); }}
         details summary {{ list-style: none; }}
         details summary::-webkit-details-marker {{ display: none; }}
         .table th, .table td {{ vertical-align: middle; }}
         .progress {{ border-radius: 4px; background: #e2e8f0; }}
+        /* Dot style replacing emoji circles in tabs */
+        .dot {{
+            display: inline-block;
+            width: 0.6em;
+            height: 0.6em;
+            border-radius: 50%;
+            margin-right: .3em;
+            vertical-align: middle;
+        }}
         @media print {{
             .no-print {{ display: none !important; }}
             .card {{ box-shadow: none !important; border: 1px solid #dee2e6 !important; }}
@@ -753,19 +854,19 @@ def build_html(data: Dict[str, Any]) -> str:
 </head>
 <body>
 
-<!-- Confidentiality Banner -->
-<div class="confidential-bar">⚠ CONFIDENTIAL — INTERNAL USE ONLY — DO NOT DISTRIBUTE ⚠</div>
+<!-- Confidentiality Banner: decorative emoji removed, warning sign removed -->
+<div class="confidential-bar">CONFIDENTIAL — INTERNAL USE ONLY — DO NOT DISTRIBUTE</div>
 
 <!-- Header -->
 <div class="bravo-header">
     <div class="container-fluid">
         <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
             <div>
-                <h1>🛡 Bravo6 Security Report</h1>
+                <h1>Bravo6 Security Report</h1>
                 <p class="mb-0 text-light opacity-75">Target: <strong class="text-white">{url}</strong></p>
                 <small class="opacity-50">{scan_time} &nbsp;|&nbsp; Duration: {duration}s &nbsp;|&nbsp; Tests: {tests_run}</small>
             </div>
-            <button class="btn btn-outline-light btn-sm no-print align-self-center" onclick="window.print()">🖨 Print / Export PDF</button>
+            <button class="btn btn-outline-light btn-sm no-print align-self-center" onclick="window.print()">Print / Export PDF</button>
         </div>
     </div>
 </div>
@@ -778,7 +879,7 @@ def build_html(data: Dict[str, Any]) -> str:
         <!-- Executive Summary -->
         <div class="col-lg-5">
             <div class="card h-100 p-3">
-                <h6 class="fw-bold text-uppercase text-muted mb-3" style="font-size:.7rem;letter-spacing:.1em">Executive Summary</h6>
+                <div class="section-title">Executive Summary</div>
                 <p class="mb-1"><strong>Overall Rating:</strong>
                     <span class="badge fs-6" style="background:{_severity_color(grade) if grade in ('A','B','C','D','F') else '#6c757d'}">{grade}</span>
                     <span class="text-muted small"> ({score}/100)</span>
@@ -797,7 +898,7 @@ def build_html(data: Dict[str, Any]) -> str:
         <!-- Score Gauge -->
         <div class="col-lg-2 col-md-4">
             <div class="card h-100 p-3 text-center d-flex flex-column justify-content-center align-items-center">
-                <h6 class="fw-bold text-uppercase text-muted mb-2" style="font-size:.7rem;letter-spacing:.1em">Security Score</h6>
+                <div class="section-title">Security Score</div>
                 {gauge}
             </div>
         </div>
@@ -825,32 +926,34 @@ def build_html(data: Dict[str, Any]) -> str:
         </div>
     </div>
 
-    <!-- Row 2: Charts + Module Scores + TLS Card + Library Card -->
+    <!-- Row 2: Module Scores + TLS Certificate (no donut chart) -->
     <div class="row g-3 mb-4">
-        <div class="col-md-4">
+        <div class="col-md-6">
             <div class="card p-3 h-100">
-                <h6 class="fw-bold text-muted text-uppercase mb-3" style="font-size:.7rem;letter-spacing:.1em">Severity Distribution</h6>
-                <canvas id="sevChart" height="220"></canvas>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card p-3 h-100">
-                <h6 class="fw-bold text-muted text-uppercase mb-3" style="font-size:.7rem;letter-spacing:.1em">Module Scores</h6>
+                <div class="section-title">Module Scores</div>
                 {bars}
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-6">
             {tls_card}
         </div>
     </div>
 
-    <!-- Library Detail Card Row -->
+    <!-- Library Detail Card Row (if present) -->
     {library_card and f'<div class="row g-3 mb-4"><div class="col-md-12">{library_card}</div></div>' or ""}
 
-    <!-- Findings Table -->
+    <!-- Findings by Module (new collapsible per-module view) -->
+    <div class="card mb-4">
+        <div class="card-header py-2"><div class="section-title">Findings by Module</div></div>
+        <div class="card-body">
+            {findings_by_module}
+        </div>
+    </div>
+
+    <!-- Findings Table (global flat view, still useful) -->
     <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2 py-2">
-            <strong>🔍 Findings &amp; Priority Matrix</strong>
+            <div class="section-title mb-0">Findings &amp; Priority Matrix</div>
             <div class="d-flex gap-2 no-print flex-wrap">
                 <select class="form-select form-select-sm" id="sevFilter" onchange="filterTable()" style="width:auto">
                     <option value="non-info" selected>Non‑Info (default)</option>
@@ -897,14 +1000,14 @@ def build_html(data: Dict[str, Any]) -> str:
     <!-- Tech Stack & Scan Metadata -->
     {tech_card}
 
-    <!-- Recommendations -->
+    <!-- Recommendations with colored dots instead of emoji circles -->
     <div class="card mb-4">
-        <div class="card-header"><strong>📋 Consolidated Recommendations</strong></div>
+        <div class="card-header py-2"><div class="section-title">Consolidated Recommendations</div></div>
         <div class="card-body">
             <ul class="nav nav-tabs mb-3" role="tablist">
-                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-imm" type="button">🔴 Immediate (48h)</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-short" type="button">🟠 Short Term (1w)</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-long" type="button">🟡 Medium+ (2w+)</button></li>
+                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-imm" type="button"><span class="dot" style="background:#dc3545"></span>Immediate (48h)</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-short" type="button"><span class="dot" style="background:#fd7e14"></span>Short Term (1w)</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-long" type="button"><span class="dot" style="background:#ffc107"></span>Medium+ (2w+)</button></li>
             </ul>
             <div class="tab-content">
                 <div class="tab-pane fade show active" id="tab-imm"><ul class="list-group list-group-flush">{rec_imm_html}</ul></div>
@@ -914,15 +1017,15 @@ def build_html(data: Dict[str, Any]) -> str:
         </div>
     </div>
 
-    <!-- Passing Checks -->
+    <!-- Passing Checks (functional ✅ kept inside list, header cleaned) -->
     <div class="card mb-4">
-        <div class="card-header"><strong>✅ Passing Checks</strong></div>
+        <div class="card-header py-2"><div class="section-title">Passing Checks</div></div>
         <ul class="list-group list-group-flush">{pass_html}</ul>
     </div>
 
     <!-- Test Modules Summary Table -->
     <div class="card mb-4">
-        <div class="card-header"><strong>🧪 Test Module Results</strong></div>
+        <div class="card-header py-2"><div class="section-title">Test Module Results</div></div>
         <div class="card-body p-0">
             <div class="table-responsive">
                 <table class="table table-sm table-bordered mb-0">
@@ -945,16 +1048,7 @@ def build_html(data: Dict[str, Any]) -> str:
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// ── Charts ──────────────────────────────────────────────────────────────────
-const sevCtx = document.getElementById('sevChart');
-new Chart(sevCtx, {{
-    type: 'doughnut',
-    data: {{
-        labels: {sev_labels},
-        datasets: [{{ data: {sev_data}, backgroundColor: {sev_colors_js}, borderWidth:2, borderColor:'#fff' }}]
-    }},
-    options: {{ plugins: {{ legend: {{ position:'bottom', labels:{{ font:{{ size:11 }} }} }} }}, cutout:'65%' }}
-}});
+// Chart.js removed (donut chart eliminated)
 
 // ── Filter & Sort ───────────────────────────────────────────────────────────
 function filterTable() {{
