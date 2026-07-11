@@ -1,75 +1,49 @@
-
-name: Terraform Plan
+name: Terraform CI
 
 on:
-  # pull_request:
-  #  paths:
-  #    - 'terraform/**'
-  # push:
-  #  branches: [ main ]
-  #  paths:
-  #   - 'terraform/**'
-  workflow_dispatch:     # Manual trigger
-    
+  push:
+    branches: [main]
+    paths: ['terraform/**']
+  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
-
-env:
-  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  ARM_USE_OIDC: "true"
 
 jobs:
-  terraform-plan:
+  plan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
 
-      - name: Azure Login via OIDC
-        uses: azure/login@v2
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
+      - run: terraform fmt -check -recursive
         working-directory: ./terraform
 
-      - name: Terraform Init
-        run: terraform init
+      - run: terraform init
         working-directory: ./terraform
 
-      - name: Terraform Validate
-        run: terraform validate
+      - run: terraform validate
         working-directory: ./terraform
 
-      - name: Run Checkov Security Scan
-        uses: bridgecrewio/checkov-action@master
+      - uses: bridgecrewio/checkov-action@master
         with:
           directory: ./terraform
-          framework: terraform
-          output_format: cli,sarif
           soft_fail: true
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan.binary
+          
+      - run: terraform plan -out=tfplan.binary
         working-directory: ./terraform
 
-      - name: Upload Plan Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ github.sha }}
           path: ./terraform/tfplan.binary
-          retention-days: 7
-
+          retention-days: 3

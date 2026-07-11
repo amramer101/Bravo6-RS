@@ -1,50 +1,41 @@
-name: Terraform Apply
-
+name: Terraform CD
 on:
-  workflow_dispatch:     # Manual trigger
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to apply'
+        required: true
 
 permissions:
   id-token: write
   contents: read
-  actions: read
-
-env:
-  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  ARM_USE_OIDC: "true"
 
 jobs:
-  terraform-apply:
+  apply:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit_sha }}
 
-      - name: Azure Login via OIDC
-        uses: azure/login@v2
+      - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
 
-      - name: Terraform Init
-        run: terraform init
+      - run: terraform init
         working-directory: ./terraform
 
-      - name: Download Last Plan
-        uses: dawidd6/action-download-artifact@v2
+      - uses: dawidd6/action-download-artifact@v2
         with:
           workflow: terraform_ci.yml
-          name: tfplan                  
+          name: tfplan-${{ github.event.inputs.commit_sha }}
           path: ./terraform
-          branch: main              
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan.binary
+      - run: terraform apply -auto-approve tfplan.binary
         working-directory: ./terraform

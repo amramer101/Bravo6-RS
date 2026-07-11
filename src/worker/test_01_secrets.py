@@ -5,6 +5,10 @@ Bravo6 Ultimate Secrets Hunter (v6.2.1 – Clean Summary)
 - Fixed misclassification: non‑secret evidence (e.g. Tech Stack)
   no longer inflates secret counts or severity.
 - All previous optimizations retained.
+- CRITICAL: Added proper logging for failed JS fetches (was swallowing all exceptions silently)
+- HIGH: Added internal timeout handling to return partial results on timeout
+- MEDIUM: Enhanced AWS key pair detection with safe PoC (no real values in poc field)
+- LOW: Made soft-404 probe path random per scan to avoid caching/special-casing
 """
 
 import argparse
@@ -12,13 +16,17 @@ import asyncio
 import base64
 import difflib
 import json
+import logging
 import math
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 # ────────────────────────────────────────────── Configuration ──────────────────────────────────────────────
 USER_AGENT = "Bravo6-SecretsHunter/6.2.1"
@@ -44,7 +52,6 @@ SENSITIVE_PATHS = [
     "/private.pem", "/key.pem"
 ]
 
-GENERIC_403_TEST_PATH = "/Bravo6-Nonexistent-Test-404"
 DEFAULT_MIN_CONFIDENCE = 75
 
 # ────────────────────────────────────────────── False‑positive filters ──────────────────────────────────────
@@ -80,6 +87,7 @@ SOFT_404_PHRASES = [
     "Page not found",
 ]
 
+# ────────────────────────────────────────────── Helper Functions ──────────────────────────────────────────────
 def _looks_like_placeholder(value: str) -> bool:
     if not value:
         return True
@@ -138,6 +146,7 @@ def _is_soft_404(html: str) -> bool:
     return False
 
 # ────────────────────────────────────────────── Active Verification ──────────────────────────────────────────
+
 async def _verify_with_retry(verifier, key, session, *args) -> dict:
     try:
         return await verifier(key, session, *args)
@@ -305,30 +314,33 @@ def _extract_context(text: str, start: int, end: int) -> str:
 
 def _poc_command(secret_type: str, key: str, url: str = "") -> str:
     if "OpenAI" in secret_type:
-        return f'curl https://api.openai.com/v1/models -H "Authorization: Bearer {key}"'
+        return 'curl https://api.openai.com/v1/models -H "Authorization: Bearer <API_KEY>" (see evidence field)'
     if "Stripe" in secret_type:
-        return f'curl https://api.stripe.com/v1/balance -H "Authorization: Bearer {key}"'
+        return 'curl https://api.stripe.com/v1/balance -H "Authorization: Bearer <API_KEY>" (see evidence field)'
     if "GitHub" in secret_type:
-        return f'curl https://api.github.com/user -H "Authorization: token {key}"'
+        return 'curl https://api.github.com/user -H "Authorization: token <TOKEN>" (see evidence field)'
     if "Slack" in secret_type:
-        return f'curl https://slack.com/api/auth.test -H "Authorization: Bearer {key}"'
+        return 'curl https://slack.com/api/auth.test -H "Authorization: Bearer <TOKEN>" (see evidence field)'
     if "SendGrid" in secret_type:
-        return f'curl https://api.sendgrid.com/v3/user/profile -H "Authorization: Bearer {key}"'
+        return 'curl https://api.sendgrid.com/v3/user/profile -H "Authorization: Bearer <API_KEY>" (see evidence field)'
     if "Mailgun" in secret_type:
-        return f'curl -u "api:{key}" https://api.mailgun.net/v3/domains'
+        return 'curl -u "api:<API_KEY>" https://api.mailgun.net/v3/domains (see evidence field)'
     if "MapBox" in secret_type:
-        return f'curl "https://api.mapbox.com/tokens/v1?access_token={key}"'
+        return 'curl "https://api.mapbox.com/tokens/v1?access_token=<API_KEY>" (see evidence field)'
     if "Database" in secret_type:
-        return f"Use connection string: {key}"
+        return "Use connection string from evidence field"
     if "Bearer" in secret_type or "JWT" in secret_type:
-        return f'curl -H "Authorization: Bearer {key}" <TARGET_URL>'
+        return 'curl -H "Authorization: Bearer <TOKEN>" <TARGET_URL> (see evidence field)'
     if "AWS" in secret_type:
         if "Secret" in secret_type:
-            return f"aws sts get-caller-identity --secret-access-key {key} (needs Access Key)"
-        return f"aws sts get-caller-identity --access-key-id {key} (needs Secret Key)"
+            return "aws sts get-caller-identity --secret-access-key <SECRET_KEY> (needs Access Key, see evidence field)"
+        return "aws sts get-caller-identity --access-key-id <ACCESS_KEY> (needs Secret Key, see evidence field)"
     if "AWS4" in secret_type:
-        return f"AWS4 signing key: {key}. Needs secret access key for full verification."
-    return f"Manual verification for {secret_type}."
+        return "AWS4 signing key detected. Needs secret access key for full verification (see evidence field)."
+    if secret_type == "AWS Key Pair":
+        # FIX #3: Never include real secret values in PoC - reference evidence field instead
+        return "aws sts get-caller-identity --access-key-id <ACCESS_KEY> --secret-access-key <SECRET_KEY> (see evidence field)"
+    return f"Manual verification required for {secret_type} (see evidence field)."
 
 def _risk_description(secret_type: str, verified: bool, note: str = "") -> str:
     if verified:
@@ -412,6 +424,136 @@ def _fingerprint_from_headers(resp_headers: Dict[str, str], raw_set_cookies: Lis
                 tech.append(name.capitalize())
             break
     return list(set(tech))
+
+# ────────────────────────────────────────────── Fetch helpers ────────────────────────────────────────────────
+
+async def _fetch_text(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
+    """Fetch text content from a URL with size limit."""
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=True) as resp:
+            status = resp.status
+            if status != 200:
+                return None, status, f"HTTP {status}"
+            content = await resp.content.read(max_bytes)
+            if len(content) > max_bytes:
+                return None, status, "Too large"
+            return content.decode("utf-8", errors="replace"), status, None
+    except Exception as e:
+        return None, None, str(e)
+
+async def _fetch_full(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
+    """Fetch full content from a URL."""
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=True) as resp:
+            content = await resp.content.read(max_bytes)
+            text = content.decode("utf-8", errors="replace") if content else ""
+            return resp.status, text
+    except Exception as e:
+        return None, None
+
+# FIX #4: Soft-404 probe path is now generated per-scan with random component
+async def _get_generic_403_info(session, base_url):
+    """
+    FIX #4: Generate random probe path per scan to avoid caching/special-casing.
+    OLD: Used static path /Bravo6-Nonexistent-Test-404 which could be cached or special-cased.
+    NEW: Uses random component per scan: /bravo6-probe-{uuid[:10]}
+    """
+    probe_path = f"/bravo6-probe-{uuid.uuid4().hex[:10]}"
+    test_url = urljoin(base_url, probe_path)
+    status, body = await _fetch_full(session, test_url, max_bytes=8192, timeout=5)
+    return (status == 403), body if status == 403 else ""
+
+def _extract_scripts(soup_or_html, base_url, soup_obj=None):
+    if soup_obj is None:
+        soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
+    else:
+        soup = soup_obj
+    external, inline = [], []
+    for tag in soup.find_all("script"):
+        src = tag.get("src")
+        if src:
+            abs_url = urljoin(base_url, src.strip())
+            if urlparse(abs_url).scheme in ("http", "https"):
+                external.append(abs_url)
+        else:
+            content = (tag.string or "").strip()
+            if content and len(content) <= INLINE_SCRIPT_MAX_BYTES:
+                inline.append(content)
+    return list(dict.fromkeys(external))[:MAX_JS_FILES], inline[:MAX_INLINE_SCRIPTS]
+
+def _find_risky_files(soup_or_html, base_url, soup_obj=None):
+    if soup_obj is None:
+        soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
+    else:
+        soup = soup_obj
+    risky = set()
+    for tag in soup.find_all(True):
+        for attr in ("src", "href", "content"):
+            val = tag.get(attr)
+            if val:
+                abs_url = urljoin(base_url, val.strip())
+                if any(abs_url.endswith(ext) for ext in (
+                        ".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) \
+                   or "secret" in abs_url.lower():
+                    risky.add(abs_url)
+    if isinstance(soup_or_html, str):
+        for m in re.finditer(r'https?://[^\s"\'<>]+', soup_or_html):
+            u = m.group(0)
+            if any(u.endswith(ext) for ext in (
+                    ".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) \
+               or "secret" in u.lower():
+                risky.add(u)
+    return list(risky)[:10]
+
+# FIX #1: Proper exception handling with logging for JS fetches
+async def _fetch_one_js(
+    js_url: str,
+    fetch_js_func: Optional[callable],
+    js_cache: Optional[dict],
+    session: Optional[aiohttp.ClientSession] = None
+) -> Optional[str]:
+    """
+    FIX #1: CRITICAL - Do not let a single failed JS fetch disappear without a trace.
+    OLD: except Exception: return None  (swallowed all errors silently)
+    NEW: Log all failures with type and message, track in summary.
+
+    Uses fetch_js callable if provided (from orchestrator), otherwise falls back to session.
+    Respects js_cache for deduplication.
+
+    FIX #5: VERIFY - fetch_js signature is callable(js_url) -> str as provided by main_scanner.
+    Called with single positional argument (the URL) as required.
+    """
+    # Check cache first
+    if js_cache is not None and js_url in js_cache:
+        return js_cache[js_url]
+
+    # Try using the provided fetch_js callable (from orchestrator)
+    if fetch_js_func is not None:
+        try:
+            # FIX #5: Call fetch_js with single positional argument - the URL
+            content = await fetch_js_func(js_url)
+            if content is not None and js_cache is not None:
+                js_cache[js_url] = content
+            return content
+        except Exception as exc:
+            # FIX #1: Log the failure instead of swallowing it
+            logger.debug(f"Failed to fetch JS {js_url} via fetch_js: {type(exc).__name__}: {exc}")
+            return None
+
+    # Fall back to direct session fetch if no fetch_js provided
+    if session is not None:
+        try:
+            content, status, error = await _fetch_text(session, js_url)
+            if content is not None and js_cache is not None:
+                js_cache[js_url] = content
+            return content
+        except Exception as exc:
+            # FIX #1: Log the failure instead of swallowing it
+            logger.debug(f"Failed to fetch JS {js_url} via session: {type(exc).__name__}: {exc}")
+            return None
+
+    logger.debug(f"No fetch method available for JS {js_url}")
+    return None
 
 # ────────────────────────────────────────────── Core scanning ────────────────────────────────────────────────
 async def _scan_content(
@@ -535,7 +677,7 @@ async def _scan_content(
             findings.append(evidence)
             matched_spans.append((start, end))
 
-    # AWS Key Pair combination
+    # AWS Key Pair combination detection (FIX #3: Already present, PoC fixed to not include real values)
     if aws_access_keys and aws_secret_keys:
         for ak, ak_data in aws_access_keys.items():
             for sk, sk_data in aws_secret_keys.items():
@@ -552,7 +694,7 @@ async def _scan_content(
                         "verified": False,
                         "confidence": pair_conf,
                         "severity": "critical",
-                        "poc": f"aws sts get-caller-identity --access-key-id {ak} --secret-access-key {sk}",
+                        "poc": _poc_command("AWS Key Pair", ""),  # FIX #3: Uses safe PoC without real values
                         "risk": "AWS Access + Secret Key found – possible full account compromise.",
                         "context": _extract_context(content, ak_data["start"], sk_data["end"]),
                     })
@@ -587,7 +729,7 @@ async def _scan_content(
             "verified": verified_fb,
             "confidence": confidence_fb,
             "severity": severity_fb,
-            "poc": f"Firebase project {project_id} with key {_mask(apikey)}",
+            "poc": f"Firebase project {project_id} with key (see evidence field)",
             "risk": "Firebase configuration verified – API key is active." if verified_fb else "Firebase config exposed – may allow unauthorised access.",
             "context": _extract_context(content, start, end),
         }
@@ -629,76 +771,6 @@ async def _scan_content(
 
     return findings
 
-# ────────────────────────────────────────────── Fetch helpers ────────────────────────────────────────────────
-async def _fetch_text(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=True) as resp:
-            status = resp.status
-            if status != 200:
-                return None, status, "Not 200"
-            content = await resp.content.read(max_bytes)
-            if len(content) > max_bytes:
-                return None, status, "Too large"
-            return content.decode("utf-8", errors="replace"), status, None
-    except Exception as e:
-        return None, None, str(e)
-
-async def _fetch_full(session, url, max_bytes=FETCH_MAX_BYTES_JS, timeout=8):
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=True) as resp:
-            content = await resp.content.read(max_bytes)
-            text = content.decode("utf-8", errors="replace") if content else ""
-            return resp.status, text
-    except Exception as e:
-        return None, None
-
-def _extract_scripts(soup_or_html, base_url, soup_obj=None):
-    if soup_obj is None:
-        soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
-    else:
-        soup = soup_obj
-    external, inline = [], []
-    for tag in soup.find_all("script"):
-        src = tag.get("src")
-        if src:
-            abs_url = urljoin(base_url, src.strip())
-            if urlparse(abs_url).scheme in ("http", "https"):
-                external.append(abs_url)
-        else:
-            content = (tag.string or "").strip()
-            if content and len(content) <= INLINE_SCRIPT_MAX_BYTES:
-                inline.append(content)
-    return list(dict.fromkeys(external))[:MAX_JS_FILES], inline[:MAX_INLINE_SCRIPTS]
-
-def _find_risky_files(soup_or_html, base_url, soup_obj=None):
-    if soup_obj is None:
-        soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
-    else:
-        soup = soup_obj
-    risky = set()
-    for tag in soup.find_all(True):
-        for attr in ("src", "href", "content"):
-            val = tag.get(attr)
-            if val:
-                abs_url = urljoin(base_url, val.strip())
-                if any(abs_url.endswith(ext) for ext in (
-                        ".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) \
-                   or "secret" in abs_url.lower():
-                    risky.add(abs_url)
-    if isinstance(soup_or_html, str):
-        for m in re.finditer(r'https?://[^\s"\'<>]+', soup_or_html):
-            u = m.group(0)
-            if any(u.endswith(ext) for ext in (
-                    ".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) \
-               or "secret" in u.lower():
-                risky.add(u)
-    return list(risky)[:10]
-
-async def _get_generic_403_info(session, base_url):
-    test_url = urljoin(base_url, GENERIC_403_TEST_PATH)
-    status, body = await _fetch_full(session, test_url, max_bytes=8192, timeout=5)
-    return (status == 403), body if status == 403 else ""
-
 # ────────────────────────────────────────────── Main entry point ──────────────────────────────────────────────
 async def run(
     url: str,
@@ -706,7 +778,22 @@ async def run(
     verify_live: bool = False,
     session: aiohttp.ClientSession = None,
     min_confidence: int = DEFAULT_MIN_CONFIDENCE,
+    *,
+    js_cache: dict = None,
+    fetch_js: callable = None,
+    skip_js_lib_scan: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Main entry point for secrets detection.
+
+    FIX: Updated signature to match orchestrator expectations exactly:
+    - url, shared_page, verify_live, session, min_confidence as positional
+    - js_cache, fetch_js, skip_js_lib_scan as keyword-only
+
+    The orchestrator (main_scanner.py) calls this via introspection with these exact names.
+
+    Returns dict with: test_name, status, severity, title, description, summary, evidence, remediation
+    """
     target = url.strip()
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
@@ -724,16 +811,19 @@ async def run(
     findings = []
     resources_scanned = 0
     scanned_urls = []
+    fetch_failures = 0  # FIX #1: Track failed fetches for summary
     sem_verify = asyncio.Semaphore(MAX_CONCURRENT_VERIFIES)
     sem_js_fetch = asyncio.Semaphore(MAX_CONCURRENT_JS_FETCHES)
 
     resp_headers = {}
     raw_set_cookies = []
+
     try:
         html = None
         status = None
         soup_obj = None
 
+        # Use shared_page if provided by orchestrator
         if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
             html = shared_page.get("html", "")
             status = shared_page.get("status", 0)
@@ -750,7 +840,21 @@ async def run(
                         "test_name": "secrets_detection",
                         "status": "warning",
                         "title": f"HTTP {status} – could not fetch target",
-                        "evidence": []
+                        "severity": "high",
+                        "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
+                        "summary": {
+                            "total_secrets": 0,
+                            "verified_active": 0,
+                            "high_confidence_unverified": 0,
+                            "forbidden_files_count": 0,
+                            "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                            "resources_scanned": 0,
+                            "scanned_urls": [],
+                            "fetch_failures": 0,
+                            "tech_stack_detected": [],
+                        },
+                        "evidence": [],
+                        "remediation": "Check target URL accessibility."
                     }
                 resp_headers = {k.lower(): v for k, v in resp.headers.items()}
                 raw_set_cookies = resp.headers.getall("set-cookie")
@@ -760,7 +864,21 @@ async def run(
                         "test_name": "secrets_detection",
                         "status": "warning",
                         "title": f"HTML exceeds size limit ({FETCH_MAX_BYTES_HTML} bytes)",
-                        "evidence": []
+                        "severity": "medium",
+                        "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
+                        "summary": {
+                            "total_secrets": 0,
+                            "verified_active": 0,
+                            "high_confidence_unverified": 0,
+                            "forbidden_files_count": 0,
+                            "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                            "resources_scanned": 0,
+                            "scanned_urls": [],
+                            "fetch_failures": 0,
+                            "tech_stack_detected": [],
+                        },
+                        "evidence": [],
+                        "remediation": "Target page is too large to scan completely."
                     }
                 html = body_bytes.decode("utf-8", errors="replace")
                 soup_obj = BeautifulSoup(html, "html.parser")
@@ -770,7 +888,21 @@ async def run(
                 "test_name": "secrets_detection",
                 "status": "warning",
                 "title": "Empty response body",
-                "evidence": []
+                "severity": "medium",
+                "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
+                "summary": {
+                    "total_secrets": 0,
+                    "verified_active": 0,
+                    "high_confidence_unverified": 0,
+                    "forbidden_files_count": 0,
+                    "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                    "resources_scanned": 0,
+                    "scanned_urls": [],
+                    "fetch_failures": 0,
+                    "tech_stack_detected": [],
+                },
+                "evidence": [],
+                "remediation": "Target returned empty content."
             }
 
         tech_stack = _fingerprint_from_headers(resp_headers, raw_set_cookies)
@@ -789,8 +921,13 @@ async def run(
 
         is_generic_403, generic_403_body = await _get_generic_403_info(own_session, target)
 
+        # Extract scripts from HTML
         ext_urls, inline_scripts = _extract_scripts(html, target, soup_obj=soup_obj)
 
+        # FIX #2: Phase 1 - Fast scanning (HTML and inline scripts) - always completes
+        # This ensures we have partial results even if external JS scanning times out
+
+        # Scan inline scripts
         for idx, script in enumerate(inline_scripts):
             resources_scanned += 1
             def make_loc_fn(idx):
@@ -810,58 +947,127 @@ async def run(
                                             min_confidence=min_confidence)
                 findings.extend(f_dec)
 
-        async def _fetch_limited(js_url):
-            async with sem_js_fetch:
-                try:
-                    async with own_session.head(js_url, timeout=aiohttp.ClientTimeout(total=5)) as head_resp:
-                        if head_resp.status == 200:
-                            cl = head_resp.content_length
-                            if cl is not None and cl > JS_SIZE_LIMIT:
-                                return None, 200, "Skipped: Content-Length > 500KB"
-                except Exception:
-                    pass
-                return await _fetch_text(own_session, js_url)
-
-        tasks = [_fetch_limited(u) for u in ext_urls]
-        fetched = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, result in enumerate(fetched):
-            if isinstance(result, Exception) or result is None or result[0] is None:
-                continue
-            js_content, status_code, _ = result
-            if status_code != 200:
-                continue
-            resources_scanned += 1
-            scanned_urls.append(ext_urls[i])
-            filename = urlparse(ext_urls[i]).path.split("/")[-1] or "external.js"
-            def make_js_loc_fn(filename):
-                return lambda ln: f"{filename} line {ln}"
-            loc_fn = make_js_loc_fn(filename)
-            f = await _scan_content(js_content, loc_fn, own_session, True, sem_verify,
-                                    verify_live=verify_live, min_confidence=min_confidence)
-            findings.extend(f)
-            decoded_strings, method = _extract_decoded_strings(js_content)
-            if decoded_strings:
-                combined = "\n".join(decoded_strings)
-                def make_dec_js_loc_fn(filename, method):
-                    return lambda ln: f"{filename} (decoded {method}) line {ln}"
-                dec_loc_fn = make_dec_js_loc_fn(filename, method)
-                f_dec = await _scan_content(combined, dec_loc_fn, own_session, True, sem_verify,
-                                            decoded_method=method, verify_live=verify_live,
-                                            min_confidence=min_confidence)
-                findings.extend(f_dec)
-
+        # Scan HTML content
         def html_loc_fn(ln):
             return f"HTML line {ln}"
         f = await _scan_content(html, html_loc_fn, own_session, False, sem_verify,
                                 verify_live=verify_live, min_confidence=min_confidence)
         findings.extend(f)
 
+        # FIX #2: Phase 2 - External JS scanning with internal timeout
+        # Wrap external JS fetching in wait_for to catch timeouts and return partial results
+        external_findings = []
+        external_scanned = 0
+
+        async def _scan_external_js_phase():
+            """Scan all external JS files. Can be timed out."""
+            nonlocal external_scanned, fetch_failures
+            tasks = []
+            for u in ext_urls:
+                if skip_js_lib_scan:
+                    # Skip library scanning if requested
+                    if any(lib in u for lib in ['jquery', 'bootstrap', 'react', 'angular', 'vue', 'lodash', 'moment']):
+                        continue
+
+                async def fetch_and_scan(url):
+                    nonlocal fetch_failures
+                    async with sem_js_fetch:
+                        # FIX #1 & #5: Use _fetch_one_js which properly logs failures and uses fetch_js callable
+                        content = await _fetch_one_js(url, fetch_js, js_cache, own_session)
+                        if content is None:
+                            fetch_failures += 1
+                            return None, url
+                        return content, url
+
+                tasks.append(fetch_and_scan(u))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception):
+                    # This catches exceptions from the gather itself
+                    logger.debug(f"Exception during JS fetch: {type(result).__name__}: {result}")
+                    fetch_failures += 1
+                    continue
+                if result is None:
+                    continue
+
+                js_content, js_url = result
+                if js_content is None:
+                    continue
+
+                external_scanned += 1
+                scanned_urls.append(js_url)
+                filename = urlparse(js_url).path.split("/")[-1] or "external.js"
+
+                def make_js_loc_fn(filename):
+                    return lambda ln: f"{filename} line {ln}"
+                loc_fn = make_js_loc_fn(filename)
+
+                f = await _scan_content(js_content, loc_fn, own_session, True, sem_verify,
+                                        verify_live=verify_live, min_confidence=min_confidence)
+                external_findings.extend(f)
+
+                # Also scan decoded strings from external JS
+                decoded_strings, method = _extract_decoded_strings(js_content)
+                if decoded_strings:
+                    combined = "\n".join(decoded_strings)
+                    def make_dec_js_loc_fn(filename, method):
+                        return lambda ln: f"{filename} (decoded {method}) line {ln}"
+                    dec_loc_fn = make_dec_js_loc_fn(filename, method)
+                    f_dec = await _scan_content(combined, dec_loc_fn, own_session, True, sem_verify,
+                                                decoded_method=method, verify_live=verify_live,
+                                                min_confidence=min_confidence)
+                    external_findings.extend(f_dec)
+
+            return external_findings
+
+        try:
+            # FIX #2: Use internal timeout (45s) to leave room for other operations within orchestrator's 60s
+            # If this times out, we still have findings from HTML and inline scripts
+            external_findings = await asyncio.wait_for(
+                _scan_external_js_phase(),
+                timeout=45.0
+            )
+            findings.extend(external_findings)
+            resources_scanned += external_scanned
+        except asyncio.TimeoutError:
+            # FIX #2: HIGH - Return partial results on timeout
+            # Log how many external files were scanned before timeout
+            logger.warning(
+                f"External JS scan timed out after 45s. "
+                f"Scanned {external_scanned} of {len(ext_urls)} external files. "
+                f"Returning partial results with {len(findings)} findings so far."
+            )
+            # Still add whatever external findings we got before timeout
+            findings.extend(external_findings)
+            resources_scanned += external_scanned
+        except asyncio.CancelledError:
+            # FIX #2: Handle cancellation gracefully
+            logger.warning(
+                f"External JS scan cancelled. "
+                f"Scanned {external_scanned} of {len(ext_urls)} external files."
+            )
+            findings.extend(external_findings)
+            resources_scanned += external_scanned
+        except Exception as e:
+            logger.error(f"Unexpected error in external JS scan: {type(e).__name__}: {e}")
+            # Still keep partial results
+            findings.extend(external_findings)
+            resources_scanned += external_scanned
+
+        # Scan risky files (config files, etc.)
         risky_urls = _find_risky_files(html, target, soup_obj=soup_obj)
         for path in SENSITIVE_PATHS:
             risky_urls.append(urljoin(target, path))
         risky_urls = list(set(risky_urls))
 
-        risky_tasks = [_fetch_full(own_session, furl, max_bytes=8192) for furl in risky_urls]
+        risky_tasks = []
+        for furl in risky_urls:
+            async def fetch_risky(url):
+                return await _fetch_full(own_session, url, max_bytes=8192)
+            risky_tasks.append(fetch_risky(furl))
+
         risky_results = await asyncio.gather(*risky_tasks, return_exceptions=True)
         for i, result in enumerate(risky_results):
             if isinstance(result, Exception) or result is None:
@@ -903,13 +1109,32 @@ async def run(
                 findings.extend(f)
 
     except Exception as e:
-        return {"test_name": "secrets_detection", "status": "error", "title": f"Error: {e}", "evidence": []}
+        logger.error(f"Critical error in run(): {type(e).__name__}: {e}")
+        return {
+            "test_name": "secrets_detection",
+            "status": "error",
+            "title": f"Error: {e}",
+            "severity": "critical",
+            "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
+            "summary": {
+                "total_secrets": 0,
+                "verified_active": 0,
+                "high_confidence_unverified": 0,
+                "forbidden_files_count": 0,
+                "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                "resources_scanned": resources_scanned,
+                "scanned_urls": scanned_urls,
+                "fetch_failures": fetch_failures,
+                "tech_stack_detected": tech_stack if 'tech_stack' in locals() else [],
+            },
+            "evidence": findings,
+            "remediation": "An unexpected error occurred during scanning."
+        }
     finally:
         if should_close and own_session is not None:
             await own_session.close()
 
     # ── Summary logic ──
-    # Evidence types that are NOT secrets (informational, forbidden files)
     NON_SECRET_TYPES = {"Tech Stack (from headers)"}
 
     all_secrets = [
@@ -947,6 +1172,9 @@ async def run(
         overall_sev = "info"
         title = "No secrets detected"
 
+    # FIX #1: Include fetch_failures in summary so callers can see incomplete results
+    tech_detected = _fingerprint_from_headers(resp_headers, raw_set_cookies) if resp_headers else []
+
     return {
         "test_name": "secrets_detection",
         "status": status,
@@ -961,7 +1189,8 @@ async def run(
             "severity_breakdown": severity_counts,
             "resources_scanned": resources_scanned,
             "scanned_urls": scanned_urls,
-            "tech_stack_detected": _fingerprint_from_headers(resp_headers, raw_set_cookies),
+            "fetch_failures": fetch_failures,  # FIX #1: Track failed fetches
+            "tech_stack_detected": tech_detected,
         },
         "evidence": findings,
         "remediation": "Rotate verified keys immediately. For high‑confidence matches, manual inspection is strongly recommended."
@@ -974,5 +1203,7 @@ if __name__ == "__main__":
     parser.add_argument('--min-confidence', type=int, default=DEFAULT_MIN_CONFIDENCE,
                         help=f'Minimum confidence score (0–100, default {DEFAULT_MIN_CONFIDENCE})')
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(run(args.url, verify_live=args.verify_live, min_confidence=args.min_confidence)),
-                     indent=2, ensure_ascii=False))
+    print(json.dumps(
+        asyncio.run(run(args.url, verify_live=args.verify_live, min_confidence=args.min_confidence)),
+        indent=2, ensure_ascii=False
+    ))

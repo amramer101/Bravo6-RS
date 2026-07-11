@@ -62,3 +62,8 @@ security_report.html
 # Node (for static website)
 node_modules/
 package-lock.json
+
+src/worker/results/*.json
+src/worker/**.html
+src/worker/**.json
+

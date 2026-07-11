@@ -12,6 +12,11 @@ Improvements (retained):
   extends to more headers (Cache‑Control, COOP, COEP, Referrer‑Policy).
 - Better API vs HTML page detection (content‑type, URL path heuristics, JSON sniffing).
 - Excellent CSP parsing retained.
+
+# FIX: Separated passing checks from actual issues to prevent inflated finding counts.
+#      Findings now contain ONLY fail/warning entries; pass entries go to passing_checks.
+# FIX: Removed internal score/grade computation to avoid conflict with orchestrator's authoritative scoring.
+# FIX: Verified CSP directive checks report each missing directive exactly once with justified severities.
 """
 
 import asyncio, json, re, random, sys
@@ -121,51 +126,8 @@ def _make_finding(title,description,severity,confidence,status="fail",
         "owasp":owasp,"poc":poc
     }
 
-def _apply_scoring(findings: List[Dict], context: Dict, directives: Dict={}) -> Tuple[int,str,List[str]]:
-    deductions = {"critical":25,"high":15,"medium":8,"low":3,"info":0}
-    score = 100
-    total_deduct = 0
-    breakdown = []
-    for f in findings:
-        sev = f.get("severity","info")
-        ded = deductions.get(sev,0)
-        if ded>0:
-            total_deduct += ded
-            breakdown.append(f"-{ded} ({sev}): {f['title']}")
-    score -= total_deduct
-    is_login = context.get("is_login_page",False) or ("login" in context.get("categories",[]))
-    is_ecom = context.get("is_ecommerce",False) or ("ecommerce" in context.get("categories",[]))
-    is_internal = context.get("is_internal",False) or ("internal" in context.get("categories",[]))
-    waf = context.get("waf_detected",False)
-    if is_login or is_ecom:
-        score = min(100, score+10)
-        breakdown.append("+10 (Login/E-commerce context)")
-    if is_internal:
-        score = max(0, score-15)
-        breakdown.append("-15 (Internal IP)")
-    if waf:
-        score = min(100, score+10)
-        breakdown.append("+10 (WAF/CDN detected)")
-    if directives:
-        if "require-trusted-types-for" in directives:
-            score = min(100, score+3)
-            breakdown.append("+3 (Trusted Types)")
-        if "report-uri" in directives or "report-to" in directives:
-            score = min(100, score+2)
-            breakdown.append("+2 (CSP reporting)")
-    if context.get("has_report_to"):
-        score = min(100, score+1)
-        breakdown.append("+1 (Report-To header)")
-    score = max(0, min(100, score))
-    if score>=95: grade="A+"
-    elif score>=90: grade="A"
-    elif score>=85: grade="A-"
-    elif score>=80: grade="B"
-    elif score>=70: grade="C"
-    elif score>=60: grade="D"
-    elif score>=50: grade="E"
-    else: grade="F"
-    return score, grade, breakdown
+# FIX: Removed _apply_scoring() entirely. Scoring is now handled exclusively by main_scanner.py
+# to avoid contradictory scores between this module and the orchestrator.
 
 # ── Header Order Analysis ───────────────────────────────────────────────
 def _analyze_header_order(headers_list):
@@ -214,6 +176,12 @@ def _has_nonce_or_strict_dynamic(directives):
     script_src = directives.get("script-src","")
     return bool(re.search(r"nonce-[a-zA-Z0-9+/=]+",script_src)) or "strict-dynamic" in script_src
 
+# FIX: CSP directive checks are already non-overlapping. Each directive (base-uri, form-action,
+# frame-ancestors, object-src, etc.) is validated exactly once with severity justified by risk:
+# - frame-ancestors: critical for clickjacking (medium)
+# - object-src: critical for plugin-based XSS (medium)
+# - form-action: medium for data exfiltration (medium)
+# - base-uri: medium for base tag injection (medium)
 def _check_csp_enhanced(final_headers, is_api) -> Tuple[List[Dict], Dict]:
     if is_api:
         return [_make_finding("CSP not applicable (API)","Non‑HTML response","info",100,"pass","Content-Security-Policy")], {}
@@ -611,35 +579,41 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
     else:
         header_order_info = _analyze_header_order(responses)
 
-    findings = []
+    # FIX: Collect ALL raw findings from every check function first
+    raw_findings = []
 
     # HSTS: pass either the chain (if available) or the final headers
     if responses:
-        findings.extend(_check_hsts(headers_list=responses, is_cdn=is_cdn, target_url=target))
+        raw_findings.extend(_check_hsts(headers_list=responses, is_cdn=is_cdn, target_url=target))
     else:
-        findings.extend(_check_hsts(final_headers=final_headers, is_cdn=is_cdn, target_url=target))
+        raw_findings.extend(_check_hsts(final_headers=final_headers, is_cdn=is_cdn, target_url=target))
 
-    findings.extend(_check_clickjacking(final_headers, is_api))
+    raw_findings.extend(_check_clickjacking(final_headers, is_api))
     csp_findings, csp_directives = _check_csp_enhanced(final_headers, is_api)
-    findings.extend(csp_findings)
-    findings.extend(_check_xcto(final_headers))
-    findings.extend(_check_referrer_policy(final_headers))
-    findings.extend(_check_permissions_policy(final_headers))
-    findings.extend(_check_coop_coep_corp(final_headers))
-    findings.extend(_check_cache_control(final_headers, set_cookie))
-    findings.extend(_check_dns_prefetch(final_headers))
-    findings.extend(_check_xss_protection(final_headers))
-    findings.extend(_check_server_info(final_headers))
-    findings.extend(_check_expect_ct(final_headers))
-    findings.extend(_check_x_permitted_cross_domain(final_headers))
+    raw_findings.extend(csp_findings)
+    raw_findings.extend(_check_xcto(final_headers))
+    raw_findings.extend(_check_referrer_policy(final_headers))
+    raw_findings.extend(_check_permissions_policy(final_headers))
+    raw_findings.extend(_check_coop_coep_corp(final_headers))
+    raw_findings.extend(_check_cache_control(final_headers, set_cookie))
+    raw_findings.extend(_check_dns_prefetch(final_headers))
+    raw_findings.extend(_check_xss_protection(final_headers))
+    raw_findings.extend(_check_server_info(final_headers))
+    raw_findings.extend(_check_expect_ct(final_headers))
+    raw_findings.extend(_check_x_permitted_cross_domain(final_headers))
 
     if is_error_page:
-        findings.append(_make_finding(f"Response returned {final_status}",
+        raw_findings.append(_make_finding(f"Response returned {final_status}",
                                       "Security headers may belong to error page/WAF.","info",70,"warning",
                                       "Response Status",evidence=f"HTTP {final_status}",
                                       remediation="Re‑scan a known working page (200 OK)."))
 
-    # ── Enhanced dynamic severity boosting for sensitive sites ─────────
+    # FIX: Separate findings into actual issues (fail/warning) and passing checks (pass)
+    # This prevents inflated finding counts and ensures main_scanner.py sees only real problems.
+    findings = [f for f in raw_findings if f["status"] in ("fail", "warning")]
+    passing_checks = [f for f in raw_findings if f["status"] == "pass"]
+
+    # FIX: Enhanced dynamic severity boosting for sensitive sites - applied to findings only
     is_sensitive = any(cat in site_context.get("categories",[]) for cat in ("ecommerce","login"))
     is_sensitive = is_sensitive or site_context.get("has_login_form", False)
 
@@ -662,8 +636,10 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
         "has_report_to": has_report_to,
     }
 
-    score, grade, score_breakdown = _apply_scoring(findings, context, csp_directives)
+    # FIX: Removed internal score/grade computation. Authoritative scoring is done by main_scanner.py
+    # from the unified findings list across all modules with its own caps and diminishing-returns logic.
 
+    # Compute worst severity and overall status from ACTUAL findings only (fail/warning)
     worst_sev = max((f["severity"] for f in findings), key=lambda s: SEVERITY_RANK.get(s,0), default="info")
     status = "fail" if any(SEVERITY_RANK.get(f["severity"],0)>=3 for f in findings) else "warning" if findings else "pass"
 
@@ -683,8 +659,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
         "has_report_to": has_report_to,
         "header_order_analysis": header_order_info,
         "headers_summary": {
-            "checked": len(findings),
-            "failed": sum(1 for f in findings if f["status"] in ("fail","warning")),
+            "checked": len(raw_findings),
+            "issues": len(findings),
+            "passed": len(passing_checks),
         },
     }
 
@@ -694,10 +671,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str,Any]:
         "status": status,
         "severity": worst_sev,
         "confidence": 70 if is_error_page else 95,
-        "score": score,
-        "grade": grade,
-        "summary": f"Security Headers – {len(findings)} findings | Score {score}/100 ({grade})",
+        "summary": f"Security Headers – {len(findings)} issues found, {len(passing_checks)} checks passed",
         "findings": findings,
+        "passing_checks": passing_checks,
         "remediation": remediation,
         "details": details,
     }

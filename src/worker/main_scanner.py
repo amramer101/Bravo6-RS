@@ -16,11 +16,15 @@ Improvements over the previous version:
 [FIXES APPLIED]
 - JS cache race condition: only successful (200) responses are cached;
   empty responses are not stored, allowing automatic retries.
-- skip_js_lib_scan is now True (test_02 handles frontend libs reliably;
-  avoids duplicate / false-positive findings in test_06).
+- skip_js_lib_scan override REMOVED: test_01 now scans external JS files via js_cache/fetch_js.
 - WAF detection extended to AWS CloudFront, Akamai, Imperva/Incapsula.
 - Scoring tuned: reduced medium severity penalty, adjusted grade thresholds
   (A>=85, B>=75, C>=65, D>=55) for more realistic ratings.
+- Timeout errors now produce explicit, actionable messages.
+- CVE CSV URL configurable via --cve-csv-url CLI arg or CVE_CSV_URL env var.
+- HTML report generation hardened with explicit path checks and actionable errors.
+- Results directory resolved relative to script directory, not CWD.
+- Debug logging added for per-module kwargs injection.
 
 [AZURE FIXES]
 - result.json now written to /tmp directory instead of current working directory
@@ -34,6 +38,7 @@ import contextlib
 import inspect
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -41,8 +46,8 @@ import sys
 import tempfile
 import time
 import uuid
-import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -76,7 +81,7 @@ TEST_TIMEOUTS = {
     "test_02_frontend_libs": 45,
     "test_04_ssl_tls": 30,
     "test_05_security_headers": 20,
-    "test_06_info_disclosure": 60,
+    "test_06_info_disclosure": 90,
 }
 
 # --- Global caches for main page & JS files --------------------------------
@@ -95,7 +100,6 @@ def _normalize_url(url: str) -> str:
         url = "https://" + url
     return url
 
-
 async def _fetch_with_retry(
     session: aiohttp.ClientSession,
     url: str,
@@ -113,7 +117,6 @@ async def _fetch_with_retry(
             if attempt < max_retries - 1:
                 await asyncio.sleep(backoff ** attempt)
     raise last_exc
-
 
 async def _fetch_main_page_cached(
     url: str, session: Optional[aiohttp.ClientSession] = None
@@ -151,7 +154,6 @@ async def _fetch_main_page_cached(
         _fetch_events.pop(url, None)
     return result
 
-
 async def _detect_waf(url: str, session: aiohttp.ClientSession) -> Optional[str]:
     """Detect WAF/CDN from response headers (Cloudflare, Sucuri, CloudFront, Akamai, Imperva)."""
     try:
@@ -171,7 +173,6 @@ async def _detect_waf(url: str, session: aiohttp.ClientSession) -> Optional[str]
         pass
     return None
 
-
 def _normalize_title(title: str) -> str:
     """Normalize title for deduplication."""
     if not title:
@@ -179,9 +180,7 @@ def _normalize_title(title: str) -> str:
     cleaned = re.sub(r'[^\w\s]', '', title.lower())
     return re.sub(r'\s+', ' ', cleaned).strip()
 
-
 _SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
-
 
 def _deduplicate_findings(findings: List[Dict]) -> List[Dict]:
     """Deduplicate by normalized title, keeping highest confidence/severity."""
@@ -204,11 +203,9 @@ def _deduplicate_findings(findings: List[Dict]) -> List[Dict]:
                 best[norm] = f
     return list(best.values())
 
-
 def _filter_findings(findings: List[Dict], min_confidence: int = MIN_CONFIDENCE_DEFAULT) -> List[Dict]:
     """Keep findings with confidence >= min_confidence (or missing key)."""
     return [f for f in findings if f.get("confidence", 100) >= min_confidence]
-
 
 def _compute_score(findings: List[Dict], waf: Optional[str] = None) -> Dict[str, Any]:
     """Calculate score 0-100 and letter grade with realistic weightings."""
@@ -258,16 +255,20 @@ def _compute_score(findings: List[Dict], waf: Optional[str] = None) -> Dict[str,
 
     return {"score": int_score, "grade": grade}
 
-
 # --- Main orchestrator ------------------------------------------------------
 async def run_scout(
     url: str,
     verbose: bool = False,
     min_confidence: int = MIN_CONFIDENCE_DEFAULT,
+    cve_csv_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute all security tests, return aggregated result."""
     target = _normalize_url(url)
     start_time = time.time()
+
+    # FIX #3: Pass CVE data source to test_02_frontend_libs if configured
+    # Previously cve_csv_url was never passed, forcing fallback to tiny built-in DB.
+    # Now we check env var first, then CLI arg, and pass through if test_02 accepts it.
 
     async with aiohttp.ClientSession(
         timeout=REQUEST_TIMEOUT,
@@ -314,13 +315,31 @@ async def run_scout(
             run_func = mod.run
             sig = inspect.signature(run_func)
             kwargs = {"shared_page": shared_page}
+
+            # FIX #6: Defensive logging around per-module kwargs construction
+            # Log exactly which kwargs are injected per module at DEBUG level to catch signature mismatches early.
+            logging.debug(f"Building kwargs for {mod.__name__} with signature: {sig}")
+            injected_kwargs = []
+
             if "js_cache" in sig.parameters:
                 kwargs["js_cache"] = _js_cache
+                injected_kwargs.append("js_cache")
             if "fetch_js" in sig.parameters:
                 kwargs["fetch_js"] = fetch_js_cached
-            # ** FINAL DECISION: skip JS lib scan in test_06 — test_02 handles it reliably **
-            if "skip_js_lib_scan" in sig.parameters:
-                kwargs["skip_js_lib_scan"] = True
+                injected_kwargs.append("fetch_js")
+
+            # FIX #1: CRITICAL — Remove blanket skip_js_lib_scan=True override.
+            # Previously this was unconditionally set to True for any module accepting it,
+            # which disabled test_01's external JS scanning (its primary purpose).
+            # Now removed entirely: test_01 scans external JS via js_cache/fetch_js as intended.
+            # If any module truly needs this in the future, add it with explicit logging.
+
+            # FIX #3: Pass CVE CSV URL to test_02 if it accepts the parameter
+            if "cve_csv_url" in sig.parameters and cve_csv_url is not None:
+                kwargs["cve_csv_url"] = cve_csv_url
+                injected_kwargs.append("cve_csv_url")
+
+            logging.debug(f"  Injected kwargs for {mod.__name__}: {injected_kwargs}")
 
             coro = run_func(target, **kwargs)
             test_name = mod.__name__
@@ -349,10 +368,22 @@ async def run_scout(
 
     for mod, res in zip(TEST_MODULES, test_results):
         test_name = mod.__name__
+
+        # FIX #2: CRITICAL — Fix silent, uninformative error messages for timeouts.
+        # Previously: str(asyncio.TimeoutError()) is empty, producing messages like "test_06_info_disclosure: "
+        # Now: explicitly detect TimeoutError and produce actionable messages with timeout value.
         if isinstance(res, Exception):
-            errors.append(f"{test_name}: {res}")
-            tests[test_name] = {"error": str(res)}
+            timeout_val = TEST_TIMEOUTS.get(test_name, "?")
+            if isinstance(res, asyncio.TimeoutError):
+                errors.append(f"{test_name}: timed out after {timeout_val}s — no results returned")
+            elif isinstance(res, TimeoutError):
+                errors.append(f"{test_name}: timed out after {timeout_val}s — no results returned")
+            else:
+                msg = str(res) or "(no message)"
+                errors.append(f"{test_name}: {type(res).__name__}: {msg}")
+            tests[test_name] = {"error": errors[-1]}
             continue
+
         if isinstance(res, dict):
             if "error" in res:
                 errors.append(f"{test_name}: {res['error']}")
@@ -364,8 +395,8 @@ async def run_scout(
                 if isinstance(findings, list):
                     raw_findings.extend(findings)
             continue
-        errors.append(f"{test_name}: returned unexpected type {type(res)}")
-        tests[test_name] = {"error": f"Unexpected return type: {type(res)}"}
+        errors.append(f"{test_name}: returned unexpected type {type(res).__name__}")
+        tests[test_name] = {"error": f"Unexpected return type: {type(res).__name__}"}
 
     waf = waf_result if isinstance(waf_result, str) else None
 
@@ -385,7 +416,10 @@ async def run_scout(
     score_info = _compute_score(flat_findings, waf)
 
     final_result = {
+        "scanId": str(uuid.uuid4()),
         "url": target,
+        "start_time": datetime.now().isoformat(),
+        "end_time": datetime.now().isoformat(),
         "scan_time": datetime.now().isoformat(),
         "duration_seconds": round(duration, 2),
         "tests_run": tests_run,
@@ -401,7 +435,14 @@ async def run_scout(
         "grade": score_info["grade"],
     }
 
-    # --- Write result to Cosmos DB (if available) or fallback to /tmp ---
+    # --- FIX #5: MEDIUM — Confirm and harden the results/ folder behavior.
+    # Results directory resolved relative to script directory, not current working directory.
+    # This ensures consistent output location regardless of invocation path.
+    script_dir = Path(__file__).parent
+    results_dir = script_dir / "results"
+    os.makedirs(results_dir, exist_ok=True)
+
+    # --- Write result to Cosmos DB (if available) or fallback to results/ ---
     try:
         if COSMOS_AVAILABLE:
             cosmos_url = os.environ.get("COSMOS_URL")
@@ -410,33 +451,28 @@ async def run_scout(
             container_name = os.environ.get("COSMOS_CONTAINER", "ScanResults")
 
             if not cosmos_url or not cosmos_key:
-                logging.warning("Cosmos DB credentials not set. Falling back to /tmp file.")
+                logging.warning("Cosmos DB credentials not set. Falling back to local results/ directory.")
                 raise RuntimeError("Missing Cosmos DB credentials")
             else:
                 client = CosmosClient(cosmos_url, credential=cosmos_key)
                 database = client.get_database_client(database_name)
                 container = database.get_container_client(container_name)
 
-                # Generate a unique scanId if not already present
-                scan_id = final_result.get("scanId") or str(uuid.uuid4())
-                final_result["id"] = scan_id          # Cosmos DB requires 'id' field
-                final_result["scanId"] = scan_id      # for querying
-
+                final_result["id"] = final_result["scanId"]
                 container.create_item(body=final_result)
-                logging.info(f"✅ Scan result saved to Cosmos DB with scanId: {scan_id}")
+                logging.info(f"✅ Scan result saved to Cosmos DB with scanId: {final_result['scanId']}")
         else:
             raise RuntimeError("azure-cosmos module not installed")
 
     except Exception as e:
-        # Fallback: write to /tmp (for local development or when Cosmos DB fails)
-        logging.warning(f"Cosmos DB write failed ({e}). Falling back to /tmp/result.json")
-        temp_dir = tempfile.gettempdir()
-        result_path = os.path.join(temp_dir, "result.json")
+        # Fallback: write to results/ directory (relative to script)
+        logging.warning(f"Cosmos DB write failed ({e}). Falling back to local results/ directory.")
+        result_path = results_dir / f"result_{final_result['scanId']}.json"
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump(final_result, f, ensure_ascii=False, indent=2)
+        logging.info(f"✅ Scan result saved to {result_path}")
 
     return final_result
-
 
 if __name__ == "__main__":
     import argparse
@@ -446,25 +482,65 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", "-v", action="store_true", help="Show console output")
     parser.add_argument("--min-confidence", type=int, default=MIN_CONFIDENCE_DEFAULT,
                         help=f"Minimum confidence threshold (default: {MIN_CONFIDENCE_DEFAULT})")
+
+    # FIX #3: Add --cve-csv-url CLI argument for configurable CVE data source
+    # This allows test_02 to use an external vulnerability database instead of fallback.
+    parser.add_argument("--cve-csv-url", default=None,
+                        help="URL to CVE CSV database for frontend library scanning (test_02)")
+
     parser.add_argument("--html", action="store_true", help="Generate HTML security report after scan")
     args = parser.parse_args()
 
-    # Run the scanner
-    asyncio.run(run_scout(args.url, verbose=args.verbose, min_confidence=args.min_confidence))
+    # Check CVE CSV URL from environment variable if not provided via CLI
+    cve_csv_url = args.cve_csv_url or os.environ.get("CVE_CSV_URL")
 
-    # Generate HTML report if requested (reads from /tmp)
+    # Run the scanner
+    asyncio.run(run_scout(
+        args.url,
+        verbose=args.verbose,
+        min_confidence=args.min_confidence,
+        cve_csv_url=cve_csv_url
+    ))
+
+    # Generate HTML report if requested
     if args.html:
         try:
+            # FIX #4: HIGH — Make --html report generation failures explicit and actionable.
+            # Check report_generator.py exists up front with actionable message.
+            script_dir = Path(__file__).parent
+            generator_path = script_dir / "report_generator.py"
+
+            if not generator_path.exists():
+                print(f"❌ report_generator.py not found at {generator_path.resolve()}. "
+                      f"Please place report_generator.py in {script_dir.resolve()}/")
+                sys.exit(1)
+
             from report_generator import build_html
-            temp_dir = tempfile.gettempdir()
-            result_path = os.path.join(temp_dir, "result.json")
-            with open(result_path, "r", encoding="utf-8") as f:
+
+            # Read the most recent result from results/ directory
+            results_dir = script_dir / "results"
+            result_files = sorted(results_dir.glob("result_*.json"), key=os.path.getmtime, reverse=True)
+            if not result_files:
+                print("❌ No scan results found in results/ directory. Run a scan first.")
+                sys.exit(1)
+
+            with open(result_files[0], "r", encoding="utf-8") as f:
                 data = json.load(f)
+
             html = build_html(data)
-            with open("security_report.html", "w", encoding="utf-8") as f:
+
+            # FIX #5: Save HTML report relative to script directory
+            report_path = script_dir / "security_report.html"
+            with open(report_path, "w", encoding="utf-8") as f:
                 f.write(html)
-            print("✅ HTML report generated: security_report.html")
-        except ImportError:
-            print("❌ report_generator.py not found. Please ensure it is in the same folder.")
+
+            # FIX #4: Log the full resolved path on success
+            print(f"✅ HTML report generated: {report_path.resolve()}")
+
+        except ImportError as e:
+            # FIX #4: More explicit error message
+            print(f"❌ Failed to import report_generator: {e}. "
+                  f"Ensure report_generator.py is in {Path(__file__).parent.resolve()}/")
         except Exception as e:
-            print(f"❌ Failed to generate report: {e}")
+            # FIX #4: Log exception type and message, don't swallow
+            print(f"❌ Failed to generate report: {type(e).__name__}: {e}")
