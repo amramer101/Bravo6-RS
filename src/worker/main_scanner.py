@@ -21,15 +21,14 @@ import math
 import os
 import sys
 import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 import aiohttp
 from bs4 import BeautifulSoup
-
 # Optional Cosmos DB integration
 try:
     from azure.cosmos import CosmosClient
@@ -132,7 +131,6 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
     if url in ctx.main_page_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.main_page_cache[url]
-    
     if url in ctx.fetch_events:
         await ctx.fetch_events[url].wait()
         ctx.metrics["cache_hits"] += 1
@@ -141,7 +139,6 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
     event = asyncio.Event()
     ctx.fetch_events[url] = event
     result = {"status": 0, "html": "", "headers": {}, "soup": None, "error": None}
-    
     try:
         resp = await fetch_with_retry(ctx, url)
         result["status"] = resp.status
@@ -157,7 +154,6 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
         ctx.main_page_cache[url] = result
         event.set()
         ctx.fetch_events.pop(url, None)
-        
     return result
 
 async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
@@ -165,7 +161,6 @@ async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
     if js_url in ctx.js_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.js_cache[js_url]
-        
     if js_url in ctx.js_fetch_events:
         await ctx.js_fetch_events[js_url].wait()
         ctx.metrics["cache_hits"] += 1
@@ -173,7 +168,6 @@ async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
 
     event = asyncio.Event()
     ctx.js_fetch_events[js_url] = event
-    
     try:
         resp = await fetch_with_retry(ctx, js_url)
         if resp.status == 200:
@@ -198,19 +192,20 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     # Generate a deterministic ID based on raw content
     raw_str = json.dumps(raw, sort_keys=True, default=str)
     finding_id = hashlib.sha256(raw_str.encode()).hexdigest()[:12]
-    
+
     # Map fields based on common variations across different modules
     title = raw.get("title") or raw.get("type") or raw.get("cve") or raw.get("description") or "Unknown Finding"
     severity = (raw.get("severity") or "info").lower()
     if severity not in ["critical", "high", "medium", "low", "info"]:
         severity = "info"
-        
+    
     confidence = int(raw.get("confidence", 50))
     confidence = max(0, min(100, confidence))
     
-    cwe = raw.get("cwe") or "CWE-n/a"
-    owasp = raw.get("owasp") or "A00:2021"
-    
+    # Bug 5 Fix: Do not invent fake CWE/OWASP placeholders. Keep as empty string if missing.
+    cwe = raw.get("cwe") or ""
+    owasp = raw.get("owasp") or ""
+
     # Aggregate evidence from various possible fields
     evidence_parts = []
     if raw.get("context"): evidence_parts.append(f"Context: {raw['context']}")
@@ -222,12 +217,12 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     if raw.get("description"): evidence_parts.append(f"Description: {raw['description']}")
     
     evidence = "\n".join(evidence_parts) if evidence_parts else json.dumps(raw, default=str)[:500]
-    
+
     # Map PoC and remediation fields
     poc = raw.get("poc") or raw.get("poc_curl") or raw.get("poc_js") or "Manual verification required."
     remediation = raw.get("remediation") or "Consult security team for remediation."
     detection_method = raw.get("detection_method") or raw.get("source") or module_name
-    
+
     return {
         "id": finding_id,
         "module": module_name,
@@ -247,24 +242,22 @@ def extract_findings_from_result(res: Dict[str, Any], module_name: str) -> List[
     """Extract findings from various possible keys in the module result, avoiding duplicates."""
     raw_findings = []
     seen_ids = set()
-    
+
     # Common keys for findings across different modules
     finding_keys = ["findings", "evidence", "vulnerabilities"]
     for key in finding_keys:
         if key in res and isinstance(res[key], list):
             for item in res[key]:
                 if isinstance(item, dict):
-                    # Use a quick hash to avoid adding the exact same dict twice 
-                    # (e.g., if a module puts the same list in 'findings' and 'vulnerabilities')
+                    # Use a quick hash to avoid adding the exact same dict twice
                     item_id = hashlib.md5(json.dumps(item, sort_keys=True, default=str).encode()).hexdigest()
                     if item_id not in seen_ids:
                         seen_ids.add(item_id)
                         raw_findings.append(item)
-                        
+
     normalized = []
     for i, f in enumerate(raw_findings):
         normalized.append(normalize_finding(f, module_name, i))
-        
     return normalized
 
 # ------------------------------------------------------------------------------
@@ -281,14 +274,13 @@ def deduplicate_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if key not in best:
             best[key] = f
             continue
-            
+        
         existing = best[key]
         if f["confidence"] > existing["confidence"]:
             best[key] = f
         elif f["confidence"] == existing["confidence"]:
             if _SEVERITY_RANK.get(f["severity"], 0) > _SEVERITY_RANK.get(existing["severity"], 0):
                 best[key] = f
-                
     return list(best.values())
 
 def filter_findings(findings: List[Dict[str, Any]], min_confidence: int) -> List[Dict[str, Any]]:
@@ -298,8 +290,11 @@ def filter_findings(findings: List[Dict[str, Any]], min_confidence: int) -> List
 # ------------------------------------------------------------------------------
 # Unified Scoring Methodology
 # ------------------------------------------------------------------------------
-def compute_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> Dict[str, Any]:
-    """Calculate score 0-100 and letter grade with realistic weightings and diminishing returns."""
+def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Canonical scoring methodology for the Bravo6 project.
+    Computes a 0-100 score and letter grade based on findings.
+    """
     BASE_PENALTY = {"critical": 25, "high": 15, "medium": 3, "low": 1}
     DIMINISHING_THRESHOLD = {"critical": 2, "high": 3, "medium": 5, "low": 7}
     MAX_DEDUCTION = {"critical": 50, "high": 45, "medium": 15, "low": 15}
@@ -311,18 +306,15 @@ def compute_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> 
         sev = f["severity"]
         if sev not in sev_counts:
             continue
-            
         sev_counts[sev] += 1
         conf = f["confidence"] / 100.0
         base = BASE_PENALTY[sev]
         idx = sev_counts[sev]
-        
         if idx <= DIMINISHING_THRESHOLD[sev]:
             penalty = base * conf
         else:
             extra = idx - DIMINISHING_THRESHOLD[sev]
             penalty = base * conf / (1 + math.sqrt(extra))
-            
         sev_ded[sev] += penalty
         
     for sev in sev_ded:
@@ -332,9 +324,8 @@ def compute_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> 
     total_deductions = sum(sev_ded.values())
     score = max(0.0, 100.0 - total_deductions)
     
-    if waf:
-        score = min(score + 5.0, 100.0)
-        
+    # Bug 2 Fix: Unjustified flat WAF bonus removed entirely.
+    
     int_score = round(score)
     if int_score >= 85: grade = "A"
     elif int_score >= 75: grade = "B"
@@ -342,7 +333,12 @@ def compute_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> 
     elif int_score >= 55: grade = "D"
     else: grade = "F"
     
-    return {"score": int_score, "grade": grade, "deductions": {k: round(v, 2) for k, v in sev_ded.items()}}
+    return {
+        "score": int_score, 
+        "grade": grade, 
+        "deductions": {k: round(v, 2) for k, v in sev_ded.items()},
+        "waf_detected": waf is not None
+    }
 
 # ------------------------------------------------------------------------------
 # WAF Detection
@@ -376,10 +372,10 @@ async def run_scout(
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-        
+
     if config is None:
         config = {}
-        
+
     ctx = ScannerContext(
         url=url,
         config={
@@ -389,9 +385,8 @@ async def run_scout(
             **config
         }
     )
-    
     logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
-    
+
     connector = aiohttp.TCPConnector(ssl=True, limit=20, limit_per_host=10)
     async with aiohttp.ClientSession(
         timeout=REQUEST_TIMEOUT,
@@ -399,26 +394,27 @@ async def run_scout(
         connector=connector
     ) as session:
         ctx.session = session
-        
+
         # Pre-fetch main page and detect WAF concurrently
         shared_page_task = asyncio.ensure_future(fetch_main_page_cached(ctx))
         waf_task = asyncio.ensure_future(detect_waf(ctx))
-        
+
         # Discover plugins dynamically
         plugins = discover_plugins()
         if not plugins:
             logger.error("No test plugins found. Exiting.")
             return {"error": "No test plugins found."}
-            
         logger.info(f"Discovered {len(plugins)} plugins: {[p.__name__ for p in plugins]}")
-        
+
         # Prepare coroutines for each plugin with Dependency Injection
         test_coroutines = []
         test_names = []
+        plugin_start_times = {}
         
         for mod in plugins:
             module_name = mod.__name__
             test_names.append(module_name)
+            plugin_start_times[module_name] = time.time()
             
             # Build kwargs via introspection
             sig = inspect.signature(mod.run)
@@ -427,7 +423,7 @@ async def run_scout(
             # Inject shared page
             if "shared_page" in sig.parameters:
                 kwargs["shared_page"] = await shared_page_task
-                
+            
             # Inject caches and fetch functions
             if "js_cache" in sig.parameters:
                 kwargs["js_cache"] = ctx.js_cache
@@ -435,31 +431,29 @@ async def run_scout(
                 async def _fetch_js_wrapper(js_url: str, ctx=ctx) -> str:
                     return await fetch_js_cached(ctx, js_url)
                 kwargs["fetch_js"] = _fetch_js_wrapper
-                
+            
             # Inject shared session for connection pooling
             if "session" in sig.parameters:
                 kwargs["session"] = ctx.session
-                
+            
             # Inject specific config
             if "cve_csv_url" in sig.parameters and cve_csv_url:
                 kwargs["cve_csv_url"] = cve_csv_url
-                
+            
             # Inject context if supported
             if "ctx" in sig.parameters or "context" in sig.parameters:
                 param_name = "ctx" if "ctx" in sig.parameters else "context"
                 kwargs[param_name] = ctx
-                
+
             coro = mod.run(url, **kwargs)
             
             # Apply per-module timeout
             timeout_val = DEFAULT_TIMEOUTS.get(module_name, 60)
             coro = asyncio.wait_for(coro, timeout=timeout_val)
-            
             test_coroutines.append(coro)
-            
+
         # Execute all tests concurrently
         all_tasks = test_coroutines + [waf_task]
-        
         if verbose:
             raw_results = await asyncio.gather(*all_tasks, return_exceptions=True)
         else:
@@ -468,99 +462,131 @@ async def run_scout(
                 
         waf_result = raw_results[-1]
         test_results = raw_results[:-1]
-        
-    # Process results
-    duration = time.time() - start_time
-    tests = {}
-    all_raw_findings = []
-    errors = []
-    tests_run = 0
-    
-    for mod_name, res in zip(test_names, test_results):
-        if isinstance(res, Exception):
-            if isinstance(res, asyncio.TimeoutError):
-                err_msg = f"{mod_name}: timed out after {DEFAULT_TIMEOUTS.get(mod_name, 60)}s"
-            else:
-                err_msg = f"{mod_name}: {type(res).__name__}: {res}"
-            errors.append(err_msg)
-            tests[mod_name] = {"error": err_msg}
-            continue
-            
-        if isinstance(res, dict):
-            if "error" in res:
-                errors.append(f"{mod_name}: {res['error']}")
-                tests[mod_name] = res
-            else:
-                tests_run += 1
-                ctx.metrics["modules_executed"] += 1
-                tests[mod_name] = res
+
+        # Process results
+        duration = time.time() - start_time
+        tests = {}
+        all_raw_findings = []
+        errors = []
+        tests_run = 0
+
+        for mod_name, res in zip(test_names, test_results):
+            if isinstance(res, Exception):
+                duration_plugin = time.time() - plugin_start_times.get(mod_name, start_time)
+                if isinstance(res, asyncio.TimeoutError):
+                    err_msg = f"{mod_name}: timed out after {DEFAULT_TIMEOUTS.get(mod_name, 60)}s"
+                else:
+                    err_msg = f"{mod_name}: {type(res).__name__}: {res}"
                 
-                # Extract and normalize findings
-                findings = extract_findings_from_result(res, mod_name)
-                all_raw_findings.extend(findings)
-        else:
-            err_msg = f"{mod_name}: unexpected return type {type(res).__name__}"
-            errors.append(err_msg)
-            tests[mod_name] = {"error": err_msg}
-            
-    waf = waf_result if isinstance(waf_result, str) else None
-    
-    # Deduplicate and filter
-    deduplicated = deduplicate_findings(all_raw_findings)
-    final_findings = filter_findings(deduplicated, min_confidence)
-    
-    # Summary
-    summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    for f in final_findings:
-        sev = f["severity"]
-        if sev in summary:
-            summary[sev] += 1
-            
-    score_info = compute_score(final_findings, waf)
-    
-    # Build final result
-    final_result = {
-        "scanId": str(uuid.uuid4()),
-        "url": url,
-        "start_time": datetime.now().isoformat(),
-        "end_time": datetime.now().isoformat(),
-        "duration_seconds": round(duration, 2),
-        "tests_run": tests_run,
-        "total_findings": len(final_findings),
-        "findings": final_findings,
-        "tests": tests,
-        "waf": waf,
-        "errors": errors,
-        "errors_count": len(errors),
-        "deduplicated_count": len(all_raw_findings) - len(deduplicated),
-        "summary": summary,
-        "score": score_info["score"],
-        "grade": score_info["grade"],
-        "metrics": ctx.metrics
-    }
-    
-    # Save results
-    script_dir = Path(__file__).parent
-    results_dir = script_dir / "results"
-    os.makedirs(results_dir, exist_ok=True)
-    
-    try:
-        if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
-            client = CosmosClient(os.environ["COSMOS_URL"], credential=os.environ.get("COSMOS_KEY"))
-            db = client.get_database_client(os.environ.get("COSMOS_DATABASE", "Bravo6DB"))
-            container = db.get_container_client(os.environ.get("COSMOS_CONTAINER", "ScanResults"))
-            final_result["id"] = final_result["scanId"]
-            container.create_item(body=final_result)
-            logger.info(f"Saved to Cosmos DB: {final_result['scanId']}")
-        else:
-            result_path = results_dir / f"result_{final_result['scanId']}.json"
-            with open(result_path, "w", encoding="utf-8") as f:
-                json.dump(final_result, f, ensure_ascii=False, indent=2)
-            logger.info(f"Saved to {result_path}")
-    except Exception as e:
-        logger.error(f"Failed to save results: {e}")
+                # Bug 4 Fix: Enhanced per-plugin failure diagnostics
+                tb_str = "".join(traceback.format_exception(type(res), res, res.__traceback__))
+                
+                errors.append(err_msg)
+                tests[mod_name] = {
+                    "error": err_msg,
+                    "exception_type": type(res).__name__,
+                    "traceback": tb_str,
+                    "duration_seconds": round(duration_plugin, 2)
+                }
+                continue
+
+            if isinstance(res, dict):
+                if "error" in res:
+                    errors.append(f"{mod_name}: {res['error']}")
+                    tests[mod_name] = res
+                else:
+                    tests_run += 1
+                    ctx.metrics["modules_executed"] += 1
+                    tests[mod_name] = res
+                    
+                    # Extract and normalize findings
+                    findings = extract_findings_from_result(res, mod_name)
+                    all_raw_findings.extend(findings)
+            else:
+                err_msg = f"{mod_name}: unexpected return type {type(res).__name__}"
+                errors.append(err_msg)
+                tests[mod_name] = {"error": err_msg}
+
+        waf = waf_result if isinstance(waf_result, str) else None
+
+        # Deduplicate and filter
+        deduplicated = deduplicate_findings(all_raw_findings)
+        final_findings = filter_findings(deduplicated, min_confidence)
         
-    return final_result
+        # Summary
+        summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        for f in final_findings:
+            sev = f["severity"]
+            if sev in summary:
+                summary[sev] += 1
+
+        # Bug 3 Fix: Top-level safety net around result assembly and persistence
+        assembly_error = None
+        try:
+            score_info = compute_bravo6_score(final_findings, waf)
+            score = score_info["score"]
+            grade = score_info["grade"]
+        except Exception as e:
+            score = 0
+            grade = "F"
+            assembly_error = f"{type(e).__name__}: {e}"
+            logger.error(f"Failed to compute score or assemble result: {assembly_error}")
+
+        # Build final result
+        final_result = {
+            "scanId": str(uuid.uuid4()),
+            "url": url,
+            "start_time": datetime.now().isoformat(),
+            "end_time": datetime.now().isoformat(),
+            "duration_seconds": round(duration, 2),
+            "tests_run": tests_run,
+            "total_findings": len(final_findings),
+            "findings": final_findings,
+            "tests": tests,
+            "waf": waf,
+            "errors": errors,
+            "errors_count": len(errors),
+            "deduplicated_count": len(all_raw_findings) - len(deduplicated),
+            "summary": summary,
+            "score": score,
+            "grade": grade,
+            "metrics": ctx.metrics
+        }
+        
+        if assembly_error:
+            final_result["assembly_error"] = assembly_error
+
+        # Save results
+        script_dir = Path(__file__).parent
+        results_dir = script_dir / "results"
+        os.makedirs(results_dir, exist_ok=True)
+        
+        try:
+            if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
+                client = CosmosClient(os.environ["COSMOS_URL"], credential=os.environ.get("COSMOS_KEY"))
+                db = client.get_database_client(os.environ.get("COSMOS_DATABASE", "Bravo6DB"))
+                container = db.get_container_client(os.environ.get("COSMOS_CONTAINER", "ScanResults"))
+                final_result["id"] = final_result["scanId"]
+                container.create_item(body=final_result)
+                logger.info(f"Saved to Cosmos DB: {final_result['scanId']}")
+            else:
+                result_path = results_dir / f"result_{final_result['scanId']}.json"
+                with open(result_path, "w", encoding="utf-8") as f:
+                    json.dump(final_result, f, ensure_ascii=False, indent=2)
+                logger.info(f"Saved to {result_path}")
+        except Exception as e:
+            logger.error(f"Failed to save results: {e}")
+            # Fallback to local file if Cosmos DB write fails to ensure data isn't lost
+            if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
+                try:
+                    result_path = results_dir / f"result_{final_result['scanId']}.json"
+                    with open(result_path, "w", encoding="utf-8") as f:
+                        json.dump(final_result, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Fallback: Saved to {result_path}")
+                except Exception as local_e:
+                    logger.error(f"Failed to save results locally: {local_e}")
+
+        return final_result
 
 if __name__ == "__main__":
     import argparse
@@ -571,16 +597,15 @@ if __name__ == "__main__":
     parser.add_argument("--cve-csv-url", default=None, help="URL to CVE CSV database")
     parser.add_argument("--html", action="store_true", help="Generate HTML report")
     args = parser.parse_args()
-    
+
     cve_csv_url = args.cve_csv_url or os.environ.get("CVE_CSV_URL")
-    
     result = asyncio.run(run_scout(
         args.url,
         verbose=args.verbose,
         min_confidence=args.min_confidence,
         cve_csv_url=cve_csv_url
     ))
-    
+
     if args.html:
         try:
             script_dir = Path(__file__).parent
@@ -588,7 +613,6 @@ if __name__ == "__main__":
             if not generator_path.exists():
                 print(f"❌ report_generator.py not found at {generator_path.resolve()}")
                 sys.exit(1)
-                
             from report_generator import build_html
             html = build_html(result)
             report_path = script_dir / "security_report.html"

@@ -4,14 +4,13 @@ test_05_security_headers.py – Bravo6 Enterprise HTTP Security Policy Analyzer 
 ====================================================================================
 Enterprise-grade HTTP Security Policy Analyzer with advanced CSP validation,
 Reporting API checks, Document Policy, and Origin-Agent-Cluster analysis.
-
 Evolution highlights:
 - Advanced CSP parsing: validates unsafe-inline, unsafe-eval, nonces, hashes, and strict-dynamic.
 - Added Document-Policy, Origin-Agent-Cluster, and Reporting API checks.
-- Every finding now includes: exact header, exact header value, explanation, 
-  confidence, severity, CWE, OWASP, evidence, PoC, remediation, and detection method.
-- Aggressive false positive reduction: e.g., CSP unsafe-inline is only flagged if 
-  not mitigated by strict-dynamic or cryptographic nonces/hashes.
+- Every finding now includes: exact header, exact header value, explanation,
+confidence, severity, CWE, OWASP, evidence, PoC, remediation, and detection method.
+- Aggressive false positive reduction: e.g., CSP unsafe-inline is only flagged if
+not mitigated by strict-dynamic or cryptographic nonces/hashes.
 - Validates not just the existence of headers but the security of their values.
 - Preserved async model, API compatibility, JSON output format, and existing features.
 """
@@ -117,7 +116,7 @@ async def _categorize_site(hostname: str, port: int = 443, html: str = None, hea
 
 # ── Finding & Scoring ───────────────────────────────────────────────────
 def _make_finding(title, description, severity, confidence, status="fail",
-                  header="", header_value="", explanation="", evidence="", 
+                  header="", header_value="", explanation="", evidence="",
                   remediation="", cwe="", owasp="", poc=None, detection_method="header_analysis"):
     return {
         "title": title,
@@ -187,139 +186,116 @@ def _parse_csp(csp_header):
 
 def _check_csp_enhanced(final_headers, is_api, url=""):
     if is_api:
-        return [_make_finding("CSP not applicable (API)", "Non-HTML response", "info", 100, "pass", 
-                              "Content-Security-Policy", header_value="", 
-                              explanation="API endpoints typically do not render HTML, so CSP is not applicable.",
-                              evidence="API endpoint detected.", poc=f"curl -Is {url} | grep -i 'content-security-policy'")], {}
-    
+        return [_make_finding("CSP not applicable (API)", "Non-HTML response", "info", 100, "pass",
+            "Content-Security-Policy", header_value="",
+            explanation="API endpoints typically do not render HTML, so CSP is not applicable.",
+            evidence="API endpoint detected.", poc=f"curl -Is {url} | grep -i 'content-security-policy'")], {}
+            
     csp_raw = _get_header(final_headers, "Content-Security-Policy")
     if not csp_raw:
         present_headers = ', '.join(sorted(final_headers.keys()))
         evidence = f"Header 'Content-Security-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'content-security-policy'"
         return [_make_finding("Missing Content-Security-Policy", "No CSP header found.", "high", 100, "fail",
-                              "Content-Security-Policy", header_value="", 
-                              explanation="Without CSP, the application is vulnerable to Cross-Site Scripting (XSS) and data injection attacks.",
-                              evidence=evidence, remediation="Implement a strict Content-Security-Policy.",
-                              cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc)], {}
-    
-    directives = _parse_csp(csp_raw)
+            "Content-Security-Policy", header_value="",
+            explanation="Without CSP, the application is vulnerable to Cross-Site Scripting (XSS) and data injection attacks.",
+            evidence=evidence, remediation="Implement a strict Content-Security-Policy.",
+            cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc)], {}
+
     findings = []
+    has_disqualifying_issue = False
     
+    # 1. unsafe-inline
+    if "'unsafe-inline'" in csp_raw:
+        has_disqualifying_issue = True
+        findings.append(_make_finding(
+            "CSP allows 'unsafe-inline'",
+            "The CSP value contains 'unsafe-inline', which permits inline script/style execution, defeating a major XSS protection.",
+            "high", 100, "fail", "Content-Security-Policy",
+            header_value=csp_raw,
+            explanation="The 'unsafe-inline' keyword allows execution of inline scripts and styles. This defeats a major XSS protection CSP is meant to provide.",
+            evidence=f"CSP contains 'unsafe-inline': {csp_raw[:200]}",
+            remediation="Remove 'unsafe-inline' and use nonce- or hash-based script/style sources instead.",
+            cwe="CWE-79", owasp="A03:2021",
+            poc=f"curl -Is {url} | grep -i content-security-policy"
+        ))
+        
+    # 2. unsafe-eval
+    if "'unsafe-eval'" in csp_raw:
+        has_disqualifying_issue = True
+        findings.append(_make_finding(
+            "CSP allows 'unsafe-eval'",
+            "The CSP value contains 'unsafe-eval', which permits the use of eval() and similar methods.",
+            "high", 100, "fail", "Content-Security-Policy",
+            header_value=csp_raw,
+            explanation="The 'unsafe-eval' keyword allows the execution of code passed to functions like eval(). This can be exploited for XSS.",
+            evidence=f"CSP contains 'unsafe-eval': {csp_raw[:200]}",
+            remediation="Remove 'unsafe-eval' and refactor code to avoid dynamic code execution.",
+            cwe="CWE-79", owasp="A03:2021",
+            poc=f"curl -Is {url} | grep -i content-security-policy"
+        ))
+        
+    # 3. missing frame-ancestors
+    if "frame-ancestors" not in csp_raw:
+        has_disqualifying_issue = True
+        findings.append(_make_finding(
+            "CSP missing frame-ancestors directive",
+            "The CSP does not contain a frame-ancestors directive.",
+            "medium", 90, "warning", "Content-Security-Policy",
+            header_value=csp_raw,
+            explanation="Without frame-ancestors in the CSP, clickjacking protection depends entirely on X-Frame-Options being separately present and correctly configured.",
+            evidence=f"CSP missing frame-ancestors: {csp_raw[:200]}",
+            remediation="Add a frame-ancestors directive to your CSP (e.g., frame-ancestors 'none' or 'self').",
+            cwe="CWE-1021", owasp="A01:2021",
+            poc=f"curl -Is {url} | grep -i content-security-policy"
+        ))
+        
+    # Parse directives for nonce/hash check
+    directives = _parse_csp(csp_raw)
     script_src = directives.get("script-src", directives.get("default-src", ""))
-    style_src = directives.get("style-src", directives.get("default-src", ""))
     
-    # unsafe-inline analysis for script-src
-    if "unsafe-inline" in script_src:
-        has_strict_dynamic = "strict-dynamic" in script_src
-        has_valid_nonce = bool(re.search(r"'nonce-[A-Za-z0-9+/=]{22,}'", script_src))
-        has_valid_hash = bool(re.search(r"'(sha256|sha384|sha512)-[A-Za-z0-9+/=]{43,}'", script_src))
-        
-        if not has_strict_dynamic and not has_valid_nonce and not has_valid_hash:
-            evidence = f"script-src contains 'unsafe-inline' without strict-dynamic, nonces, or hashes. CSP: {csp_raw[:200]}"
-            poc = f"curl -Is {url} | grep -i 'content-security-policy'"
-            findings.append(_make_finding(
-                "CSP allows unsafe-inline scripts without fallback protection",
-                "The directive script-src contains 'unsafe-inline' without 'strict-dynamic', nonces, or hashes, enabling inline script execution.",
-                "critical", 100, "fail", "Content-Security-Policy", 
-                header_value=csp_raw, 
-                explanation="The 'unsafe-inline' keyword allows execution of inline scripts. Without 'strict-dynamic' or cryptographic nonces/hashes, this completely negates the XSS protection provided by CSP.",
-                evidence=evidence, remediation="Remove 'unsafe-inline' from script-src. Use nonces or 'strict-dynamic' instead.",
-                cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-        else:
-            evidence = f"script-src contains 'unsafe-inline' but also has protection mechanisms. CSP: {csp_raw[:200]}"
-            poc = f"curl -Is {url} | grep -i 'content-security-policy'"
-            findings.append(_make_finding(
-                "CSP contains 'unsafe-inline' alongside protection mechanisms",
-                "The directive script-src contains 'unsafe-inline' alongside 'strict-dynamic' or nonces/hashes. Older browsers may fall back to 'unsafe-inline'.",
-                "medium", 80, "warning", "Content-Security-Policy",
-                header_value=csp_raw,
-                explanation="While modern browsers will ignore 'unsafe-inline' when 'strict-dynamic' or nonces/hashes are present, older browsers will fall back to allowing all inline scripts. It is best practice to remove 'unsafe-inline' entirely.",
-                evidence=evidence, remediation="Remove 'unsafe-inline' from script-src to ensure consistent security across all browser versions.",
-                cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-
-    # unsafe-eval analysis
-    if "unsafe-eval" in script_src:
-        evidence = f"script-src contains 'unsafe-eval'. CSP: {csp_raw[:200]}"
-        poc = f"curl -Is {url} | grep -i 'content-security-policy'"
+    # 4. lacks nonce or hash
+    has_nonce = bool(re.search(r"'nonce-[A-Za-z0-9+/=]+'", script_src))
+    has_hash = bool(re.search(r"'(sha256|sha384|sha512)-[A-Za-z0-9+/=]+'", script_src))
+    if not has_nonce and not has_hash:
         findings.append(_make_finding(
-            "CSP allows unsafe-eval",
-            "The directive script-src contains 'unsafe-eval', allowing the use of eval() and similar methods.",
-            "high", 95, "fail", "Content-Security-Policy",
+            "CSP script-src lacks nonce or hash source",
+            "The CSP script-src (or default-src) directive does not contain any nonce or hash sources.",
+            "low", 75, "info", "Content-Security-Policy",
             header_value=csp_raw,
-            explanation="The 'unsafe-eval' keyword allows the execution of code passed to functions like eval(), setTimeout(string), and setInterval(string). This can be exploited for XSS if user input reaches these functions.",
-            evidence=evidence, remediation="Remove 'unsafe-eval' from script-src. Refactor code to avoid dynamic code execution.",
-            cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-
-    # unsafe-inline analysis for style-src
-    if "unsafe-inline" in style_src:
-        has_valid_nonce = bool(re.search(r"'nonce-[A-Za-z0-9+/=]{22,}'", style_src))
-        has_valid_hash = bool(re.search(r"'(sha256|sha384|sha512)-[A-Za-z0-9+/=]{43,}'", style_src))
+            explanation="This is a best-practice gap. Using nonces or hashes provides defense-in-depth against XSS, though not as critical as unsafe-inline/unsafe-eval.",
+            evidence=f"script-src lacks nonce/hash: {script_src[:200]}",
+            remediation="Consider adding nonce- or hash-based sources to your script-src directive.",
+            cwe="CWE-79", owasp="A03:2021",
+            poc=f"curl -Is {url} | grep -i content-security-policy"
+        ))
         
-        if not has_valid_nonce and not has_valid_hash:
-            evidence = f"style-src contains 'unsafe-inline' without nonces or hashes. CSP: {csp_raw[:200]}"
-            poc = f"curl -Is {url} | grep -i 'content-security-policy'"
-            findings.append(_make_finding(
-                "CSP allows unsafe-inline styles without fallback protection",
-                "The directive style-src contains 'unsafe-inline' without nonces or hashes.",
-                "medium", 90, "warning", "Content-Security-Policy",
-                header_value=csp_raw,
-                explanation="The 'unsafe-inline' keyword in style-src allows inline CSS, which can be exploited for data exfiltration or UI redressing (clickjacking) in some contexts.",
-                evidence=evidence, remediation="Remove 'unsafe-inline' from style-src. Use nonces or hashes for inline styles.",
-                cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-
-    # Nonce and Hash validation
-    nonces = re.findall(r"'nonce-([A-Za-z0-9+/=]+)'", csp_raw)
-    for nonce in nonces:
-        if len(nonce) < 22:
-            evidence = f"Found weak nonce (length {len(nonce)} < 22) in CSP: {csp_raw[:200]}"
-            poc = f"curl -Is {url} | grep -i 'content-security-policy'"
-            findings.append(_make_finding(
-                "CSP contains weak nonce",
-                f"A nonce with insufficient length ({len(nonce)} characters) was found in the CSP.",
-                "high", 90, "fail", "Content-Security-Policy",
-                header_value=csp_raw,
-                explanation="Nonces should be at least 128 bits (16 bytes) of entropy, which translates to at least 22 base64 characters. Short nonces can be guessed via brute-force.",
-                evidence=evidence, remediation="Generate nonces using a cryptographically secure random number generator with at least 128 bits of entropy.",
-                cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-            break
-
-    hashes = re.findall(r"'(sha1|sha224|md2|md5)-[A-Za-z0-9+/=]+'", csp_raw)
-    if hashes:
-        evidence = f"Found weak hash algorithm(s) {set(hashes)} in CSP: {csp_raw[:200]}"
-        poc = f"curl -Is {url} | grep -i 'content-security-policy'"
+    # 5. missing strict-dynamic
+    if "'strict-dynamic'" not in csp_raw:
         findings.append(_make_finding(
-            "CSP contains weak hash algorithm",
-            "The CSP uses a weak hash algorithm (e.g., SHA-1, MD5) for script or style hashes.",
-            "high", 90, "fail", "Content-Security-Policy",
+            "CSP missing strict-dynamic",
+            "The CSP does not contain 'strict-dynamic'.",
+            "low", 60, "info", "Content-Security-Policy",
             header_value=csp_raw,
-            explanation="Hash algorithms like SHA-1 and MD5 are cryptographically broken and vulnerable to collision attacks. CSP requires SHA-256, SHA-384, or SHA-512.",
-            evidence=evidence, remediation="Replace weak hash algorithms with SHA-256, SHA-384, or SHA-512.",
-            cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-
-    # Missing directives
-    for dir_name, msg, sev in [
-        ("base-uri", "Missing base-uri allows attackers to inject a <base> tag and change the target of relative URLs.", "medium"),
-        ("form-action", "Missing form-action allows forms to submit data to any origin, enabling data exfiltration.", "medium"),
-        ("frame-ancestors", "Missing frame-ancestors leaves the application vulnerable to clickjacking attacks.", "medium"),
-        ("object-src", "Missing object-src allows the loading of plugins like Flash, which can be exploited for XSS.", "medium"),
-    ]:
-        if dir_name not in directives:
-            evidence = f"Directive '{dir_name}' missing from CSP. Full header: {csp_raw[:200]}"
-            poc = f"curl -Is {url} | grep -i 'content-security-policy'"
-            findings.append(_make_finding(
-                f"CSP missing {dir_name}", msg, sev, 85, "warning",
-                "Content-Security-Policy", header_value=csp_raw,
-                explanation=f"The '{dir_name}' directive is not defined in the CSP. {msg}",
-                evidence=evidence, remediation=f"Add the '{dir_name}' directive to your CSP.",
-                cwe=CWE_MAP["csp"], owasp=OWASP_MAP["csp"], poc=poc))
-
-    if not findings:
-        findings.append(_make_finding("CSP is well-configured", "No obvious weaknesses detected.", "info", 95, "pass",
-                                      "Content-Security-Policy", header_value=csp_raw,
-                                      explanation="The Content-Security-Policy header is present and does not contain obvious misconfigurations or weak directives.",
-                                      evidence=csp_raw[:200], poc=f"curl -Is {url} | grep -i 'content-security-policy'"))
-    
+            explanation="This is an optional hardening measure. 'strict-dynamic' allows scripts to load other scripts dynamically if they were loaded via a nonce or hash.",
+            evidence=f"CSP missing strict-dynamic: {csp_raw[:200]}",
+            remediation="Consider adding 'strict-dynamic' to your script-src directive if applicable.",
+            cwe="CWE-79", owasp="A03:2021",
+            poc=f"curl -Is {url} | grep -i content-security-policy"
+        ))
+        
+    # Determine if CSP overall passed
+    if not has_disqualifying_issue:
+        findings.append(_make_finding(
+            "CSP is well-configured",
+            "No obvious weaknesses detected in the CSP.",
+            "info", 95, "pass", "Content-Security-Policy",
+            header_value=csp_raw,
+            explanation="The Content-Security-Policy header is present and does not contain the disqualifying misconfigurations (unsafe-inline, unsafe-eval, missing frame-ancestors).",
+            evidence=csp_raw[:200],
+            poc=f"curl -Is {url} | grep -i content-security-policy"
+        ))
+        
     return findings, directives
 
 # ── Improved Cache-Control Check ────────────────────────────────────────
@@ -364,23 +340,23 @@ def _check_cache_control(final_headers, set_cookie, url=""):
     if set_cookie and ("public" in cc_lower or "no-store" not in cc_lower):
         sev = "high"
         issues.append("session cookies may be cached")
-    
+        
     if not issues:
         return [_make_finding("Cache-Control correctly restricts caching",
-                              f"Cache-Control: {cc}", "info", 100, "pass", "Cache-Control",
-                              header_value=cc,
-                              explanation="The Cache-Control header is correctly configured to prevent caching of sensitive data.",
-                              evidence=cc, remediation="",
-                              poc=f"curl -Is {url} | grep -i 'cache-control'")]
-    
+            f"Cache-Control: {cc}", "info", 100, "pass", "Cache-Control",
+            header_value=cc,
+            explanation="The Cache-Control header is correctly configured to prevent caching of sensitive data.",
+            evidence=cc, remediation="",
+            poc=f"curl -Is {url} | grep -i 'cache-control'")]
+            
     desc = "; ".join(issues)
     return [_make_finding("Cache-Control insecure",
-                          desc, sev, 90 if sev != "low" else 70, "fail" if sev in ("high", "medium") else "warning",
-                          "Cache-Control", header_value=cc,
-                          explanation="The Cache-Control header contains insecure directives that may lead to caching of sensitive data.",
-                          evidence=cc, remediation="Set Cache-Control: no-cache, no-store, must-revalidate",
-                          cwe=CWE_MAP["cache"], owasp=OWASP_MAP["cache"],
-                          poc=f"curl -Is {url} | grep -i 'cache-control'")]
+        desc, sev, 90 if sev != "low" else 70, "fail" if sev in ("high", "medium") else "warning",
+        "Cache-Control", header_value=cc,
+        explanation="The Cache-Control header contains insecure directives that may lead to caching of sensitive data.",
+        evidence=cc, remediation="Set Cache-Control: no-cache, no-store, must-revalidate",
+        cwe=CWE_MAP["cache"], owasp=OWASP_MAP["cache"],
+        poc=f"curl -Is {url} | grep -i 'cache-control'")]
 
 # ── X-DNS-Prefetch-Control ─────────────────────────────────────────────
 def _check_dns_prefetch(final_headers, url=""):
@@ -390,31 +366,31 @@ def _check_dns_prefetch(final_headers, url=""):
         evidence = f"Header 'X-DNS-Prefetch-Control' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'x-dns-prefetch-control'"
         return [_make_finding("X-DNS-Prefetch-Control missing",
-                              "Browser may prefetch DNS for links, enabling tracking.", "low", 70, "warning",
-                              "X-DNS-Prefetch-Control", header_value="",
-                              explanation="Without X-DNS-Prefetch-Control: off, the browser may prefetch DNS for links in the page, which can leak information about the user's browsing activity to the DNS resolver.",
-                              evidence=evidence, remediation="Add X-DNS-Prefetch-Control: off",
-                              cwe=CWE_MAP["dns_prefetch"], owasp=OWASP_MAP["dns_prefetch"], poc=poc)]
+            "Browser may prefetch DNS for links, enabling tracking.", "low", 70, "warning",
+            "X-DNS-Prefetch-Control", header_value="",
+            explanation="Without X-DNS-Prefetch-Control: off, the browser may prefetch DNS for links in the page, which can leak information about the user's browsing activity to the DNS resolver.",
+            evidence=evidence, remediation="Add X-DNS-Prefetch-Control: off",
+            cwe=CWE_MAP["dns_prefetch"], owasp=OWASP_MAP["dns_prefetch"], poc=poc)]
     if xdns.lower() == "off":
         return [_make_finding("X-DNS-Prefetch-Control set to off", "", "info", 100, "pass",
-                              "X-DNS-Prefetch-Control", header_value=xdns,
-                              explanation="X-DNS-Prefetch-Control is correctly set to 'off', preventing DNS prefetching.",
-                              evidence=xdns, poc=f"curl -Is {url} | grep -i 'x-dns-prefetch-control'")]
+            "X-DNS-Prefetch-Control", header_value=xdns,
+            explanation="X-DNS-Prefetch-Control is correctly set to 'off', preventing DNS prefetching.",
+            evidence=xdns, poc=f"curl -Is {url} | grep -i 'x-dns-prefetch-control'")]
     return [_make_finding(f"X-DNS-Prefetch-Control set to '{xdns}'",
-                          "Value is not 'off', allowing DNS prefetching.", "low", 60, "warning",
-                          "X-DNS-Prefetch-Control", header_value=xdns,
-                          explanation="X-DNS-Prefetch-Control is present but not set to 'off', allowing DNS prefetching.",
-                          evidence=xdns, remediation="Set X-DNS-Prefetch-Control: off",
-                          poc=f"curl -Is {url} | grep -i 'x-dns-prefetch-control'")]
+        "Value is not 'off', allowing DNS prefetching.", "low", 60, "warning",
+        "X-DNS-Prefetch-Control", header_value=xdns,
+        explanation="X-DNS-Prefetch-Control is present but not set to 'off', allowing DNS prefetching.",
+        evidence=xdns, remediation="Set X-DNS-Prefetch-Control: off",
+        poc=f"curl -Is {url} | grep -i 'x-dns-prefetch-control'")]
 
 # ── Enhanced HSTS ───────────────────────────────────────────────────────
 def _check_hsts(headers_list=None, is_cdn=False, target_url="", final_headers=None):
     if is_cdn:
-        return [_make_finding("HSTS not applicable (CDN domain)", "", "info", 100, "pass", 
-                              "Strict-Transport-Security", header_value="", 
-                              explanation="The target is a known CDN domain, which typically manages its own HSTS policy.",
-                              evidence="CDN domain detected.", poc=f"curl -I {target_url} | grep -i strict")]
-    
+        return [_make_finding("HSTS not applicable (CDN domain)", "", "info", 100, "pass",
+            "Strict-Transport-Security", header_value="",
+            explanation="The target is a known CDN domain, which typically manages its own HSTS policy.",
+            evidence="CDN domain detected.", poc=f"curl -I {target_url} | grep -i strict")]
+            
     hsts_values = []
     if final_headers is not None:
         headers_for_evidence = final_headers
@@ -436,11 +412,11 @@ def _check_hsts(headers_list=None, is_cdn=False, target_url="", final_headers=No
         evidence = f"Header 'Strict-Transport-Security' not present. Headers received: {present_headers}"
         poc = f"curl -I {target_url} | grep -i strict"
         return [_make_finding("Missing HSTS header", "No HSTS found. SSL stripping attacks possible.", "high", 100, "fail",
-                              "Strict-Transport-Security", header_value="", 
-                              explanation="Without HSTS, browsers will allow HTTP connections, making the application vulnerable to SSL stripping and man-in-the-middle attacks.",
-                              evidence=evidence, remediation="Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
-                              cwe=CWE_MAP["hsts"], owasp=OWASP_MAP["hsts"], poc=poc)]
-    
+            "Strict-Transport-Security", header_value="",
+            explanation="Without HSTS, browsers will allow HTTP connections, making the application vulnerable to SSL stripping and man-in-the-middle attacks.",
+            evidence=evidence, remediation="Strict-Transport-Security: max-age=63072000; includeSubDomains; preload",
+            cwe=CWE_MAP["hsts"], owasp=OWASP_MAP["hsts"], poc=poc)]
+            
     hdr = hsts_values[0]
     max_age = int(re.search(r"max-age\s*=\s*(\d+)", hdr, re.I).group(1)) if re.search(r"max-age\s*=\s*(\d+)", hdr, re.I) else 0
     incl_sub = "includesubdomains" in hdr.lower()
@@ -453,26 +429,26 @@ def _check_hsts(headers_list=None, is_cdn=False, target_url="", final_headers=No
     
     if not issues:
         return [_make_finding("HSTS well configured", f"max-age={max_age}, includeSubDomains, preload", "info", 100, "pass",
-                              "Strict-Transport-Security", header_value=hdr,
-                              explanation="The HSTS header is correctly configured with a long max-age, includeSubDomains, and preload flags.",
-                              evidence=hdr[:200], poc=f"curl -I {target_url} | grep -i strict")]
-    
+            "Strict-Transport-Security", header_value=hdr,
+            explanation="The HSTS header is correctly configured with a long max-age, includeSubDomains, and preload flags.",
+            evidence=hdr[:200], poc=f"curl -I {target_url} | grep -i strict")]
+            
     sev = "medium"
     if preload and max_age < 63072000:
         sev = "high"
     return [_make_finding("HSTS insufficient / not preload-ready", "; ".join(issues), sev, 95, "warning",
-                          "Strict-Transport-Security", header_value=hdr,
-                          explanation="The HSTS header is present but does not meet best practice recommendations for maximum security and preload list inclusion.",
-                          evidence=hdr[:200], remediation="Set max-age=63072000; includeSubDomains; preload",
-                          cwe=CWE_MAP["hsts"], owasp=OWASP_MAP["hsts"], poc=f"curl -I {target_url} | grep -i strict")]
+        "Strict-Transport-Security", header_value=hdr,
+        explanation="The HSTS header is present but does not meet best practice recommendations for maximum security and preload list inclusion.",
+        evidence=hdr[:200], remediation="Set max-age=63072000; includeSubDomains; preload",
+        cwe=CWE_MAP["hsts"], owasp=OWASP_MAP["hsts"], poc=f"curl -I {target_url} | grep -i strict")]
 
 # ── Clickjacking ───────────────────────────────────────────────────────
 def _check_clickjacking(final_headers, is_api, url=""):
     if is_api:
         return [_make_finding("Not applicable (API)", "", "info", 100, "pass", "X-Frame-Options",
-                              header_value="", explanation="API endpoints typically do not render HTML, so clickjacking protection is not applicable.",
-                              evidence="API endpoint detected.", poc=f"curl -Is {url} | grep -i 'x-frame-options\\|content-security-policy'")]
-    
+            header_value="", explanation="API endpoints typically do not render HTML, so clickjacking protection is not applicable.",
+            evidence="API endpoint detected.", poc=f"curl -Is {url} | grep -i 'x-frame-options\\|content-security-policy'")]
+            
     xfo = _get_header(final_headers, "X-Frame-Options")
     csp_raw = _get_header(final_headers, "Content-Security-Policy")
     csp = _parse_csp(csp_raw) if csp_raw else {}
@@ -481,58 +457,57 @@ def _check_clickjacking(final_headers, is_api, url=""):
         val = csp["frame-ancestors"]
         if "'none'" in val:
             return [_make_finding("Clickjacking protected (CSP frame-ancestors: none)", "", "info", 100, "pass",
-                                  "CSP frame-ancestors", header_value=csp_raw,
-                                  explanation="The CSP frame-ancestors directive is set to 'none', which completely prevents the page from being embedded in iframes.",
-                                  evidence=f"CSP frame-ancestors: {val}", poc=f"curl -Is {url} | grep -i 'content-security-policy'")]
+                "CSP frame-ancestors", header_value=csp_raw,
+                explanation="The CSP frame-ancestors directive is set to 'none', which completely prevents the page from being embedded in iframes.",
+                evidence=f"CSP frame-ancestors: {val}", poc=f"curl -Is {url} | grep -i 'content-security-policy'")]
         elif "'self'" in val:
             return [_make_finding("Clickjacking protected (same-origin)", "", "info", 90, "pass",
-                                  "CSP frame-ancestors", header_value=csp_raw,
-                                  explanation="The CSP frame-ancestors directive is set to 'self', allowing the page to be embedded only by pages from the same origin.",
-                                  evidence=f"CSP frame-ancestors: {val}", poc=f"curl -Is {url} | grep -i 'content-security-policy'")]
+                "CSP frame-ancestors", header_value=csp_raw,
+                explanation="The CSP frame-ancestors directive is set to 'self', allowing the page to be embedded only by pages from the same origin.",
+                evidence=f"CSP frame-ancestors: {val}", poc=f"curl -Is {url} | grep -i 'content-security-policy'")]
         else:
             return [_make_finding("Framing allowed from external origins", f"frame-ancestors: {val[:200]}", "medium", 80, "warning",
-                                  "CSP frame-ancestors", header_value=csp_raw,
-                                  explanation="The CSP frame-ancestors directive allows framing from external origins, which may expose the application to clickjacking attacks if those origins are compromised.",
-                                  evidence=f"CSP frame-ancestors: {val[:200]}", remediation="Restrict frame-ancestors to 'none' or 'self'.",
-                                  poc="<iframe src='...'></iframe>")]
-    
+                "CSP frame-ancestors", header_value=csp_raw,
+                explanation="The CSP frame-ancestors directive allows framing from external origins, which may expose the application to clickjacking attacks if those origins are compromised.",
+                evidence=f"CSP frame-ancestors: {val[:200]}", remediation="Restrict frame-ancestors to 'none' or 'self'.",
+                poc="<iframe src='...'></iframe>")]
+                
     if xfo and xfo.upper() in ("DENY", "SAMEORIGIN"):
         return [_make_finding("Clickjacking protected (XFO)", f"XFO: {xfo}", "info", 100, "pass",
-                              "X-Frame-Options", header_value=xfo,
-                              explanation="The X-Frame-Options header is set to a secure value, preventing clickjacking.",
-                              evidence=f"X-Frame-Options: {xfo}", poc=f"curl -Is {url} | grep -i 'x-frame-options'")]
+            "X-Frame-Options", header_value=xfo,
+            explanation="The X-Frame-Options header is set to a secure value, preventing clickjacking.",
+            evidence=f"X-Frame-Options: {xfo}", poc=f"curl -Is {url} | grep -i 'x-frame-options'")]
     elif xfo:
         return [_make_finding("X-Frame-Options insecure value", f"XFO: {xfo}", "critical", 100, "fail",
-                              "X-Frame-Options", header_value=xfo,
-                              explanation="The X-Frame-Options header is present but has an insecure value, failing to protect against clickjacking.",
-                              evidence=f"X-Frame-Options: {xfo}", remediation="Use DENY or SAMEORIGIN.",
-                              poc="<iframe src='...'></iframe>")]
-    
+            "X-Frame-Options", header_value=xfo,
+            explanation="The X-Frame-Options header is present but has an insecure value, failing to protect against clickjacking.",
+            evidence=f"X-Frame-Options: {xfo}", remediation="Use DENY or SAMEORIGIN.",
+            poc="<iframe src='...'></iframe>")]
+            
     present_headers = ', '.join(sorted(final_headers.keys()))
     evidence = f"Neither X-Frame-Options nor CSP frame-ancestors present. Headers received: {present_headers}"
     return [_make_finding("Missing clickjacking protection", "Neither XFO nor CSP frame-ancestors set.", "critical", 100, "fail",
-                          "X-Frame-Options / CSP", header_value="",
-                          explanation="The application lacks both X-Frame-Options and CSP frame-ancestors headers, leaving it fully vulnerable to clickjacking attacks.",
-                          evidence=evidence, remediation="Add X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
-                          poc="<iframe src='...'></iframe>")]
+        "X-Frame-Options / CSP", header_value="",
+        explanation="The application lacks both X-Frame-Options and CSP frame-ancestors headers, leaving it fully vulnerable to clickjacking attacks.",
+        evidence=evidence, remediation="Add X-Frame-Options: DENY or CSP frame-ancestors 'none'.",
+        poc="<iframe src='...'></iframe>")]
 
 # ── X-Content-Type-Options ─────────────────────────────────────────────
 def _check_xcto(final_headers, url=""):
     xcto = _get_header(final_headers, "X-Content-Type-Options")
     if xcto and xcto.lower() == "nosniff":
         return [_make_finding("X-Content-Type-Options: nosniff present", "", "info", 100, "pass",
-                              "X-Content-Type-Options", header_value=xcto,
-                              explanation="The X-Content-Type-Options header is set to 'nosniff', preventing MIME type sniffing.",
-                              evidence=f"Value: {xcto}", poc=f"curl -Is {url} | grep -i 'x-content-type-options'")]
-    
+            "X-Content-Type-Options", header_value=xcto,
+            explanation="The X-Content-Type-Options header is set to 'nosniff', preventing MIME type sniffing.",
+            evidence=f"Value: {xcto}", poc=f"curl -Is {url} | grep -i 'x-content-type-options'")]
     present_headers = ', '.join(sorted(final_headers.keys()))
     evidence = f"Header 'X-Content-Type-Options' not present. Headers received: {present_headers}"
     poc = f"curl -Is {url} | grep -i 'x-content-type-options'"
     return [_make_finding("Missing X-Content-Type-Options", "MIME sniffing attacks possible.", "medium", 100, "fail",
-                          "X-Content-Type-Options", header_value="",
-                          explanation="Without X-Content-Type-Options: nosniff, browsers may attempt to sniff the MIME type of responses, which can lead to XSS attacks.",
-                          evidence=evidence, remediation="Add: X-Content-Type-Options: nosniff",
-                          cwe=CWE_MAP["xcto"], owasp=OWASP_MAP["xcto"], poc=poc)]
+        "X-Content-Type-Options", header_value="",
+        explanation="Without X-Content-Type-Options: nosniff, browsers may attempt to sniff the MIME type of responses, which can lead to XSS attacks.",
+        evidence=evidence, remediation="Add: X-Content-Type-Options: nosniff",
+        cwe=CWE_MAP["xcto"], owasp=OWASP_MAP["xcto"], poc=poc)]
 
 # ── Referrer-Policy ───────────────────────────────────────────────────
 def _check_referrer_policy(final_headers, url=""):
@@ -543,26 +518,26 @@ def _check_referrer_policy(final_headers, url=""):
         evidence = f"Header 'Referrer-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'referrer-policy'"
         return [_make_finding("Missing Referrer-Policy", "Referer header may leak URLs.", "medium", 100, "fail",
-                              "Referrer-Policy", header_value="",
-                              explanation="Without Referrer-Policy, the browser may send the full URL in the Referer header to external sites, leaking sensitive information.",
-                              evidence=evidence, remediation="Set Referrer-Policy: strict-origin-when-cross-origin",
-                              cwe=CWE_MAP["referrer"], owasp=OWASP_MAP["referrer"], poc=poc)]
+            "Referrer-Policy", header_value="",
+            explanation="Without Referrer-Policy, the browser may send the full URL in the Referer header to external sites, leaking sensitive information.",
+            evidence=evidence, remediation="Set Referrer-Policy: strict-origin-when-cross-origin",
+            cwe=CWE_MAP["referrer"], owasp=OWASP_MAP["referrer"], poc=poc)]
     if rp.lower() in safe:
         return [_make_finding("Safe Referrer-Policy", f"Policy: {rp}", "info", 100, "pass", "Referrer-Policy",
-                              header_value=rp,
-                              explanation="The Referrer-Policy is set to a safe value that restricts the information sent in the Referer header.",
-                              evidence=f"Value: {rp}", poc=f"curl -Is {url} | grep -i 'referrer-policy'")]
+            header_value=rp,
+            explanation="The Referrer-Policy is set to a safe value that restricts the information sent in the Referer header.",
+            evidence=f"Value: {rp}", poc=f"curl -Is {url} | grep -i 'referrer-policy'")]
     if rp.lower() == "unsafe-url":
         return [_make_finding("Unsafe Referrer-Policy", "unsafe-url leaks full URLs.", "high", 100, "fail",
-                              "Referrer-Policy", header_value=rp,
-                              explanation="The Referrer-Policy is set to 'unsafe-url', which sends the full URL (including path and query parameters) to all destinations.",
-                              evidence=f"Value: {rp}", remediation="Change to strict-origin-when-cross-origin",
-                              poc=f"curl -Is {url} | grep -i 'referrer-policy'")]
+            "Referrer-Policy", header_value=rp,
+            explanation="The Referrer-Policy is set to 'unsafe-url', which sends the full URL (including path and query parameters) to all destinations.",
+            evidence=f"Value: {rp}", remediation="Change to strict-origin-when-cross-origin",
+            poc=f"curl -Is {url} | grep -i 'referrer-policy'")]
     return [_make_finding("Non-optimal Referrer-Policy", f"Policy: {rp}", "low", 70, "warning",
-                          "Referrer-Policy", header_value=rp,
-                          explanation="The Referrer-Policy is present but not set to the most restrictive safe value.",
-                          evidence=f"Value: {rp}", remediation="Use strict-origin-when-cross-origin",
-                          poc=f"curl -Is {url} | grep -i 'referrer-policy'")]
+        "Referrer-Policy", header_value=rp,
+        explanation="The Referrer-Policy is present but not set to the most restrictive safe value.",
+        evidence=f"Value: {rp}", remediation="Use strict-origin-when-cross-origin",
+        poc=f"curl -Is {url} | grep -i 'referrer-policy'")]
 
 # ── Permissions-Policy ─────────────────────────────────────────────────
 def _check_permissions_policy(final_headers, url=""):
@@ -572,20 +547,20 @@ def _check_permissions_policy(final_headers, url=""):
         evidence = f"Header 'Permissions-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'permissions-policy'"
         return [_make_finding("Permissions-Policy missing", "Feature controls not enforced.", "low", 80, "warning",
-                              "Permissions-Policy", header_value="",
-                              explanation="Without Permissions-Policy, the browser allows all features (like camera, microphone, geolocation) by default, which can be exploited if the site is compromised.",
-                              evidence=evidence, remediation="Add Permissions-Policy to restrict unnecessary features.",
-                              cwe=CWE_MAP["permissions"], owasp=OWASP_MAP["permissions"], poc=poc)]
+            "Permissions-Policy", header_value="",
+            explanation="Without Permissions-Policy, the browser allows all features (like camera, microphone, geolocation) by default, which can be exploited if the site is compromised.",
+            evidence=evidence, remediation="Add Permissions-Policy to restrict unnecessary features.",
+            cwe=CWE_MAP["permissions"], owasp=OWASP_MAP["permissions"], poc=poc)]
     if pp.strip() == "" or "*" in pp:
         return [_make_finding("Permissions-Policy too permissive", "No real restrictions.", "low", 90, "warning",
-                              "Permissions-Policy", header_value=pp,
-                              explanation="The Permissions-Policy header is present but does not effectively restrict any features.",
-                              evidence=f"Value: {pp}", remediation="Disable unused features.",
-                              poc=f"curl -Is {url} | grep -i 'permissions-policy'")]
+            "Permissions-Policy", header_value=pp,
+            explanation="The Permissions-Policy header is present but does not effectively restrict any features.",
+            evidence=f"Value: {pp}", remediation="Disable unused features.",
+            poc=f"curl -Is {url} | grep -i 'permissions-policy'")]
     return [_make_finding("Permissions-Policy present", "Some features restricted.", "info", 90, "pass", "Permissions-Policy",
-                          header_value=pp,
-                          explanation="The Permissions-Policy header is present and restricts some browser features.",
-                          evidence=f"Value: {pp}", poc=f"curl -Is {url} | grep -i 'permissions-policy'")]
+        header_value=pp,
+        explanation="The Permissions-Policy header is present and restricts some browser features.",
+        evidence=f"Value: {pp}", poc=f"curl -Is {url} | grep -i 'permissions-policy'")]
 
 # ── COOP / COEP / CORP ─────────────────────────────────────────────────
 def _check_coop_coep_corp(final_headers, url=""):
@@ -596,62 +571,62 @@ def _check_coop_coep_corp(final_headers, url=""):
         evidence = f"Header 'Cross-Origin-Opener-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'cross-origin-opener-policy'"
         findings.append(_make_finding("Missing COOP", "Cross-origin opener attacks possible.", "medium", 85, "warning",
-                                      "Cross-Origin-Opener-Policy", header_value="",
-                                      explanation="Without COOP, the page's browsing context group is not isolated, making it vulnerable to cross-origin attacks like Spectre.",
-                                      evidence=evidence, remediation="COOP: same-origin",
-                                      cwe=CWE_MAP["coop"], owasp=OWASP_MAP["coop"], poc=poc))
+            "Cross-Origin-Opener-Policy", header_value="",
+            explanation="Without COOP, the page's browsing context group is not isolated, making it vulnerable to cross-origin attacks like Spectre.",
+            evidence=evidence, remediation="COOP: same-origin",
+            cwe=CWE_MAP["coop"], owasp=OWASP_MAP["coop"], poc=poc))
     elif coop.lower() in ("same-origin", "same-origin-allow-popups"):
         findings.append(_make_finding("COOP properly set", f"COOP: {coop}", "info", 100, "pass",
-                                      "Cross-Origin-Opener-Policy", header_value=coop,
-                                      explanation="The COOP header is set to a secure value, isolating the browsing context.",
-                                      evidence=coop, poc=f"curl -Is {url} | grep -i 'cross-origin-opener-policy'"))
+            "Cross-Origin-Opener-Policy", header_value=coop,
+            explanation="The COOP header is set to a secure value, isolating the browsing context.",
+            evidence=coop, poc=f"curl -Is {url} | grep -i 'cross-origin-opener-policy'"))
     else:
         findings.append(_make_finding("COOP not optimal", f"COOP: {coop}", "low", 60, "warning",
-                                      "Cross-Origin-Opener-Policy", header_value=coop,
-                                      explanation="The COOP header is present but set to a non-optimal value.",
-                                      evidence=coop, remediation="Use same-origin", poc=poc))
-
+            "Cross-Origin-Opener-Policy", header_value=coop,
+            explanation="The COOP header is present but set to a non-optimal value.",
+            evidence=coop, remediation="Use same-origin", poc=poc))
+            
     coep = _get_header(final_headers, "Cross-Origin-Embedder-Policy")
     if not coep:
         present_headers = ', '.join(sorted(final_headers.keys()))
         evidence = f"Header 'Cross-Origin-Embedder-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'cross-origin-embedder-policy'"
         findings.append(_make_finding("Missing COEP", "Cross-origin embedding not controlled.", "medium", 80, "warning",
-                                      "Cross-Origin-Embedder-Policy", header_value="",
-                                      explanation="Without COEP, the page can load cross-origin resources without explicit permission, which can be exploited for certain attacks.",
-                                      evidence=evidence, remediation="COEP: require-corp",
-                                      cwe=CWE_MAP["coep"], owasp=OWASP_MAP["coep"], poc=poc))
+            "Cross-Origin-Embedder-Policy", header_value="",
+            explanation="Without COEP, the page can load cross-origin resources without explicit permission, which can be exploited for certain attacks.",
+            evidence=evidence, remediation="COEP: require-corp",
+            cwe=CWE_MAP["coep"], owasp=OWASP_MAP["coep"], poc=poc))
     elif coep.lower() in ("require-corp", "credentialless"):
         findings.append(_make_finding("COEP properly set", f"COEP: {coep}", "info", 100, "pass",
-                                      "Cross-Origin-Embedder-Policy", header_value=coep,
-                                      explanation="The COEP header is set to a secure value, preventing the page from loading cross-origin resources without explicit permission.",
-                                      evidence=coep, poc=f"curl -Is {url} | grep -i 'cross-origin-embedder-policy'"))
+            "Cross-Origin-Embedder-Policy", header_value=coep,
+            explanation="The COEP header is set to a secure value, preventing the page from loading cross-origin resources without explicit permission.",
+            evidence=coep, poc=f"curl -Is {url} | grep -i 'cross-origin-embedder-policy'"))
     else:
         findings.append(_make_finding("COEP not optimal", f"COEP: {coep}", "low", 60, "warning",
-                                      "Cross-Origin-Embedder-Policy", header_value=coep,
-                                      explanation="The COEP header is present but set to a non-optimal value.",
-                                      evidence=coep, remediation="Use require-corp", poc=poc))
-
+            "Cross-Origin-Embedder-Policy", header_value=coep,
+            explanation="The COEP header is present but set to a non-optimal value.",
+            evidence=coep, remediation="Use require-corp", poc=poc))
+            
     corp = _get_header(final_headers, "Cross-Origin-Resource-Policy")
     if not corp:
         present_headers = ', '.join(sorted(final_headers.keys()))
         evidence = f"Header 'Cross-Origin-Resource-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'cross-origin-resource-policy'"
         findings.append(_make_finding("Missing Cross-Origin-Resource-Policy", "Allows any website to load resources from your site.", "medium", 80, "warning",
-                                      "Cross-Origin-Resource-Policy", header_value="",
-                                      explanation="Without CORP, any website can load resources (like images, scripts) from your site, which can be used in cross-site script inclusion attacks.",
-                                      evidence=evidence, remediation="Set CORP to 'same-origin' or 'same-site'.",
-                                      cwe=CWE_MAP["corp"], owasp=OWASP_MAP["corp"], poc=poc))
+            "Cross-Origin-Resource-Policy", header_value="",
+            explanation="Without CORP, any website can load resources (like images, scripts) from your site, which can be used in cross-site script inclusion attacks.",
+            evidence=evidence, remediation="Set CORP to 'same-origin' or 'same-site'.",
+            cwe=CWE_MAP["corp"], owasp=OWASP_MAP["corp"], poc=poc))
     elif corp.strip().lower() in ("same-origin", "same-site"):
         findings.append(_make_finding("Cross-Origin-Resource-Policy properly set", f"Value: {corp}", "info", 100, "pass",
-                                      "Cross-Origin-Resource-Policy", header_value=corp,
-                                      explanation="The CORP header is set to a secure value, preventing other sites from loading your resources.",
-                                      evidence=corp, poc=f"curl -Is {url} | grep -i 'cross-origin-resource-policy'"))
+            "Cross-Origin-Resource-Policy", header_value=corp,
+            explanation="The CORP header is set to a secure value, preventing other sites from loading your resources.",
+            evidence=corp, poc=f"curl -Is {url} | grep -i 'cross-origin-resource-policy'"))
     else:
         findings.append(_make_finding(f"Cross-Origin-Resource-Policy set to '{corp}'", "Value may be too permissive.", "low", 60, "warning",
-                                      "Cross-Origin-Resource-Policy", header_value=corp,
-                                      explanation="The CORP header is present but set to a potentially permissive value.",
-                                      evidence=corp, remediation="Set CORP to 'same-origin' or 'same-site'.", poc=poc))
+            "Cross-Origin-Resource-Policy", header_value=corp,
+            explanation="The CORP header is present but set to a potentially permissive value.",
+            evidence=corp, remediation="Set CORP to 'same-origin' or 'same-site'.", poc=poc))
     return findings
 
 # ── X-XSS-Protection ───────────────────────────────────────────────────
@@ -661,16 +636,16 @@ def _check_xss_protection(final_headers, url=""):
         return []
     if xssp.strip() == "0":
         return [_make_finding("X-XSS-Protection disabled (deprecated but safe)",
-                              "Header set to 0 disables the legacy filter.", "info", 80, "pass",
-                              "X-XSS-Protection", header_value=xssp,
-                              explanation="The X-XSS-Protection header is set to '0', which disables the legacy XSS filter. This is the recommended configuration as the legacy filter can introduce vulnerabilities.",
-                              evidence=xssp, poc=f"curl -Is {url} | grep -i 'x-xss-protection'")]
+            "Header set to 0 disables the legacy filter.", "info", 80, "pass",
+            "X-XSS-Protection", header_value=xssp,
+            explanation="The X-XSS-Protection header is set to '0', which disables the legacy XSS filter. This is the recommended configuration as the legacy filter can introduce vulnerabilities.",
+            evidence=xssp, poc=f"curl -Is {url} | grep -i 'x-xss-protection'")]
     return [_make_finding("X-XSS-Protection enabled (deprecated, potential risk)",
-                          "The legacy XSS filter is deprecated; enabling it may introduce security risks.",
-                          "low", 70, "warning", "X-XSS-Protection", header_value=xssp,
-                          explanation="The X-XSS-Protection header is enabled. This legacy feature is deprecated and can introduce security risks in modern browsers.",
-                          evidence=xssp, remediation="Remove or set to '0' to disable.",
-                          poc=f"curl -Is {url} | grep -i 'x-xss-protection'")]
+        "The legacy XSS filter is deprecated; enabling it may introduce security risks.",
+        "low", 70, "warning", "X-XSS-Protection", header_value=xssp,
+        explanation="The X-XSS-Protection header is enabled. This legacy feature is deprecated and can introduce security risks in modern browsers.",
+        evidence=xssp, remediation="Remove or set to '0' to disable.",
+        poc=f"curl -Is {url} | grep -i 'x-xss-protection'")]
 
 # ── Server / X-Powered-By ──────────────────────────────────────────────
 def _check_server_info(final_headers, url=""):
@@ -678,27 +653,27 @@ def _check_server_info(final_headers, url=""):
     server = _get_header(final_headers, "Server")
     if server and server.lower() not in ("server", ""):
         findings.append(_make_finding(f"Server header exposed: {server}", "Information disclosure.", "low", 80, "info",
-                                      "Server", header_value=server,
-                                      explanation="The Server header reveals the underlying web server software and version, which can aid attackers in identifying known vulnerabilities.",
-                                      evidence=f"Value: {server}", remediation="Remove Server header.",
-                                      cwe=CWE_MAP["server_info"], owasp=OWASP_MAP["server_info"],
-                                      poc=f"curl -Is {url} | grep -i 'server'"))
+            "Server", header_value=server,
+            explanation="The Server header reveals the underlying web server software and version, which can aid attackers in identifying known vulnerabilities.",
+            evidence=f"Value: {server}", remediation="Remove Server header.",
+            cwe=CWE_MAP["server_info"], owasp=OWASP_MAP["server_info"],
+            poc=f"curl -Is {url} | grep -i 'server'"))
     powered = _get_header(final_headers, "X-Powered-By")
     if powered:
         findings.append(_make_finding(f"X-Powered-By exposed: {powered}", "Information disclosure.", "low", 85, "info",
-                                      "X-Powered-By", header_value=powered,
-                                      explanation="The X-Powered-By header reveals the underlying technology stack, which can aid attackers.",
-                                      evidence=f"Value: {powered}", remediation="Remove X-Powered-By header.",
-                                      poc=f"curl -Is {url} | grep -i 'x-powered-by'"))
+            "X-Powered-By", header_value=powered,
+            explanation="The X-Powered-By header reveals the underlying technology stack, which can aid attackers.",
+            evidence=f"Value: {powered}", remediation="Remove X-Powered-By header.",
+            poc=f"curl -Is {url} | grep -i 'x-powered-by'"))
     for specific in ["X-AspNet-Version", "X-AspNetMvc-Version"]:
         val = _get_header(final_headers, specific)
         if val:
             findings.append(_make_finding(f"Exact version disclosed: {val}", "Information disclosure.", "medium", 90, "info",
-                                          specific, header_value=val,
-                                          explanation=f"The {specific} header reveals the exact version of the framework, which can aid attackers.",
-                                          evidence=val, remediation=f"Remove {specific} header.",
-                                          cwe=CWE_MAP["server_info"], owasp=OWASP_MAP["server_info"],
-                                          poc=f"curl -Is {url} | grep -i '{specific}'"))
+                specific, header_value=val,
+                explanation=f"The {specific} header reveals the exact version of the framework, which can aid attackers.",
+                evidence=val, remediation=f"Remove {specific} header.",
+                cwe=CWE_MAP["server_info"], owasp=OWASP_MAP["server_info"],
+                poc=f"curl -Is {url} | grep -i '{specific}'"))
     return findings
 
 # ── Expect-CT ──────────────────────────────────────────────────────────
@@ -706,9 +681,9 @@ def _check_expect_ct(final_headers, url=""):
     ect = _get_header(final_headers, "Expect-CT")
     if ect:
         return [_make_finding("Expect-CT header present (deprecated)", "", "info", 50, "info", "Expect-CT",
-                              header_value=ect,
-                              explanation="The Expect-CT header is deprecated and no longer necessary in modern browsers.",
-                              evidence=ect, poc=f"curl -Is {url} | grep -i 'expect-ct'")]
+            header_value=ect,
+            explanation="The Expect-CT header is deprecated and no longer necessary in modern browsers.",
+            evidence=ect, poc=f"curl -Is {url} | grep -i 'expect-ct'")]
     return []
 
 # ── X-Permitted-Cross-Domain-Policies ───────────────────────────────────
@@ -719,21 +694,21 @@ def _check_x_permitted_cross_domain(final_headers, url=""):
         evidence = f"Header 'X-Permitted-Cross-Domain-Policies' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'x-permitted-cross-domain-policies'"
         return [_make_finding("Missing X-Permitted-Cross-Domain-Policies",
-                              "Prevents Adobe Flash from loading data from your domain.", "low", 70, "warning",
-                              "X-Permitted-Cross-Domain-Policies", header_value="",
-                              explanation="The X-Permitted-Cross-Domain-Policies header is missing. While Flash is obsolete, this header is still checked by some legacy clients.",
-                              evidence=evidence, remediation="Set to 'none' or 'master-only'.", poc=poc)]
+            "Prevents Adobe Flash from loading data from your domain.", "low", 70, "warning",
+            "X-Permitted-Cross-Domain-Policies", header_value="",
+            explanation="The X-Permitted-Cross-Domain-Policies header is missing. While Flash is obsolete, this header is still checked by some legacy clients.",
+            evidence=evidence, remediation="Set to 'none' or 'master-only'.", poc=poc)]
     if xpcd.strip().lower() in ("none", "master-only"):
         return [_make_finding("X-Permitted-Cross-Domain-Policies properly set", "", "info", 100, "pass",
-                              "X-Permitted-Cross-Domain-Policies", header_value=xpcd,
-                              explanation="The X-Permitted-Cross-Domain-Policies header is correctly configured.",
-                              evidence=xpcd, poc=f"curl -Is {url} | grep -i 'x-permitted-cross-domain-policies'")]
+            "X-Permitted-Cross-Domain-Policies", header_value=xpcd,
+            explanation="The X-Permitted-Cross-Domain-Policies header is correctly configured.",
+            evidence=xpcd, poc=f"curl -Is {url} | grep -i 'x-permitted-cross-domain-policies'")]
     return [_make_finding(f"X-Permitted-Cross-Domain-Policies set to '{xpcd}'",
-                          "Value may not be restrictive enough.", "low", 60, "warning",
-                          "X-Permitted-Cross-Domain-Policies", header_value=xpcd,
-                          explanation="The X-Permitted-Cross-Domain-Policies header is present but not set to the most restrictive value.",
-                          evidence=xpcd, remediation="Set to 'none' or 'master-only'.",
-                          poc=f"curl -Is {url} | grep -i 'x-permitted-cross-domain-policies'")]
+        "Value may not be restrictive enough.", "low", 60, "warning",
+        "X-Permitted-Cross-Domain-Policies", header_value=xpcd,
+        explanation="The X-Permitted-Cross-Domain-Policies header is present but not set to the most restrictive value.",
+        evidence=xpcd, remediation="Set to 'none' or 'master-only'.",
+        poc=f"curl -Is {url} | grep -i 'x-permitted-cross-domain-policies'")]
 
 # ── NEW: Document-Policy ────────────────────────────────────────────────
 def _check_document_policy(final_headers, url=""):
@@ -743,15 +718,14 @@ def _check_document_policy(final_headers, url=""):
         evidence = f"Header 'Document-Policy' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'document-policy'"
         return [_make_finding("Missing Document-Policy", "Document-Policy header is not set.", "low", 70, "warning",
-                              "Document-Policy", header_value="",
-                              explanation="The Document-Policy header allows a site to restrict the use of certain Web Platform features. While not strictly mandatory, it helps mitigate certain classes of attacks.",
-                              evidence=evidence, remediation="Consider implementing Document-Policy to restrict unnecessary features.",
-                              cwe=CWE_MAP.get("document_policy", "CWE-693"), owasp=OWASP_MAP.get("document_policy", "A05:2021"), poc=poc)]
-    
+            "Document-Policy", header_value="",
+            explanation="The Document-Policy header allows a site to restrict the use of certain Web Platform features. While not strictly mandatory, it helps mitigate certain classes of attacks.",
+            evidence=evidence, remediation="Consider implementing Document-Policy to restrict unnecessary features.",
+            cwe=CWE_MAP.get("document_policy", "CWE-693"), owasp=OWASP_MAP.get("document_policy", "A05:2021"), poc=poc)]
     return [_make_finding("Document-Policy is set", f"Value: {dp}", "info", 90, "pass",
-                          "Document-Policy", header_value=dp,
-                          explanation="The Document-Policy header is present, which helps restrict the use of certain Web Platform features.",
-                          evidence=dp, poc=f"curl -Is {url} | grep -i 'document-policy'")]
+        "Document-Policy", header_value=dp,
+        explanation="The Document-Policy header is present, which helps restrict the use of certain Web Platform features.",
+        evidence=dp, poc=f"curl -Is {url} | grep -i 'document-policy'")]
 
 # ── NEW: Origin-Agent-Cluster ───────────────────────────────────────────
 def _check_origin_agent_cluster(final_headers, url=""):
@@ -761,40 +735,37 @@ def _check_origin_agent_cluster(final_headers, url=""):
         evidence = f"Header 'Origin-Agent-Cluster' not present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'origin-agent-cluster'"
         return [_make_finding("Missing Origin-Agent-Cluster", "Origin-Agent-Cluster header is not set.", "low", 70, "warning",
-                              "Origin-Agent-Cluster", header_value="",
-                              explanation="The Origin-Agent-Cluster header provides a mechanism to allow web applications to isolate their origins. This mitigates certain cross-origin attacks.",
-                              evidence=evidence, remediation="Add Origin-Agent-Cluster: ?1 to your response headers.",
-                              cwe=CWE_MAP.get("origin_agent_cluster", "CWE-693"), owasp=OWASP_MAP.get("origin_agent_cluster", "A05:2021"), poc=poc)]
-    
+            "Origin-Agent-Cluster", header_value="",
+            explanation="The Origin-Agent-Cluster header provides a mechanism to allow web applications to isolate their origins. This mitigates certain cross-origin attacks.",
+            evidence=evidence, remediation="Add Origin-Agent-Cluster: ?1 to your response headers.",
+            cwe=CWE_MAP.get("origin_agent_cluster", "CWE-693"), owasp=OWASP_MAP.get("origin_agent_cluster", "A05:2021"), poc=poc)]
     if oac.strip() != "?1":
         evidence = f"Header 'Origin-Agent-Cluster' has invalid value: {oac}"
         poc = f"curl -Is {url} | grep -i 'origin-agent-cluster'"
         return [_make_finding("Invalid Origin-Agent-Cluster value", f"Value: {oac}", "medium", 80, "fail",
-                              "Origin-Agent-Cluster", header_value=oac,
-                              explanation="The Origin-Agent-Cluster header must be set to '?1' to enable origin isolation. Any other value is ignored by browsers.",
-                              evidence=evidence, remediation="Set Origin-Agent-Cluster: ?1",
-                              cwe=CWE_MAP.get("origin_agent_cluster", "CWE-693"), owasp=OWASP_MAP.get("origin_agent_cluster", "A05:2021"), poc=poc)]
-    
+            "Origin-Agent-Cluster", header_value=oac,
+            explanation="The Origin-Agent-Cluster header must be set to '?1' to enable origin isolation. Any other value is ignored by browsers.",
+            evidence=evidence, remediation="Set Origin-Agent-Cluster: ?1",
+            cwe=CWE_MAP.get("origin_agent_cluster", "CWE-693"), owasp=OWASP_MAP.get("origin_agent_cluster", "A05:2021"), poc=poc)]
     return [_make_finding("Origin-Agent-Cluster is properly set", f"Value: {oac}", "info", 100, "pass",
-                          "Origin-Agent-Cluster", header_value=oac,
-                          explanation="The Origin-Agent-Cluster header is correctly set to '?1', enabling origin isolation.",
-                          evidence=oac, poc=f"curl -Is {url} | grep -i 'origin-agent-cluster'")]
+        "Origin-Agent-Cluster", header_value=oac,
+        explanation="The Origin-Agent-Cluster header is correctly set to '?1', enabling origin isolation.",
+        evidence=oac, poc=f"curl -Is {url} | grep -i 'origin-agent-cluster'")]
 
 # ── NEW: Reporting API ──────────────────────────────────────────────────
 def _check_reporting_api(final_headers, url=""):
     rt = _get_header(final_headers, "Report-To")
     rep = _get_header(final_headers, "Reporting-Endpoints")
-    
     if not rt and not rep:
         present_headers = ', '.join(sorted(final_headers.keys()))
         evidence = f"Neither 'Report-To' nor 'Reporting-Endpoints' headers are present. Headers received: {present_headers}"
         poc = f"curl -Is {url} | grep -i 'report-to\\|reporting-endpoints'"
         return [_make_finding("Missing Reporting API configuration", "No Reporting API headers found.", "low", 60, "warning",
-                              "Report-To / Reporting-Endpoints", header_value="",
-                              explanation="The Reporting API allows browsers to send reports about security violations (e.g., CSP violations) to a server. Without it, you cannot monitor for attacks or misconfigurations in production.",
-                              evidence=evidence, remediation="Implement the Reporting API by adding Report-To or Reporting-Endpoints headers.",
-                              cwe=CWE_MAP.get("reporting_api", "CWE-693"), owasp=OWASP_MAP.get("reporting_api", "A05:2021"), poc=poc)]
-    
+            "Report-To / Reporting-Endpoints", header_value="",
+            explanation="The Reporting API allows browsers to send reports about security violations (e.g., CSP violations) to a server. Without it, you cannot monitor for attacks or misconfigurations in production.",
+            evidence=evidence, remediation="Implement the Reporting API by adding Report-To or Reporting-Endpoints headers.",
+            cwe=CWE_MAP.get("reporting_api", "CWE-693"), owasp=OWASP_MAP.get("reporting_api", "A05:2021"), poc=poc)]
+            
     findings = []
     if rep:
         endpoints = re.findall(r'"(https?://[^"]+)"', rep)
@@ -803,15 +774,15 @@ def _check_reporting_api(final_headers, url=""):
                 evidence = f"Reporting-Endpoints contains non-HTTPS endpoint: {ep}"
                 poc = f"curl -Is {url} | grep -i 'reporting-endpoints'"
                 findings.append(_make_finding("Reporting API endpoint uses HTTP", f"Endpoint: {ep}", "high", 90, "fail",
-                                              "Reporting-Endpoints", header_value=rep,
-                                              explanation="Reporting endpoints should use HTTPS to prevent man-in-the-middle attacks from intercepting or modifying security reports.",
-                                              evidence=evidence, remediation="Change the Reporting API endpoint URL to use HTTPS.",
-                                              cwe=CWE_MAP.get("reporting_api", "CWE-319"), owasp=OWASP_MAP.get("reporting_api", "A05:2021"), poc=poc))
+                    "Reporting-Endpoints", header_value=rep,
+                    explanation="Reporting endpoints should use HTTPS to prevent man-in-the-middle attacks from intercepting or modifying security reports.",
+                    evidence=evidence, remediation="Change the Reporting API endpoint URL to use HTTPS.",
+                    cwe=CWE_MAP.get("reporting_api", "CWE-319"), owasp=OWASP_MAP.get("reporting_api", "A05:2021"), poc=poc))
         if not findings:
             findings.append(_make_finding("Reporting-Endpoints is configured", f"Value: {rep}", "info", 90, "pass",
-                                          "Reporting-Endpoints", header_value=rep,
-                                          explanation="The Reporting-Endpoints header is present and endpoints appear to use HTTPS.",
-                                          evidence=rep, poc=f"curl -Is {url} | grep -i 'reporting-endpoints'"))
+                "Reporting-Endpoints", header_value=rep,
+                explanation="The Reporting-Endpoints header is present and endpoints appear to use HTTPS.",
+                evidence=rep, poc=f"curl -Is {url} | grep -i 'reporting-endpoints'"))
     elif rt:
         endpoints = re.findall(r'"url"\s*:\s*"(https?://[^"]+)"', rt)
         for ep in endpoints:
@@ -819,15 +790,15 @@ def _check_reporting_api(final_headers, url=""):
                 evidence = f"Report-To contains non-HTTPS endpoint: {ep}"
                 poc = f"curl -Is {url} | grep -i 'report-to'"
                 findings.append(_make_finding("Reporting API endpoint uses HTTP", f"Endpoint: {ep}", "high", 90, "fail",
-                                              "Report-To", header_value=rt,
-                                              explanation="Reporting endpoints should use HTTPS to prevent man-in-the-middle attacks from intercepting or modifying security reports.",
-                                              evidence=evidence, remediation="Change the Reporting API endpoint URL to use HTTPS.",
-                                              cwe=CWE_MAP.get("reporting_api", "CWE-319"), owasp=OWASP_MAP.get("reporting_api", "A05:2021"), poc=poc))
+                    "Report-To", header_value=rt,
+                    explanation="Reporting endpoints should use HTTPS to prevent man-in-the-middle attacks from intercepting or modifying security reports.",
+                    evidence=evidence, remediation="Change the Reporting API endpoint URL to use HTTPS.",
+                    cwe=CWE_MAP.get("reporting_api", "CWE-319"), owasp=OWASP_MAP.get("reporting_api", "A05:2021"), poc=poc))
         if not findings:
             findings.append(_make_finding("Report-To is configured", f"Value: {rt}", "info", 90, "pass",
-                                          "Report-To", header_value=rt,
-                                          explanation="The Report-To header is present and endpoints appear to use HTTPS.",
-                                          evidence=rt, poc=f"curl -Is {url} | grep -i 'report-to'"))
+                "Report-To", header_value=rt,
+                explanation="The Report-To header is present and endpoints appear to use HTTPS.",
+                evidence=rt, poc=f"curl -Is {url} | grep -i 'report-to'"))
     return findings
 
 # ── Better API vs HTML page detection ─────────────────────────────────
@@ -880,7 +851,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
         responses = []
         site_context = await _categorize_site(hostname, port)
         waf_detected = await _detect_waf(hostname, port)
-    
+        
     content_type = _get_header(final_headers, "Content-Type") or ""
     set_cookie = _get_header(final_headers, "Set-Cookie")
     is_api = _is_api_response(final_headers, final_url, main_html)
@@ -893,14 +864,13 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
         header_order_info = _analyze_header_order([{"headers": final_headers}])
     else:
         header_order_info = _analyze_header_order(responses)
-    
+        
     raw_findings = []
-    
     if responses:
         raw_findings.extend(_check_hsts(headers_list=responses, is_cdn=is_cdn, target_url=target))
     else:
         raw_findings.extend(_check_hsts(final_headers=final_headers, is_cdn=is_cdn, target_url=target))
-    
+        
     raw_findings.extend(_check_clickjacking(final_headers, is_api, url=target))
     csp_findings, csp_directives = _check_csp_enhanced(final_headers, is_api, url=target)
     raw_findings.extend(csp_findings)
@@ -922,12 +892,12 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     
     if is_error_page:
         raw_findings.append(_make_finding(f"Response returned {final_status}",
-                                          "Security headers may belong to error page/WAF.", "info", 70, "warning",
-                                          "Response Status", header_value=str(final_status),
-                                          explanation="The response returned an error status code. Security headers analysis may be inaccurate if this is a WAF or error page.",
-                                          evidence=f"HTTP {final_status}",
-                                          remediation="Re-scan a known working page (200 OK)."))
-    
+            "Security headers may belong to error page/WAF.", "info", 70, "warning",
+            "Response Status", header_value=str(final_status),
+            explanation="The response returned an error status code. Security headers analysis may be inaccurate if this is a WAF or error page.",
+            evidence=f"HTTP {final_status}",
+            remediation="Re-scan a known working page (200 OK)."))
+            
     findings = [f for f in raw_findings if f["status"] in ("fail", "warning")]
     passing_checks = [f for f in raw_findings if f["status"] == "pass"]
     
@@ -943,7 +913,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
         for f in findings:
             if f["header"] in sensitive_headers and f["severity"] != "critical":
                 f["severity"] = boost_map.get(f["severity"], f["severity"])
-    
+                
     context = {
         "is_login_page": "login" in site_context.get("categories", []),
         "is_ecommerce": "ecommerce" in site_context.get("categories", []),

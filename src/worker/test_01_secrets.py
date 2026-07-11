@@ -39,7 +39,6 @@ INLINE_SCRIPT_MAX_BYTES = 250 * 1024
 FETCH_MAX_BYTES_HTML = 2 * 1024 * 1024
 FETCH_MAX_BYTES_JS = 1 * 1024 * 1024
 JS_SIZE_LIMIT = 500 * 1024
-
 SENSITIVE_PATHS = [
     "/.env", "/config.js", "/credentials.json",
     "/secrets.yaml", "/app.config", "/settings.py",
@@ -49,7 +48,6 @@ SENSITIVE_PATHS = [
     "/server.key", "/private.key", "/cert.pem",
     "/private.pem", "/key.pem", "/.docker/config.json"
 ]
-
 DEFAULT_MIN_CONFIDENCE = 75
 
 # ────────────────────────────────────────────── False‑positive filters ──────────────────────────────────────
@@ -62,22 +60,18 @@ PLACEHOLDER_MARKERS = (
     "your-secret", "my-secret", "example-", "sample-",
     "00000000-0000-0000-0000-000000000000"
 )
-
 KNOWN_TEST_PREFIXES = (
     "sk_test_", "pk_test_", "sk_live_",
     "ghp_", "gho_", "ghu_", "ghs_",
     "xoxb-", "xoxp-", "SG.", "pk_live_", "pk_test_"
 )
-
 CONTEXT_KEYWORDS = ("key", "secret", "token", "auth", "credential",
                     "password", "api", "access", "passwd", "private",
                     "database", "dsn", "connection")
-
 HIGH_ENTROPY_EXCLUDES = re.compile(
     r'(encrypted.slate|csrf|nonce|analytics|tracking|gtag|google_tag)',
     re.IGNORECASE
 )
-
 SOFT_404_PHRASES = [
     "404 Not Found", "Not Found", "The requested URL was not found on this server.",
     "The page you are looking for could not be found", "Error 404", "Page not found",
@@ -186,13 +180,21 @@ def _is_soft_404(html: str) -> bool:
 
 # ────────────────────────────────────────────── Active Verification ──────────────────────────────────────────
 async def _verify_with_retry(verifier, key, session, *args) -> dict:
-    try:
-        return await verifier(key, session, *args)
-    except Exception:
+    max_attempts = 3
+    backoffs = [0.5, 1.5]
+    for i in range(max_attempts):
         try:
-            await asyncio.sleep(0.5)
-            return await verifier(key, session, *args)
+            result = await verifier(key, session, *args)
+            if result.get("status") == 429:
+                if i < max_attempts - 1:
+                    await asyncio.sleep(backoffs[i])
+                    continue
+                return {"verified": None, "note": "rate_limited", "status": 429}
+            return result
         except Exception as e:
+            if i < max_attempts - 1:
+                await asyncio.sleep(backoffs[i])
+                continue
             return {"verified": False, "error": f"Retry failed: {e}"}
 
 async def _verify_openai(key: str, session: aiohttp.ClientSession) -> dict:
@@ -302,14 +304,14 @@ SECRET_PATTERNS = [
     ("Mailgun API Key",         re.compile(r'key-[a-zA-Z0-9]{32}'), 0, True),
     ("Supabase Key",            re.compile(r'sb-[a-z0-9]{20,}-[a-z0-9]{20,}'), 0, True),
     ("Vercel Token",            re.compile(r'[a-zA-Z0-9]{24}\.[a-zA-Z0-9_]{60,70}'), 0, True),
-    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0, False),
+    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0, True),  # FIX 1: Changed to True
     ("MapBox API Key",          re.compile(r'(pk|sk)\.eyJ1Ijoi[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+'), 0, True),
     ("Google API Key",          re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),
     ("Firebase API Key",        re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),
     ("Twilio Auth Token",       re.compile(r'SK[0-9a-fA-F]{32}'), 0, False),
     ("Twilio Account SID",      re.compile(r'AC[0-9a-fA-F]{32}'), 0, False),
-    ("Algolia Application ID",  re.compile(r'[A-Z0-9]{10}'), 0, False),
-    ("Algolia API Key",         re.compile(r'[a-fA-F0-9]{32}'), 0, False),
+    ("Algolia Application ID",  re.compile(r'[A-Z0-9]{10}'), 0, True),  # FIX 1: Changed to True
+    ("Algolia API Key",         re.compile(r'[a-fA-F0-9]{32}'), 0, True),  # FIX 1: Changed to True
     ("AWS Access Key ID",       re.compile(r'AKIA[0-9A-Z]{16}'), 0, True),
     ("AWS Secret Access Key",   re.compile(r'(?i)aws.{0,20}secret.{0,20}["\']([A-Za-z0-9/+=]{40})["\']'), 1, True),
     ("AWS4-HMAC-SHA256",        re.compile(r'AWS4-HMAC-SHA256\s+Credential=([A-Z0-9]{16})/[0-9]+/[a-z0-9-]+/[a-z0-9]+/aws4_request'), 1, True),
@@ -318,7 +320,6 @@ SECRET_PATTERNS = [
     ("Database Connection",     re.compile(r'(?i)(mongodb(?:\+srv)?|mysql|postgresql|redis|amqp):\/\/[^:\/\s"\'<>]+:[^@\/\s"\'<>]+@[^\s"\'<>]+'), 0, True),
     ("Bearer Token",            re.compile(r'Bearer\s+([A-Za-z0-9\-_\.]+)'), 1, True),
     ("JWT Token",               re.compile(r'eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+'), 0, True),
-    
     # Enterprise / Cloud Additions
     ("Supabase Service Role JWT", re.compile(r'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6[A-Za-z0-9\-_]+'), 0, True),
     ("Clerk Secret Key",        re.compile(r'sk_live_[a-zA-Z0-9]{24,}'), 0, True),
@@ -333,7 +334,6 @@ FIREBASE_CONFIG = re.compile(
     r'apiKey\s*:\s*["\'](AIza[0-9A-Za-z\-_]{35})["\'][^}]*projectId\s*:\s*["\']([a-z0-9-]+)["\']',
     re.DOTALL
 )
-
 ENTROPY_CANDIDATE = re.compile(r'["\'`]([A-Za-z0-9+/_\-=]{40,})["\'`]')
 ENTROPY_CONTEXT = re.compile(r'(?i)(key|token|secret|auth|credential|passwd)')
 
@@ -409,7 +409,6 @@ def _risk_description(secret_type: str, verified: bool, note: str = "") -> str:
 def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
     decoded = []
     methods = []
-    
     # atob
     atob_pat = re.compile(r'atob\s*\(\s*(["\'])((?:(?!\1).)*)\1\s*\)', re.IGNORECASE)
     for m in atob_pat.finditer(content):
@@ -418,7 +417,6 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
             decoded.append(base64.b64decode(b64).decode("utf-8", errors="replace"))
             if "atob" not in methods: methods.append("atob")
         except: pass
-
     # fromCharCode
     fromcc_pat = re.compile(r'String\.fromCharCode\s*\(\s*([\d,\s]+)\s*\)', re.IGNORECASE)
     for m in fromcc_pat.finditer(content):
@@ -427,7 +425,6 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
             decoded.append(''.join(chr(n) for n in nums))
             if "fromCharCode" not in methods: methods.append("fromCharCode")
         except: pass
-
     # Hex escapes (\x41\x42)
     hex_pat = re.compile(r'((?:\\x[0-9a-fA-F]{2}){4,})')
     for m in hex_pat.finditer(content):
@@ -435,7 +432,6 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
             decoded.append(bytes(m.group(1), 'utf-8').decode('unicode_escape'))
             if "hex_escape" not in methods: methods.append("hex_escape")
         except: pass
-
     # Unicode escapes (\u0041\u0042)
     uni_pat = re.compile(r'((?:\\u[0-9a-fA-F]{4}){4,})')
     for m in uni_pat.finditer(content):
@@ -443,14 +439,12 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
             decoded.append(bytes(m.group(1), 'utf-8').decode('unicode_escape'))
             if "unicode_escape" not in methods: methods.append("unicode_escape")
         except: pass
-
     seen = set()
     unique = []
     for s in decoded:
         if s not in seen and len(s) > 5:
             seen.add(s)
             unique.append(s)
-            
     method_str = ", ".join(methods) if methods else None
     return unique, method_str
 
@@ -573,7 +567,7 @@ async def _scan_content(
 
             if any(start < e and end > s for s, e in matched_spans):
                 continue
-            
+
             # Aggressive False Positive Reduction
             if _looks_like_placeholder(value):
                 continue
@@ -581,11 +575,11 @@ async def _scan_content(
                 continue
             if is_script and _is_in_comment(content, start):
                 continue
-            
+
             # Filter out environment variable references
             if re.search(r'(?i)(process\.env|import\.meta\.env|os\.environ|getenv|env\(|\$_ENV|\$_SERVER)', value):
                 continue
-            
+
             # Filter out pure uppercase variable names
             if re.match(r'^[A-Z0-9_]+$', value) and len(value) < 40:
                 continue
@@ -593,28 +587,30 @@ async def _scan_content(
             if not is_high_conf:
                 if not _has_credential_context(content, start, end, window=60):
                     continue
-                if label == "Cloudflare API Token":
-                    ctx = content[max(0, start - 60):end + 60]
-                    if not re.search(r'(cloudflare|cf_)', ctx, re.IGNORECASE):
-                        continue
-                if label == "Vercel Token":
-                    ctx = content[max(0, start - 60):end + 60]
-                    if not re.search(r'vercel', ctx, re.IGNORECASE):
-                        continue
-                if label in ("Twilio Auth Token", "Twilio Account SID"):
-                    if not _has_credential_context(content, start, end, window=60):
-                        continue
-                if label in ("Algolia Application ID", "Algolia API Key"):
-                    ctx = content[max(0, start - 60):end + 60]
-                    if not re.search(r'algolia', ctx, re.IGNORECASE):
-                        continue
-                if label == "Bearer Token":
-                    win = content[max(0, start - 80):end + 80]
-                    if not re.search(r'(?:Authorization|auth)', win, re.IGNORECASE):
-                        continue
-                if label not in ("AWS Access Key ID", "AWS4-HMAC-SHA256", "AWS Signed Header"):
-                    if _shannon_entropy(value) < 4.0:
-                        continue
+
+            if label == "Cloudflare API Token":
+                ctx = content[max(0, start - 60):end + 60]
+                if not re.search(r'(cloudflare|cf_)', ctx, re.IGNORECASE):
+                    continue
+            if label == "Vercel Token":
+                ctx = content[max(0, start - 60):end + 60]
+                if not re.search(r'vercel', ctx, re.IGNORECASE):
+                    continue
+            if label in ("Twilio Auth Token", "Twilio Account SID"):
+                if not _has_credential_context(content, start, end, window=60):
+                    continue
+            if label in ("Algolia Application ID", "Algolia API Key"):
+                ctx = content[max(0, start - 60):end + 60]
+                if not re.search(r'algolia', ctx, re.IGNORECASE):
+                    continue
+            if label == "Bearer Token":
+                win = content[max(0, start - 80):end + 80]
+                if not re.search(r'(?:Authorization|auth)', win, re.IGNORECASE):
+                    continue
+
+            if label not in ("AWS Access Key ID", "AWS4-HMAC-SHA256", "AWS Signed Header"):
+                if _shannon_entropy(value) < 4.0:
+                    continue
 
             if label in ("AWS Access Key ID", "AWS Secret Access Key"):
                 if label == "AWS Access Key ID":
@@ -657,11 +653,15 @@ async def _scan_content(
             location = location_fn_factory(line_no)
             context = _extract_context(content, start, end)
             poc = _poc_command(label, value)
-            
             metadata = SECRET_METADATA.get(label, {
-                "cwe": "CWE-798", "owasp": "A07:2021", 
+                "cwe": "CWE-798", "owasp": "A07:2021",
                 "remediation": "Rotate the exposed credential immediately and remove it from the source code."
             })
+
+            # FIX 3: Standardize evidence fields
+            conf_calc = f"Base: {base_conf}, Verified: {verified}, Entropy: {_shannon_entropy(value):.2f}" if not is_high_conf else f"Base: {base_conf}, Verified: {verified}"
+            if verified is None:
+                conf_calc += " (Rate limited, verification inconclusive)"
 
             evidence = {
                 "type": label,
@@ -670,7 +670,7 @@ async def _scan_content(
                 "value_masked": _mask(value),
                 "verified": verified,
                 "confidence": confidence,
-                "confidence_calculation": f"Base: {base_conf}, Verified: {verified}, Entropy: {_shannon_entropy(value):.2f}" if not is_high_conf else f"Base: {base_conf}, Verified: {verified}",
+                "confidence_calculation": conf_calc,
                 "severity": severity,
                 "poc": poc,
                 "risk": _risk_description(label, verified, verify_note),
@@ -699,7 +699,7 @@ async def _scan_content(
                         continue
                     loc_ak = location_fn_factory(ak_data["line"])
                     loc_sk = location_fn_factory(sk_data["line"])
-                    metadata = SECRET_METADATA["AWS Key Pair"]
+                    metadata = SECRET_METADATA.get("AWS Key Pair", SECRET_METADATA["AWS Access Key ID"])
                     findings.append({
                         "type": "AWS Key Pair",
                         "location": f"AK {loc_ak}, SK {loc_sk}",
@@ -744,8 +744,8 @@ async def _scan_content(
         severity_fb = "critical" if verified_fb else "medium"
         line_no = _line_number(content, start)
         location = location_fn_factory(line_no)
-        metadata = SECRET_METADATA["Firebase Configuration"]
-        
+        metadata = SECRET_METADATA.get("Firebase Configuration", SECRET_METADATA["Firebase API Key"])
+
         evidence = {
             "type": "Firebase Configuration",
             "location": location,
@@ -766,6 +766,7 @@ async def _scan_content(
         }
         if verify_resp_fb:
             evidence["verification_response"] = verify_resp_fb
+
         findings.append(evidence)
         matched_spans.append((start, end))
 
@@ -778,7 +779,7 @@ async def _scan_content(
             candidate = match.group(1)
             if len(candidate) < 30 or _looks_like_placeholder(candidate):
                 continue
-            
+
             # Filter out common hashes
             if re.match(r'^[0-9a-f]{32}$', candidate, re.IGNORECASE): continue
             if re.match(r'^[0-9a-f]{40}$', candidate, re.IGNORECASE): continue
@@ -786,6 +787,7 @@ async def _scan_content(
 
             if _shannon_entropy(candidate) < 5.0:
                 continue
+
             ctx_window = content[max(0, start - 60):end + 60]
             if not ENTROPY_CONTEXT.search(ctx_window):
                 continue
@@ -795,7 +797,7 @@ async def _scan_content(
             line_no = _line_number(content, start)
             location = location_fn_factory(line_no)
             metadata = SECRET_METADATA["High-Entropy Secret"]
-            
+
             findings.append({
                 "type": "High-Entropy Secret",
                 "location": location,
@@ -857,7 +859,6 @@ async def run(
         html = None
         status = None
         soup_obj = None
-
         if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
             html = shared_page.get("html", "")
             status = shared_page.get("status", 0)
@@ -875,7 +876,7 @@ async def run(
                         "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
                         "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
                                     "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                                    "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
+                        "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
                         "evidence": [], "remediation": "Check target URL accessibility."
                     }
                 resp_headers = {k.lower(): v for k, v in resp.headers.items()}
@@ -888,7 +889,7 @@ async def run(
                         "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
                         "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
                                     "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                                    "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
+                        "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
                         "evidence": [], "remediation": "Target page is too large to scan completely."
                     }
                 html = body_bytes.decode("utf-8", errors="replace")
@@ -900,7 +901,7 @@ async def run(
                 "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
                 "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
                             "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                            "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
+                "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
                 "evidence": [], "remediation": "Target returned empty content."
             }
 
@@ -945,6 +946,7 @@ async def run(
                             fetch_failures += 1
                             return None, url
                         return content, url
+
                 tasks.append(fetch_and_scan(u))
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -958,6 +960,7 @@ async def run(
                 js_content, js_url = result
                 if js_content is None:
                     continue
+
                 external_scanned += 1
                 scanned_urls.append(js_url)
                 filename = urlparse(js_url).path.split("/")[-1] or "external.js"
@@ -971,6 +974,7 @@ async def run(
                     dec_loc_fn = lambda ln, fn=filename, m=method: f"{fn} (decoded {m}) line {ln}"
                     f_dec = await _scan_content(combined, dec_loc_fn, own_session, True, sem_verify, decoded_method=method, verify_live=verify_live, min_confidence=min_confidence)
                     external_findings.extend(f_dec)
+
             return external_findings
 
         try:
@@ -995,6 +999,7 @@ async def run(
         for path in SENSITIVE_PATHS:
             risky_urls.append(urljoin(target, path))
         risky_urls = list(set(risky_urls))
+
         risky_tasks = []
         for furl in risky_urls:
             async def fetch_risky(url):
@@ -1007,16 +1012,19 @@ async def run(
                 continue
             status_code, body = result
             file_url = risky_urls[i]
+
             if status_code in (403, 401):
                 if status_code == 403 and is_generic_403:
                     if generic_403_body and body:
                         similarity = difflib.SequenceMatcher(None, body, generic_403_body).ratio()
                         if similarity > 0.9:
                             continue
+
                 parsed_path = urlparse(file_url).path
                 is_builtin = any(parsed_path == p for p in SENSITIVE_PATHS)
                 confidence = 80 if is_builtin else (70 if status_code == 403 else 60)
                 metadata = SECRET_METADATA["Forbidden Sensitive File"]
+
                 findings.append({
                     "type": "Forbidden Sensitive File",
                     "location": f"{parsed_path} (HTTP {status_code})",
@@ -1037,6 +1045,7 @@ async def run(
                 })
                 resources_scanned += 1
                 scanned_urls.append(file_url)
+
             elif body and status_code == 200:
                 if _is_soft_404(body):
                     continue
@@ -1054,7 +1063,7 @@ async def run(
             "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
             "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
                         "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                        "resources_scanned": resources_scanned, "scanned_urls": scanned_urls, "fetch_failures": fetch_failures},
+            "resources_scanned": resources_scanned, "scanned_urls": scanned_urls, "fetch_failures": fetch_failures},
             "evidence": findings, "remediation": "An unexpected error occurred during scanning."
         }
     finally:
@@ -1064,8 +1073,11 @@ async def run(
     # ── Summary logic ──
     all_secrets = [f for f in findings if f.get("type") != "Forbidden Sensitive File"]
     forbidden_files = [f for f in findings if f.get("type") == "Forbidden Sensitive File"]
-    verified = [s for s in all_secrets if s.get("verified")]
-    high_conf = [s for s in all_secrets if s.get("confidence", 0) >= 80 and not s.get("verified")]
+    
+    # Handle tri-state verified (True, False, None)
+    verified = [s for s in all_secrets if s.get("verified") is True]
+    rate_limited = [s for s in all_secrets if s.get("verified") is None]
+    high_conf = [s for s in all_secrets if s.get("confidence", 0) >= 80 and s.get("verified") is False]
 
     severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for f in all_secrets + forbidden_files:
@@ -1092,6 +1104,9 @@ async def run(
         status = "pass"
         overall_sev = "info"
         title = "No secrets detected"
+
+    if rate_limited:
+        title += f" ({len(rate_limited)} rate-limited during verification)"
 
     return {
         "test_name": "secrets_detection",
