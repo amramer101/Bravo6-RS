@@ -131,6 +131,7 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
     if url in ctx.main_page_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.main_page_cache[url]
+
     if url in ctx.fetch_events:
         await ctx.fetch_events[url].wait()
         ctx.metrics["cache_hits"] += 1
@@ -161,6 +162,7 @@ async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
     if js_url in ctx.js_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.js_cache[js_url]
+
     if js_url in ctx.js_fetch_events:
         await ctx.js_fetch_events[js_url].wait()
         ctx.metrics["cache_hits"] += 1
@@ -189,22 +191,30 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     Enforce a unified schema for all findings across all modules.
     Ensures: id, title, severity, confidence, cwe, owasp, evidence, poc, remediation, detection_method.
     """
-    # Generate a deterministic ID based on raw content
-    raw_str = json.dumps(raw, sort_keys=True, default=str)
-    finding_id = hashlib.sha256(raw_str.encode()).hexdigest()[:12]
-
-    # Map fields based on common variations across different modules
+    # Compute normalized fields first for stable ID generation
     title = raw.get("title") or raw.get("type") or raw.get("cve") or raw.get("description") or "Unknown Finding"
-    severity = (raw.get("severity") or "info").lower()
-    if severity not in ["critical", "high", "medium", "low", "info"]:
-        severity = "info"
-    
-    confidence = int(raw.get("confidence", 50))
-    confidence = max(0, min(100, confidence))
     
     # Bug 5 Fix: Do not invent fake CWE/OWASP placeholders. Keep as empty string if missing.
     cwe = raw.get("cwe") or ""
     owasp = raw.get("owasp") or ""
+    location = raw.get("location") or ""
+
+    # Generate a deterministic ID based on stable fields only
+    stable_fields = {
+        "module": module_name,
+        "title": title,
+        "cwe": cwe,
+        "owasp": owasp,
+        "location": location
+    }
+    stable_str = json.dumps(stable_fields, sort_keys=True, default=str)
+    finding_id = hashlib.sha256(stable_str.encode()).hexdigest()[:12]
+
+    severity = (raw.get("severity") or "info").lower()
+    if severity not in ["critical", "high", "medium", "low", "info"]:
+        severity = "info"
+    confidence = int(raw.get("confidence", 50))
+    confidence = max(0, min(100, confidence))
 
     # Aggregate evidence from various possible fields
     evidence_parts = []
@@ -215,7 +225,6 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     if raw.get("sources"): evidence_parts.append(f"Sources: {', '.join(raw['sources'])}")
     if raw.get("url"): evidence_parts.append(f"URL: {raw['url']}")
     if raw.get("description"): evidence_parts.append(f"Description: {raw['description']}")
-    
     evidence = "\n".join(evidence_parts) if evidence_parts else json.dumps(raw, default=str)[:500]
 
     # Map PoC and remediation fields
@@ -274,7 +283,6 @@ def deduplicate_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if key not in best:
             best[key] = f
             continue
-        
         existing = best[key]
         if f["confidence"] > existing["confidence"]:
             best[key] = f
@@ -295,13 +303,13 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
     Canonical scoring methodology for the Bravo6 project.
     Computes a 0-100 score and letter grade based on findings.
     """
-    BASE_PENALTY = {"critical": 25, "high": 15, "medium": 3, "low": 1}
-    DIMINISHING_THRESHOLD = {"critical": 2, "high": 3, "medium": 5, "low": 7}
+    BASE_PENALTY = {"critical": 18, "high": 15, "medium": 3, "low": 1}
+    DIMINISHING_THRESHOLD = {"critical": 4, "high": 3, "medium": 5, "low": 7}
     MAX_DEDUCTION = {"critical": 50, "high": 45, "medium": 15, "low": 15}
-    
+
     sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     sev_ded = {"critical": 0.0, "high": 0.0, "medium": 0.0, "low": 0.0}
-    
+
     for f in findings:
         sev = f["severity"]
         if sev not in sev_counts:
@@ -310,32 +318,33 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
         conf = f["confidence"] / 100.0
         base = BASE_PENALTY[sev]
         idx = sev_counts[sev]
+
         if idx <= DIMINISHING_THRESHOLD[sev]:
             penalty = base * conf
         else:
             extra = idx - DIMINISHING_THRESHOLD[sev]
             penalty = base * conf / (1 + math.sqrt(extra))
-        sev_ded[sev] += penalty
         
+        sev_ded[sev] += penalty
+
     for sev in sev_ded:
         if sev_ded[sev] > MAX_DEDUCTION[sev]:
             sev_ded[sev] = MAX_DEDUCTION[sev]
-            
+
     total_deductions = sum(sev_ded.values())
     score = max(0.0, 100.0 - total_deductions)
-    
+
     # Bug 2 Fix: Unjustified flat WAF bonus removed entirely.
-    
     int_score = round(score)
     if int_score >= 85: grade = "A"
     elif int_score >= 75: grade = "B"
     elif int_score >= 65: grade = "C"
     elif int_score >= 55: grade = "D"
     else: grade = "F"
-    
+
     return {
-        "score": int_score, 
-        "grade": grade, 
+        "score": int_score,
+        "grade": grade,
         "deductions": {k: round(v, 2) for k, v in sev_ded.items()},
         "waf_detected": waf is not None
     }
@@ -385,8 +394,8 @@ async def run_scout(
             **config
         }
     )
-    logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
 
+    logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
     connector = aiohttp.TCPConnector(ssl=True, limit=20, limit_per_host=10)
     async with aiohttp.ClientSession(
         timeout=REQUEST_TIMEOUT,
@@ -410,20 +419,27 @@ async def run_scout(
         test_coroutines = []
         test_names = []
         plugin_start_times = {}
-        
+        shared_page_resolved = False
+        shared_page_value = None
+
         for mod in plugins:
             module_name = mod.__name__
             test_names.append(module_name)
             plugin_start_times[module_name] = time.time()
-            
+
             # Build kwargs via introspection
             sig = inspect.signature(mod.run)
             kwargs = {}
-            
+
             # Inject shared page
             if "shared_page" in sig.parameters:
-                kwargs["shared_page"] = await shared_page_task
-            
+                if not shared_page_resolved:
+                    shared_page_value = await shared_page_task
+                    shared_page_resolved = True
+                else:
+                    ctx.metrics["cache_hits"] += 1
+                kwargs["shared_page"] = shared_page_value
+
             # Inject caches and fetch functions
             if "js_cache" in sig.parameters:
                 kwargs["js_cache"] = ctx.js_cache
@@ -431,22 +447,22 @@ async def run_scout(
                 async def _fetch_js_wrapper(js_url: str, ctx=ctx) -> str:
                     return await fetch_js_cached(ctx, js_url)
                 kwargs["fetch_js"] = _fetch_js_wrapper
-            
+
             # Inject shared session for connection pooling
             if "session" in sig.parameters:
                 kwargs["session"] = ctx.session
-            
+
             # Inject specific config
             if "cve_csv_url" in sig.parameters and cve_csv_url:
                 kwargs["cve_csv_url"] = cve_csv_url
-            
+
             # Inject context if supported
             if "ctx" in sig.parameters or "context" in sig.parameters:
                 param_name = "ctx" if "ctx" in sig.parameters else "context"
                 kwargs[param_name] = ctx
 
             coro = mod.run(url, **kwargs)
-            
+
             # Apply per-module timeout
             timeout_val = DEFAULT_TIMEOUTS.get(module_name, 60)
             coro = asyncio.wait_for(coro, timeout=timeout_val)
@@ -459,7 +475,7 @@ async def run_scout(
         else:
             with contextlib.redirect_stdout(io.StringIO()):
                 raw_results = await asyncio.gather(*all_tasks, return_exceptions=True)
-                
+
         waf_result = raw_results[-1]
         test_results = raw_results[:-1]
 
@@ -480,7 +496,6 @@ async def run_scout(
                 
                 # Bug 4 Fix: Enhanced per-plugin failure diagnostics
                 tb_str = "".join(traceback.format_exception(type(res), res, res.__traceback__))
-                
                 errors.append(err_msg)
                 tests[mod_name] = {
                     "error": err_msg,
@@ -512,7 +527,7 @@ async def run_scout(
         # Deduplicate and filter
         deduplicated = deduplicate_findings(all_raw_findings)
         final_findings = filter_findings(deduplicated, min_confidence)
-        
+
         # Summary
         summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
         for f in final_findings:
@@ -552,7 +567,6 @@ async def run_scout(
             "grade": grade,
             "metrics": ctx.metrics
         }
-        
         if assembly_error:
             final_result["assembly_error"] = assembly_error
 
@@ -560,7 +574,6 @@ async def run_scout(
         script_dir = Path(__file__).parent
         results_dir = script_dir / "results"
         os.makedirs(results_dir, exist_ok=True)
-        
         try:
             if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
                 client = CosmosClient(os.environ["COSMOS_URL"], credential=os.environ.get("COSMOS_KEY"))
@@ -576,6 +589,7 @@ async def run_scout(
                 logger.info(f"Saved to {result_path}")
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
+            
             # Fallback to local file if Cosmos DB write fails to ensure data isn't lost
             if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
                 try:

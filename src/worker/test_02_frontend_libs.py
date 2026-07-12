@@ -53,6 +53,7 @@ ECOSYSTEM_MAP = {
 # Detection Patterns (Preserved & Enhanced)
 # ------------------------------------------------------------------------------
 _VERSION = r"(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)"
+
 LIB_URL = {
     "jquery": re.compile(r"jquery[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "bootstrap": re.compile(r"bootstrap[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
@@ -62,12 +63,14 @@ LIB_URL = {
     "axios": re.compile(r"axios[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "moment": re.compile(r"moment[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
 }
+
 LIB_URL_FILENAME = {
     "jquery": re.compile(r"jquery[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
     "bootstrap": re.compile(r"bootstrap[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
     "vue": re.compile(r"vue[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
     "react": re.compile(r"react[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
 }
+
 LIB_CONTENT_SIGNATURE = {
     "jquery": re.compile(r"jQuery\.fn\.jquery\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
     "react": re.compile(r"React\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
@@ -77,6 +80,7 @@ LIB_CONTENT_SIGNATURE = {
     "lodash": re.compile(r"(?:lodash\.version|_.VERSION)\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
     "axios": re.compile(r"axios\.VERSION\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
 }
+
 LIB_CONTENT_GENERAL = {
     "jquery": re.compile(r"jQuery\s+v?" + _VERSION, re.I),
     "bootstrap": re.compile(r"Bootstrap\s+v?" + _VERSION, re.I),
@@ -86,6 +90,7 @@ LIB_CONTENT_GENERAL = {
     "moment": re.compile(r"Moment\.js\s+v?" + _VERSION, re.I),
     "axios": re.compile(r"axios\s+v?" + _VERSION, re.I),
 }
+
 LIB_POSITIVE_CONTEXT = {
     "angularjs": [r'angular\.module\s*\(', r'ng-app\s*[=:]'],
     "vue": [r'new Vue\s*\(', r'createApp\s*\(', r'Vue\.version\s*='],
@@ -115,9 +120,9 @@ osv_sem = asyncio.Semaphore(5)
 BUILT_IN_CVE_DB = {
     "jquery": {
         "3.0.0": [{
-            "cve": "CVE-2020-11022", "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N", 
-            "cwe": "CWE-79", "summary": "jQuery XSS", 
-            "affected_ranges": [{"introduced": "0", "fixed": "3.5.0"}], 
+            "cve": "CVE-2020-11022", "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
+            "cwe": "CWE-79", "summary": "jQuery XSS",
+            "affected_ranges": [{"introduced": "0", "fixed": "3.5.0"}],
             "references": [], "upgrade_rec": "3.5.0"
         }]
     }
@@ -234,17 +239,13 @@ async def query_osv(lib_name: str, version: str, ecosystem: str, session: aiohtt
 async def get_vulnerabilities(lib_name: str, version: str, ecosystem: str, session: aiohttp.ClientSession, csv_data: dict) -> Tuple[List[dict], str]:
     if not version:
         return [], "none"
-    
     osv_vulns = await query_osv(lib_name, version, ecosystem, session)
     if osv_vulns:
         return osv_vulns, "osv"
-    
     if csv_data and lib_name in csv_data and version in csv_data[lib_name]:
         return csv_data[lib_name][version], "csv"
-        
     if lib_name in BUILT_IN_CVE_DB and version in BUILT_IN_CVE_DB[lib_name]:
         return BUILT_IN_CVE_DB[lib_name][version], "fallback"
-        
     return [], "none"
 
 # ------------------------------------------------------------------------------
@@ -351,17 +352,21 @@ async def run(
     target = url.strip()
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
+
     connector = aiohttp.TCPConnector(ssl=True, limit=15, limit_per_host=6)
     headers = {"User-Agent": USER_AGENT}
     sem = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+
     raw_findings: List[Dict[str, Any]] = []
     script_contents: Dict[str, str] = {}
+
     if js_cache and isinstance(js_cache, dict):
         for u, content in js_cache.items():
             if isinstance(content, bytes):
                 script_contents[u] = content.decode("utf-8", errors="replace")
             elif isinstance(content, str):
                 script_contents[u] = content
+
     try:
         async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
             csv_data = {}
@@ -382,6 +387,7 @@ async def run(
                         return {"test_name": "frontend_sca_audit", "status": "warning", "title": f"HTTP {resp.status}"}
                     html = await resp.text(errors="replace")
                     soup = BeautifulSoup(html, "html.parser")
+
             if not html:
                 return {"test_name": "frontend_sca_audit", "status": "warning", "title": "Empty response body"}
 
@@ -398,6 +404,7 @@ async def run(
                     filename_versions = _unified_version_extraction(abs_url, {}, LIB_URL_FILENAME)
                     for lib, (ver, _) in filename_versions.items():
                         raw_findings.append({"library": lib, "version": ver, "source": "script_src_filename", "url": abs_url})
+
             script_urls = list(dict.fromkeys(script_urls))[:MAX_SCRIPT_URLS]
 
             # 2. Fetch and analyze JS files
@@ -407,6 +414,7 @@ async def run(
                     tasks.append(_get_content(u, fetch_js, session, sem))
                 else:
                     tasks.append(asyncio.coroutine(lambda: script_contents[u])())
+
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, res in enumerate(results):
                 if isinstance(res, str):
@@ -426,7 +434,7 @@ async def run(
                             "url": u, "is_signature": is_sig,
                             "evidence": f"Matched signature in {u}"
                         })
-                
+
                 for lib in versionless_libs:
                     if lib not in detected_libs_in_text and _has_library_context(text, lib):
                         raw_findings.append({
@@ -453,7 +461,7 @@ async def run(
                                 "library": lib, "version": ver, "source": "inline",
                                 "is_signature": is_sig, "evidence": "Matched signature in inline script"
                             })
-                    
+
                     for lib in inline_versionless:
                         if lib not in detected_inline_libs and _has_library_context(inline_text, lib):
                             raw_findings.append({
@@ -473,6 +481,7 @@ async def run(
                             cleaned = re.sub(r'^[\^~>=<]', '', ver.strip())
                             raw_findings.append({"library": lib, "version": cleaned, "source": pkg_type, "url": pkg_url})
                     except Exception: pass
+
     except Exception as e:
         return {"test_name": "frontend_sca_audit", "status": "error", "title": f"Error: {e}"}
 
@@ -486,6 +495,7 @@ async def run(
 
     vulnerabilities = []
     detected_libraries = []
+
     SOURCE_PRIORITY = {
         "source_map": 10, "script_src_filename": 9, "script_content": 8, "inline": 7,
         "npm": 6, "Packagist": 6, "script_src_url": 5, "fallback": 0
@@ -535,6 +545,7 @@ async def run(
                 affected = format_affected_ranges(vuln["affected_ranges"])
                 upgrade_rec = vuln["upgrade_rec"]
                 refs = vuln["references"]
+                
                 severity = "medium"
                 if cvss:
                     score_match = re.search(r'CVSS:3\.[01]/.*?/S:([C|U])', cvss)
@@ -546,6 +557,7 @@ async def run(
                         severity = "medium"
                     else:
                         severity = "low"
+
                 poc_cmd = f"curl -s {best.get('url', 'N/A')} | grep -i '{lib}'"
                 vulnerabilities.append({
                     "library_name": lib,

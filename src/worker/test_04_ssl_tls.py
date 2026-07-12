@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
+
 try:
     from cryptography import x509
     from cryptography.x509.oid import NameOID, ExtensionOID, AuthorityInformationAccessOID
@@ -91,11 +92,9 @@ def _make_finding(*args, **kwargs):
     _defaults = [
         None, None, None, None, "", "", "", "", "", None, "ssl"
     ]
-    
     for k in kwargs:
         if k not in _expected_params:
             raise TypeError(f"_make_finding() got an unexpected keyword argument '{k}'")
-            
     for i, val in enumerate(args):
         if i >= len(_expected_params):
             raise TypeError(f"_make_finding() takes at most {len(_expected_params)} positional arguments ({len(args)} given)")
@@ -103,11 +102,9 @@ def _make_finding(*args, **kwargs):
         if name in kwargs:
             raise ValueError(f"Duplicate argument for parameter '{name}' — check for stray positional arguments at the call site")
         kwargs[name] = val
-        
     for i, name in enumerate(_expected_params):
         if name not in kwargs:
             kwargs[name] = _defaults[i]
-            
     return {
         "title": kwargs["title"],
         "description": kwargs["description"],
@@ -128,12 +125,9 @@ def _apply_scoring(findings, context):
     for f in findings:
         sev = f.get("severity", "info")
         score -= deductions.get(sev, 0)
-        
     if context.get("is_internal"):
         score -= 15
-        
     score = max(0, min(100, score))
-    
     if score >= 95: grade = "A+"
     elif score >= 90: grade = "A"
     elif score >= 85: grade = "A-"
@@ -142,7 +136,6 @@ def _apply_scoring(findings, context):
     elif score >= 60: grade = "D"
     elif score >= 50: grade = "E"
     else: grade = "F"
-
     has_critical = any(f.get("severity") == "critical" for f in findings)
     has_high = any(f.get("severity") == "high" for f in findings)
     if has_critical and grade in ("A+", "A", "A-", "B", "C"):
@@ -151,7 +144,6 @@ def _apply_scoring(findings, context):
     elif has_high and grade in ("A+", "A", "A-", "B"):
         grade = "C"
         score = min(score, 74)
-
     return score, grade
 
 def _check_internal(hostname: str) -> bool:
@@ -194,16 +186,13 @@ def _analyze_cert(der: bytes, hostname: str) -> dict:
     cert = x509.load_der_x509_certificate(der)
     now = datetime.now(timezone.utc)
     days_left = (cert.not_valid_after_utc - now).days
-
     try:
         san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
         san_dns = san_ext.value.get_values_for_type(x509.DNSName)
     except x509.ExtensionNotFound:
         san_dns = []
-
     cn_attr = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     cn = cn_attr[0].value if cn_attr else ""
-    
     host_lower = hostname.lower()
     match = any(
         name.lower() == host_lower or (name.lower().startswith("*.") and host_lower.endswith(name.lower()[1:]))
@@ -211,11 +200,9 @@ def _analyze_cert(der: bytes, hostname: str) -> dict:
     )
     if not match and cn:
         match = (cn.lower() == host_lower or (cn.lower().startswith("*.") and host_lower.endswith(cn.lower()[1:])))
-
     self_signed = (cert.issuer == cert.subject)
     sig_name = cert.signature_algorithm_oid._name
     weak_sig = any(x in sig_name.lower() for x in ("sha1", "md5"))
-
     pub_key = cert.public_key()
     key_size = None
     key_type = "unknown"
@@ -225,9 +212,7 @@ def _analyze_cert(der: bytes, hostname: str) -> dict:
     elif isinstance(pub_key, ec.EllipticCurvePublicKey):
         key_size = pub_key.curve.key_size
         key_type = "ecdsa"
-
     is_le = any("Let's Encrypt" in attr.value for attr in cert.issuer)
-    
     must_staple = False
     try:
         tls_feature = cert.extensions.get_extension_for_oid(ExtensionOID.TLS_FEATURE)
@@ -237,7 +222,6 @@ def _analyze_cert(der: bytes, hostname: str) -> dict:
                 break
     except x509.ExtensionNotFound:
         pass
-
     return {
         "subject": ", ".join(f"{a.oid._name}={a.value}" for a in cert.subject) if cert.subject else "",
         "issuer": ", ".join(f"{a.oid._name}={a.value}" for a in cert.issuer) if cert.issuer else "",
@@ -362,10 +346,8 @@ def _parse_ja3s_from_openssl_msg(openssl_output):
                 if len(parts) == 2:
                     hex_bytes = parts[1].replace(" ", "")
                     hex_data += hex_bytes
-
     if not hex_data or len(hex_data) < 100:
         return None, None
-
     try:
         idx = 0
         version = int(hex_data[idx:idx+4], 16)
@@ -376,14 +358,11 @@ def _parse_ja3s_from_openssl_msg(openssl_output):
         idx += 4
         comp = hex_data[idx:idx+2]
         idx += 2
-        
         if idx + 4 > len(hex_data):
             return None, None
-            
         ext_len = int(hex_data[idx:idx+4], 16)
         idx += 4
         ext_data = hex_data[idx:]
-        
         ext_types = []
         curves = []
         e_idx = 0
@@ -397,15 +376,12 @@ def _parse_ja3s_from_openssl_msg(openssl_output):
                     if e_idx + 12 + g + 4 <= len(ext_data):
                         curves.append(ext_data[e_idx+12+g:e_idx+16+g])
             e_idx += 8 + (ext_len_val * 2)
-
         ext_str = "-".join(ext_types)
         curve_str = "-".join(curves)
         ja3s_raw = f"{version:04x},{cipher},{ext_str},{curve_str}"
         ja3s = hashlib.md5(ja3s_raw.encode()).hexdigest()
-        
         ja4s_raw = f"{version:04x},{cipher},{ext_str},"
         ja4s = hashlib.md5(ja4s_raw.encode()).hexdigest()
-        
         return ja3s, ja4s
     except Exception:
         return None, None
@@ -413,14 +389,12 @@ def _parse_ja3s_from_openssl_msg(openssl_output):
 async def _extract_tls_fingerprints_and_resumption(hostname, port, openssl_state):
     if not openssl_state["available"]:
         return None, None, None
-        
     out, err, timed_out = await _run_openssl(
         ["s_client", "-connect", f"{hostname}:{port}", "-msg", "-servername", hostname, "-reconnect"],
         timeout=15
     )
     if timed_out or b"OPENSSL_MISSING" in err:
         return None, None, None
-        
     combined = (out + err).decode('utf-8', errors='ignore')
     ja3s, ja4s = _parse_ja3s_from_openssl_msg(combined)
     resumption_supported = "Reused, " in combined or "TLS session ticket" in combined.lower() or "Session-ID" in combined
@@ -429,14 +403,12 @@ async def _extract_tls_fingerprints_and_resumption(hostname, port, openssl_state
 async def _check_alpn(hostname, port, openssl_state):
     if not openssl_state["available"]:
         return None
-        
     out, err, timed_out = await _run_openssl(
         ["s_client", "-connect", f"{hostname}:{port}", "-alpn", "h2,http/1.1", "-servername", hostname],
         timeout=10
     )
     if timed_out or b"OPENSSL_MISSING" in err:
         return None
-        
     combined = (out + err).decode('utf-8', errors='ignore')
     match = re.search(r"ALPN protocol:\s+([^\s]+)", combined)
     if match:
@@ -457,7 +429,6 @@ async def _check_dns_record(hostname, record_type):
             return res
     except Exception:
         pass
-
     try:
         proc = await asyncio.create_subprocess_exec(
             'host', '-t', record_type, hostname, '-W', '2',
@@ -470,7 +441,6 @@ async def _check_dns_record(hostname, record_type):
             return res
     except Exception:
         pass
-
     return None
 
 # ── Mixed Content Scanner ──────────────────────────────────────────────────
@@ -482,10 +452,8 @@ def _scan_mixed_content(html: str, base_url: str) -> List[dict]:
             src = tag.get("action")
         else:
             src = tag.get("src") or tag.get("href")
-            
         if not src:
             continue
-            
         full = urljoin(base_url, src)
         if full.startswith("http://"):
             sev = "low"
@@ -501,7 +469,6 @@ def _scan_mixed_content(html: str, base_url: str) -> List[dict]:
                 href_lower = full.lower()
                 if "stylesheet" in rel_lower or any(href_lower.endswith(ext) for ext in (".css", ".woff", ".woff2", ".ttf", ".eot")):
                     sev = "medium"
-                    
             findings.append(_make_finding(
                 title="Mixed content detected",
                 description=f"{tag.name} loads over HTTP: {full}",
@@ -519,7 +486,6 @@ def _scan_mixed_content(html: str, base_url: str) -> List[dict]:
 async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     openssl_state = {"available": True, "warned": False}
     hostname, port = _normalize_url(url)
-
     if not HAS_CRYPTO:
         return {
             "scanner": "ssl_tls", "target": f"{hostname}:{port}",
@@ -528,15 +494,12 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
             "summary": "cryptography library required",
             "findings": [], "remediation": [], "details": {}
         }
-
     loop = asyncio.get_running_loop()
     is_internal = await loop.run_in_executor(None, _check_internal, hostname)
-    
     context = {
         "is_login_page": False, "is_ecommerce": False,
         "is_internal": is_internal, "waf_detected": False,
     }
-    
     if shared_page and shared_page.get("waf_detected"):
         context["waf_detected"] = True
     elif shared_page and shared_page.get("headers"):
@@ -763,7 +726,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     ocsp_stapling = None
     stapled_revoked = None
     tls_scts = 0
-
     if cert_info:
         stapled_ocsp_bytes = await loop.run_in_executor(None, _get_stapled_ocsp_response, hostname, port)
         ocsp_stapling = stapled_ocsp_bytes is not None
@@ -843,8 +805,9 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     if html:
         mixed_findings = _scan_mixed_content(html, f"https://{hostname}:{port}")
         findings.extend(mixed_findings)
-        hsts_header = _get_header(headers, "Strict-Transport-Security")
-        csp_header = _get_header(headers, "Content-Security-Policy")
+
+    hsts_header = _get_header(headers, "Strict-Transport-Security")
+    csp_header = _get_header(headers, "Content-Security-Policy")
 
     # HTTP/3 (QUIC) Detection
     alt_svc = _get_header(headers, "Alt-Svc") or ""
@@ -889,7 +852,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
         findings.append(_make_finding(
             "Missing CAA record",
             "No CAA record found. Any CA can issue certificates for this domain.",
-            "medium", 80, location=f"DNS CAA for {hostname}",
+            "low", 80, location=f"DNS CAA for {hostname}",
             evidence="No CAA records returned by DNS",
             remediation="Add a CAA record to restrict certificate issuance (e.g., '0 issue \"letsencrypt.org\"').",
             cwe="CWE-295", owasp="A02:2021", poc=f"dig CAA {hostname} +short"
@@ -910,7 +873,7 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
         findings.append(_make_finding(
             "Missing DANE (TLSA) record",
             "No TLSA record found. DANE is not configured.",
-            "low", 60, location=f"DNS TLSA for {tlsa_name}",
+            "info", 60, location=f"DNS TLSA for {tlsa_name}",
             evidence="No TLSA records returned by DNS",
             remediation="Consider implementing DANE for additional certificate validation.",
             cwe="CWE-295", owasp="A02:2021", poc=f"dig TLSA {tlsa_name} +short"
@@ -926,7 +889,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
     tls_count = len(tls_issues)
     high_count = sum(1 for f in findings if f.get("severity") == "high")
     critical_count = sum(1 for f in findings if f.get("severity") == "critical")
-
     score, grade = _apply_scoring(findings, context)
 
     worst_sev = max(
@@ -934,7 +896,6 @@ async def run(url: str, shared_page: dict = None) -> Dict[str, Any]:
         key=lambda s: {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(s, 0),
         default="info"
     )
-
     status = "fail" if any(f["severity"] in ("critical", "high") for f in findings) else "warning" if findings else "pass"
     remediation_list = sorted(set(f["remediation"] for f in findings if f["remediation"]))
     if not remediation_list:
@@ -998,7 +959,7 @@ async def _test_protocol_openssl(hostname: str, port: int, version_flag: str, op
         if not openssl_state["warned"]:
             log.warning("OpenSSL binary not found – skipping all OpenSSL-based checks.")
             openssl_state["warned"] = True
-            openssl_state["available"] = False
+        openssl_state["available"] = False
         return False
     return b"BEGIN CERTIFICATE" in out and b"CONNECTED" in out
 
