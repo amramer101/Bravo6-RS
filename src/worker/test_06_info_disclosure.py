@@ -45,6 +45,12 @@ PATH_PROBE_BACKOFF_BASE = 0.1
 RETRY_MAX = 3
 RETRY_BACKOFF_BASE = 1
 
+# -- Severity Ranking Map ----------------------------------------------------------------
+# FIX #2: Python's max() on strings compares them alphabetically (e.g., 'medium' > 'critical'), 
+# which silently under-reports the true worst severity when lower-ranked-alphabetically-higher 
+# values coexist with critical/high findings.
+SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
 # -- CWE / OWASP Maps --------------------------------------------------------------------
 CWE_MAP = {
     "sensitive_file": "CWE-538",
@@ -246,7 +252,7 @@ async def _detect_waf(hostname, port=443, html=None, headers=None):
                 if headers.get('server', '').lower().startswith('cloudflare'): return 'cloudflare'
     except Exception as e:
         _log_debug(f"WAF detection failed: {e}")
-        return None
+    return None
 
 SITE_CATEGORIES = {
     "bank": ["bank", "online banking"],
@@ -272,7 +278,6 @@ async def _categorize_site(hostname, port=443, html=None, headers=None):
         except Exception as e:
             _log_debug(f"Site categorization failed: {e}")
             return result
-
     title_match = re.search(r'<title>(.*?)</title>', text, re.IGNORECASE)
     if title_match: result["title"] = title_match.group(1)
     meta_match = re.search(r'<meta\s+name="keywords"\s+content="(.*?)"', text, re.IGNORECASE)
@@ -923,7 +928,6 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                     body = await asyncio.wait_for(resp.text(), timeout=10)
                 except Exception:
                     return None
-
                 # WordPress user enumeration
                 if endpoint == "/wp-json/wp/v2/users":
                     if '"id"' in body and '"name"' in body and '"slug"' in body:
@@ -944,16 +948,15 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                             extracted_info=f"Users: {', '.join(user_names)}",
                             exact_url=url,
                         )
-
                 # GraphQL introspection
                 if 'graphql' in endpoint.lower():
                     try:
                         async with rate_limiter.sem:
                             await asyncio.sleep(random.uniform(rate_limiter.min_delay, rate_limiter.max_delay))
-                        intro_resp = await session.post(
-                            url, json={"query": "query { __schema { types { name } } }"},
-                            timeout=REQUEST_TIMEOUT
-                        )
+                            intro_resp = await session.post(
+                                url, json={"query": "query { __schema { types { name } } }"},
+                                timeout=REQUEST_TIMEOUT
+                            )
                         if intro_resp.status == 200 and 'application/json' in intro_resp.headers.get('Content-Type', ''):
                             data = await intro_resp.json()
                             if data.get("data", {}).get("__schema"):
@@ -976,8 +979,7 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                                 )
                     except Exception as e:
                         _log_debug(f"GraphQL check failed for {endpoint}: {e}")
-                        return None
-
+                    return None
                 # OpenAPI / Swagger detection with content validation
                 if any(kw in body.lower() for kw in ['swagger', 'openapi', 'api-docs']):
                     # Validate it's actually an OpenAPI spec
@@ -1021,7 +1023,6 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                             extracted_info=f"Version: {version}, Paths: {path_count}" if version else None,
                             exact_url=url,
                         )
-
                 # Generic JSON API endpoint
                 if 'application/json' in content_type:
                     return _make_finding(
@@ -1230,7 +1231,13 @@ async def _check_cloud_storage(session, base_url, html, rate_limiter, findings):
     common_names = [domain, domain.split('.')[0], f"{domain}-assets", f"{domain}-static",
                     f"{domain}-uploads", f"{domain}-media"]
     for name in common_names:
-        bucket_urls.add((f"https://{name}.s3.amazonaws.com/", "AWS S3"))
+        # FIX #1: Switch to path-style URLs for AWS S3. Virtual-hosted-style (https://{name}.s3.amazonaws.com/)
+        # fails TLS handshake when {name} contains a dot (e.g., "almdrasa.com-assets") because AWS's wildcard 
+        # cert (*.s3.amazonaws.com) only covers single-label subdomains. Path-style uses a fixed hostname 
+        # and is immune to this cert mismatch.
+        # Note: GCS is already probed via path-style (storage.googleapis.com/{name}/). Azure and DigitalOcean 
+        # are only detected via regex on HTML content, so they do not suffer from this dotted-name guessing issue.
+        bucket_urls.add((f"https://s3.amazonaws.com/{name}/", "AWS S3"))
         bucket_urls.add((f"https://storage.googleapis.com/{name}/", "GCS"))
 
     async def check_bucket(bucket_url, provider):
@@ -1660,7 +1667,6 @@ async def run(url: str, shared_page: dict = None):
                                     body = ""
                                 severity, confidence = _get_path_severity(path)
                                 sensitive_file_emitted = False
-
                                 if _is_sensitive_content(path, body):
                                     if path in ("robots.txt", "sitemap.xml"):
                                         pass
@@ -1699,7 +1705,6 @@ async def run(url: str, shared_page: dict = None):
                                             response_size=len(body),
                                             exact_url=url,
                                         ))
-
                                 if _is_directory_listing(body, main_body):
                                     sensitive_file_emitted = True
                                     findings.append(_make_finding(
@@ -1716,7 +1721,6 @@ async def run(url: str, shared_page: dict = None):
                                         response_size=len(body),
                                         exact_url=url,
                                     ))
-
                                 if path == "robots.txt":
                                     sensitive_paths = _is_robots_sensitive(body)
                                     if sensitive_paths:
@@ -1888,7 +1892,8 @@ async def run(url: str, shared_page: dict = None):
     return {
         "scanner": SCANNER_NAME, "target": target,
         "status": "partial" if is_partial else "success",
-        "severity": max((f.get("severity", "info") for f in findings), default="info"),
+        # FIX #2: Use SEVERITY_RANK to compare by actual risk rank instead of alphabetical string order.
+        "severity": max((f.get("severity", "info") for f in findings), key=lambda s: SEVERITY_RANK.get(s, 0), default="info"),
         "confidence": max((f.get("confidence", 0) for f in findings), default=0),
         "score": score, "grade": grade, "summary": summary,
         "findings": findings, "remediation": remediation,

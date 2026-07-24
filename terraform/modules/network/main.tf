@@ -17,8 +17,7 @@ resource "azurerm_subnet" "functions_subnet" {
 
   service_endpoints = [
     "Microsoft.AzureCosmosDB",
-    "Microsoft.Storage",
-    "Microsoft.ServiceBus"
+    "Microsoft.Storage"
   ]
 
   delegation {

@@ -39,7 +39,6 @@ module "service_bus" {
   resource_group_name        = module.resource_group.name
   location                   = module.resource_group.location
   service_bus_queue_name     = var.service_bus_queue_name
-  service_endpoint_subnet_id = module.network.functions_subnet_id
 }
 
 module "cosmos_db" {
