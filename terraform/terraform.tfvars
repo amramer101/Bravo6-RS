@@ -30,3 +30,6 @@ vnet_name = "bravo6-vnet"
 static_web_app_name = "bravo6scaner"
 static_web_app_tier = "Free"
 static_web_app_size = "Free"
+
+
+external_tenant_id = "الـ Tenant ID اللي نسخته في خطوة 1"

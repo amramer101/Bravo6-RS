@@ -131,6 +131,23 @@ variable "static_web_app_tier" {
 }
 
 variable "static_web_app_size" {
-  type        = string
+  type        = string4
   description = "static web app size"
+}
+
+# --------------------------------------------- external tenant id Variables
+
+variable "external_tenant_id" {
+  type        = string
+  description = "Tenant ID of the Entra External ID (CIAM) tenant"
+}
+
+variable "app_display_name" {
+  type        = string
+  description = "Tenant ID of the Entra External ID (CIAM) tenant"
+}
+
+variable "redirect_uris" {
+  type        = string
+  description = "Tenant ID of the Entra External ID (CIAM) tenant"
 }

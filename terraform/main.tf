@@ -117,3 +117,14 @@ module "frontend_swa" {
 }
 
 
+module "entra_external_id" {
+  source = "./modules/entra_external_id"
+  providers = {
+    azuread = azuread.external_tenant
+  }
+  app_display_name = "bravo6-frontend-spa"
+  redirect_uris = [
+    "https://${module.frontend_swa.default_host_name}",
+    "http://localhost:3000"
+  ]
+}
