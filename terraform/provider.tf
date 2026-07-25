@@ -22,3 +22,8 @@ provider "azurerm" {
   features {
   }
 }
+
+provider "azuread" {
+  alias     = "external_tenant"
+  tenant_id = var.external_tenant_id
+}

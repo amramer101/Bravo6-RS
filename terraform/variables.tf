@@ -143,11 +143,9 @@ variable "external_tenant_id" {
 }
 
 variable "app_display_name" {
-  type        = string
-  description = "Tenant ID of the Entra External ID (CIAM) tenant"
+  type = string
 }
 
 variable "redirect_uris" {
-  type        = string
-  description = "Tenant ID of the Entra External ID (CIAM) tenant"
+  type = list(string)
 }
