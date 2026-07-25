@@ -33,12 +33,12 @@ module "storage_account" {
 }
 
 module "service_bus" {
-  source                     = "./modules/service_bus"
-  service_bus_name           = var.service_bus_name
-  service_bus_sku            = var.service_bus_sku
-  resource_group_name        = module.resource_group.name
-  location                   = module.resource_group.location
-  service_bus_queue_name     = var.service_bus_queue_name
+  source                 = "./modules/service_bus"
+  service_bus_name       = var.service_bus_name
+  service_bus_sku        = var.service_bus_sku
+  resource_group_name    = module.resource_group.name
+  location               = module.resource_group.location
+  service_bus_queue_name = var.service_bus_queue_name
 }
 
 module "cosmos_db" {
@@ -107,15 +107,13 @@ module "network" {
 }
 
 
-module "frontend_stg" {
-  source               = "./modules/frontend_stg"
-  storage_account_name = var.storage_account_name
-  resource_group_name  = module.resource_group.name
-  location             = module.resource_group.location
-  storage_account_tier = var.storage_account_tier
-  replication_type     = var.replication_type
-  cdn_profile_name     = var.cdn_profile_name
-  cdn_endpoint_name    = var.cdn_endpoint_name
+module "frontend_swa" {
+  source              = "./modules/frontend_swa"
+  static_web_app_name = var.static_web_app_name
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
+  static_web_app_size = var.static_web_app_size
+  static_web_app_tier = var.static_web_app_tier
 }
 
 

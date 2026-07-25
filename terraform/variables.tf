@@ -118,14 +118,19 @@ variable "vnet_name" {
 }
 
 
-# --------------------------------------------- Frontend Variables
+# --------------------------------------------- Frontend SWA Variables
 
-variable "cdn_profile_name" {
+variable "static_web_app_name" {
+  description = "The name of the static web app"
   type        = string
-  description = "The name of the CDN Profile"
 }
 
-variable "cdn_endpoint_name" {
+variable "static_web_app_tier" {
   type        = string
-  description = "The name of the CDN Endpoint"
+  description = "static web app tier"
+}
+
+variable "static_web_app_size" {
+  type        = string
+  description = "static web app size"
 }

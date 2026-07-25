@@ -1,6 +1,6 @@
 project_name        = "bravo6"
 environment         = "dev"
-location            = "centralindia"
+location            = "westeurope"
 resource_group_name = "bravo6-rg"
 
 storage_account_name = "bravo6stgacc"
@@ -27,5 +27,6 @@ db_name       = "bravo6-db"
 
 vnet_name = "bravo6-vnet"
 
-cdn_profile_name  = "bravo6-cdn-profile"
-cdn_endpoint_name = "bravo6-cdn-endpoint"
+static_web_app_name = "bravo6scaner"
+static_web_app_tier = "Free"
+static_web_app_size = "Free"
