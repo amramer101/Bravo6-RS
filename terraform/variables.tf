@@ -131,7 +131,7 @@ variable "static_web_app_tier" {
 }
 
 variable "static_web_app_size" {
-  type        = string4
+  type        = string
   description = "static web app size"
 }
 

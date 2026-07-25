@@ -33,3 +33,4 @@ static_web_app_size = "Free"
 
 
 external_tenant_id = "الـ Tenant ID اللي نسخته في خطوة 1"
+app_display_name   = "bravo6-frontend-spa"
