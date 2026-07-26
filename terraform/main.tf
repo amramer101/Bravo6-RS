@@ -116,12 +116,14 @@ module "frontend_swa" {
   static_web_app_tier = var.static_web_app_tier
 }
 
-
 module "entra_external_id" {
-  source           = "./modules/entra_external_id"
+  source = "./modules/entra_external_id"
+  providers = {
+    azuread = azuread.external_tenant
+  }
   app_display_name = var.app_display_name
   redirect_uris = [
-    "https://${module.frontend_swa.static_web_app_default_hostname}",
+    "https://${module.frontend_swa.default_host_name}",
     "http://localhost:3000"
   ]
 }
