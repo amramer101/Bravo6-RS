@@ -123,7 +123,7 @@ module "entra_external_id" {
   }
   app_display_name = var.app_display_name
   redirect_uris = [
-    "https://${module.frontend_swa.default_host_name}",
+    "https://${module.frontend_swa.static_web_app_default_hostname}",
     "http://localhost:3000"
   ]
 }
