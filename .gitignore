@@ -67,3 +67,9 @@ src/worker/results/*.json
 src/worker/**.html
 src/worker/**.json
 
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
