@@ -9,5 +9,5 @@ variable "app_display_name" {
 }
 
 variable "redirect_uris" {
-  type = string
+  type = list(string)
 }
