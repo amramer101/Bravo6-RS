@@ -9,6 +9,7 @@ Bravo6 Ultimate Secrets Hunter (v6.3.0 – Enterprise Grade)
 - Every finding now includes: CWE, OWASP, Remediation, Confidence Calculation, Detection Reason.
 - Removed non-vulnerability findings (e.g., Tech Stack) to strictly report security issues.
 - Preserved async model, API compatibility, and JSON output format.
+- Refactored to comply with Bravo6 Unified Plugin Contract v2.2.
 """
 import argparse
 import asyncio
@@ -188,14 +189,13 @@ async def _verify_with_retry(verifier, key, session, *args) -> dict:
             if result.get("status") == 429:
                 if i < max_attempts - 1:
                     await asyncio.sleep(backoffs[i])
-                    continue
-                return {"verified": None, "note": "rate_limited", "status": 429}
-            return result
+                continue
+            return {"verified": None, "note": "rate_limited", "status": 429}
         except Exception as e:
             if i < max_attempts - 1:
                 await asyncio.sleep(backoffs[i])
-                continue
-            return {"verified": False, "error": f"Retry failed: {e}"}
+            continue
+    return {"verified": False, "error": f"Retry failed: {e}"}
 
 async def _verify_openai(key: str, session: aiohttp.ClientSession) -> dict:
     url = "https://api.openai.com/v1/models"
@@ -304,14 +304,14 @@ SECRET_PATTERNS = [
     ("Mailgun API Key",         re.compile(r'key-[a-zA-Z0-9]{32}'), 0, True),
     ("Supabase Key",            re.compile(r'sb-[a-z0-9]{20,}-[a-z0-9]{20,}'), 0, True),
     ("Vercel Token",            re.compile(r'[a-zA-Z0-9]{24}\.[a-zA-Z0-9_]{60,70}'), 0, True),
-    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0, True),  # FIX 1: Changed to True
+    ("Cloudflare API Token",    re.compile(r'[A-Za-z0-9_-]{40}'), 0, True),
     ("MapBox API Key",          re.compile(r'(pk|sk)\.eyJ1Ijoi[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+'), 0, True),
     ("Google API Key",          re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),
     ("Firebase API Key",        re.compile(r'AIza[0-9A-Za-z\-_]{35}'), 0, False),
     ("Twilio Auth Token",       re.compile(r'SK[0-9a-fA-F]{32}'), 0, False),
     ("Twilio Account SID",      re.compile(r'AC[0-9a-fA-F]{32}'), 0, False),
-    ("Algolia Application ID",  re.compile(r'[A-Z0-9]{10}'), 0, True),  # FIX 1: Changed to True
-    ("Algolia API Key",         re.compile(r'[a-fA-F0-9]{32}'), 0, True),  # FIX 1: Changed to True
+    ("Algolia Application ID",  re.compile(r'[A-Z0-9]{10}'), 0, True),
+    ("Algolia API Key",         re.compile(r'[a-fA-F0-9]{32}'), 0, True),
     ("AWS Access Key ID",       re.compile(r'AKIA[0-9A-Z]{16}'), 0, True),
     ("AWS Secret Access Key",   re.compile(r'(?i)aws.{0,20}secret.{0,20}["\']([A-Za-z0-9/+=]{40})["\']'), 1, True),
     ("AWS4-HMAC-SHA256",        re.compile(r'AWS4-HMAC-SHA256\s+Credential=([A-Z0-9]{16})/[0-9]+/[a-z0-9-]+/[a-z0-9]+/aws4_request'), 1, True),
@@ -320,7 +320,6 @@ SECRET_PATTERNS = [
     ("Database Connection",     re.compile(r'(?i)(mongodb(?:\+srv)?|mysql|postgresql|redis|amqp):\/\/[^:\/\s"\'<>]+:[^@\/\s"\'<>]+@[^\s"\'<>]+'), 0, True),
     ("Bearer Token",            re.compile(r'Bearer\s+([A-Za-z0-9\-_\.]+)'), 1, True),
     ("JWT Token",               re.compile(r'eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+'), 0, True),
-    # Enterprise / Cloud Additions
     ("Supabase Service Role JWT", re.compile(r'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6[A-Za-z0-9\-_]+'), 0, True),
     ("Clerk Secret Key",        re.compile(r'sk_live_[a-zA-Z0-9]{24,}'), 0, True),
     ("Auth0 Client Secret",     re.compile(r'(?i)["\']?client_secret["\']?\s*[:=]\s*["\']([a-zA-Z0-9_\-]{32,})["\']'), 1, True),
@@ -329,7 +328,6 @@ SECRET_PATTERNS = [
     ("Docker Registry Auth",    re.compile(r'(?i)"auth"\s*:\s*"([A-Za-z0-9+/=]{20,})"'), 1, True),
     ("Terraform AWS Secret",    re.compile(r'(?i)secret_key\s*=\s*"([A-Za-z0-9/+=]{40})"'), 1, True),
 ]
-
 FIREBASE_CONFIG = re.compile(
     r'apiKey\s*:\s*["\'](AIza[0-9A-Za-z\-_]{35})["\'][^}]*projectId\s*:\s*["\']([a-z0-9-]+)["\']',
     re.DOTALL
@@ -409,7 +407,6 @@ def _risk_description(secret_type: str, verified: bool, note: str = "") -> str:
 def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
     decoded = []
     methods = []
-    # atob
     atob_pat = re.compile(r'atob\s*\(\s*(["\'])((?:(?!\1).)*)\1\s*\)', re.IGNORECASE)
     for m in atob_pat.finditer(content):
         b64 = m.group(2)
@@ -417,7 +414,7 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
             decoded.append(base64.b64decode(b64).decode("utf-8", errors="replace"))
             if "atob" not in methods: methods.append("atob")
         except: pass
-    # fromCharCode
+    
     fromcc_pat = re.compile(r'String\.fromCharCode\s*\(\s*([\d,\s]+)\s*\)', re.IGNORECASE)
     for m in fromcc_pat.finditer(content):
         nums = [int(x) for x in m.group(1).split(',') if x.strip().isdigit()]
@@ -425,20 +422,21 @@ def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
             decoded.append(''.join(chr(n) for n in nums))
             if "fromCharCode" not in methods: methods.append("fromCharCode")
         except: pass
-    # Hex escapes (\x41\x42)
+    
     hex_pat = re.compile(r'((?:\\x[0-9a-fA-F]{2}){4,})')
     for m in hex_pat.finditer(content):
         try:
             decoded.append(bytes(m.group(1), 'utf-8').decode('unicode_escape'))
             if "hex_escape" not in methods: methods.append("hex_escape")
         except: pass
-    # Unicode escapes (\u0041\u0042)
+    
     uni_pat = re.compile(r'((?:\\u[0-9a-fA-F]{4}){4,})')
     for m in uni_pat.finditer(content):
         try:
             decoded.append(bytes(m.group(1), 'utf-8').decode('unicode_escape'))
             if "unicode_escape" not in methods: methods.append("unicode_escape")
         except: pass
+    
     seen = set()
     unique = []
     for s in decoded:
@@ -507,13 +505,13 @@ def _find_risky_files(soup_or_html, base_url, soup_obj=None):
             if val:
                 abs_url = urljoin(base_url, val.strip())
                 if any(abs_url.endswith(ext) for ext in (".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) \
-                        or "secret" in abs_url.lower():
+                   or "secret" in abs_url.lower():
                     risky.add(abs_url)
     if isinstance(soup_or_html, str):
         for m in re.finditer(r'https?://[^\s"\'<>]+', soup_or_html):
             u = m.group(0)
             if any(u.endswith(ext) for ext in (".env", ".json", ".yaml", ".yml", ".config", ".conf", ".properties", ".xml", ".toml")) \
-                    or "secret" in u.lower():
+               or "secret" in u.lower():
                 risky.add(u)
     return list(risky)[:10]
 
@@ -555,7 +553,7 @@ async def _scan_content(
     matched_spans = []
     aws_access_keys: Dict[str, dict] = {}
     aws_secret_keys: Dict[str, dict] = {}
-
+    
     for label, pattern, group_idx, is_high_conf in SECRET_PATTERNS:
         for match in pattern.finditer(content):
             try:
@@ -564,30 +562,25 @@ async def _scan_content(
                 end = match.end(group_idx) if group_idx else match.end()
             except IndexError:
                 continue
-
+            
             if any(start < e and end > s for s, e in matched_spans):
                 continue
-
-            # Aggressive False Positive Reduction
+            
             if _looks_like_placeholder(value):
                 continue
             if _is_known_test_key(value):
                 continue
             if is_script and _is_in_comment(content, start):
                 continue
-
-            # Filter out environment variable references
             if re.search(r'(?i)(process\.env|import\.meta\.env|os\.environ|getenv|env\(|\$_ENV|\$_SERVER)', value):
                 continue
-
-            # Filter out pure uppercase variable names
             if re.match(r'^[A-Z0-9_]+$', value) and len(value) < 40:
                 continue
-
+            
             if not is_high_conf:
                 if not _has_credential_context(content, start, end, window=60):
                     continue
-
+            
             if label == "Cloudflare API Token":
                 ctx = content[max(0, start - 60):end + 60]
                 if not re.search(r'(cloudflare|cf_)', ctx, re.IGNORECASE):
@@ -607,11 +600,11 @@ async def _scan_content(
                 win = content[max(0, start - 80):end + 80]
                 if not re.search(r'(?:Authorization|auth)', win, re.IGNORECASE):
                     continue
-
+            
             if label not in ("AWS Access Key ID", "AWS4-HMAC-SHA256", "AWS Signed Header"):
                 if _shannon_entropy(value) < 4.0:
                     continue
-
+            
             if label in ("AWS Access Key ID", "AWS Secret Access Key"):
                 if label == "AWS Access Key ID":
                     aws_access_keys[value] = {"start": start, "end": end, "line": _line_number(content, start)}
@@ -619,13 +612,13 @@ async def _scan_content(
                     aws_secret_keys[value] = {"start": start, "end": end, "line": _line_number(content, start)}
                 matched_spans.append((start, end))
                 continue
-
+            
             verifier = VERIFIERS.get(label)
             verify_note = ""
             if label == "Anthropic API Key" and not verify_live:
                 verifier = None
                 verify_note = "Live Anthropic verification disabled (use --verify-live)"
-
+            
             verified = False
             verify_response = ""
             if verifier:
@@ -641,14 +634,14 @@ async def _scan_content(
             else:
                 if not verify_note:
                     verify_note = "No active verification for this secret type."
-
+            
             base_conf = 90 if is_high_conf else 60
             confidence = 100 if verified else base_conf
             severity = "critical" if verified else ("high" if confidence >= 80 else "medium")
-
+            
             if confidence < min_confidence:
                 continue
-
+            
             line_no = _line_number(content, start)
             location = location_fn_factory(line_no)
             context = _extract_context(content, start, end)
@@ -657,39 +650,35 @@ async def _scan_content(
                 "cwe": "CWE-798", "owasp": "A07:2021",
                 "remediation": "Rotate the exposed credential immediately and remove it from the source code."
             })
-
-            # FIX 3: Standardize evidence fields
+            
             conf_calc = f"Base: {base_conf}, Verified: {verified}, Entropy: {_shannon_entropy(value):.2f}" if not is_high_conf else f"Base: {base_conf}, Verified: {verified}"
             if verified is None:
                 conf_calc += " (Rate limited, verification inconclusive)"
-
-            evidence = {
-                "type": label,
+            
+            evidence_str = f"Masked Value: {_mask(value)}. Verified: {verified}. Risk: {_risk_description(label, verified, verify_note)}. Context: {context}"
+            if verify_response:
+                evidence_str += f" Verification Response: {verify_response[:300]}"
+            if decoded_method:
+                evidence_str += f" Decoded via: {decoded_method}"
+            
+            finding = {
+                "title": f"{label} Exposed",
+                "severity": severity,
+                "confidence": confidence,
+                "cwe": metadata.get("cwe", "CWE-798"),
+                "owasp": metadata.get("owasp", "A07:2021"),
+                "evidence": evidence_str,
+                "poc": poc,
+                "remediation": metadata.get("remediation", "Rotate the exposed credential immediately and remove it from the source code."),
+                "detection_method": "Regex + Context Analysis" if not is_high_conf else "Regex Pattern Match",
                 "location": location,
-                "line_number": line_no,
                 "value_masked": _mask(value),
                 "verified": verified,
-                "confidence": confidence,
-                "confidence_calculation": conf_calc,
-                "severity": severity,
-                "poc": poc,
-                "risk": _risk_description(label, verified, verify_note),
-                "context": context,
-                "detection_reason": f"Matched pattern for {label} with context analysis." if not is_high_conf else f"Matched high-confidence pattern for {label}.",
-                "detection_method": "Regex + Context Analysis" if not is_high_conf else "Regex Pattern Match",
-                "cwe": metadata["cwe"],
-                "owasp": metadata["owasp"],
-                "remediation": metadata["remediation"],
+                "line_number": line_no
             }
-            if verify_response:
-                evidence["verification_response"] = verify_response[:300]
-            if decoded_method:
-                evidence["decoded_from"] = decoded_method
-
-            findings.append(evidence)
+            findings.append(finding)
             matched_spans.append((start, end))
 
-    # AWS Key Pair combination detection
     if aws_access_keys and aws_secret_keys:
         for ak, ak_data in aws_access_keys.items():
             for sk, sk_data in aws_secret_keys.items():
@@ -699,35 +688,32 @@ async def _scan_content(
                         continue
                     loc_ak = location_fn_factory(ak_data["line"])
                     loc_sk = location_fn_factory(sk_data["line"])
-                    metadata = SECRET_METADATA.get("AWS Key Pair", SECRET_METADATA["AWS Access Key ID"])
-                    findings.append({
-                        "type": "AWS Key Pair",
+                    
+                    finding = {
+                        "title": "AWS Key Pair Exposed",
+                        "severity": "critical",
+                        "confidence": pair_conf,
+                        "cwe": "CWE-798",
+                        "owasp": "A07:2021",
+                        "evidence": f"Correlated AWS Access Key ID and Secret Access Key found within 3000 chars. Masked: {_mask(ak)} & {_mask(sk)}. Context: {_extract_context(content, ak_data['start'], sk_data['end'])}",
+                        "poc": _poc_command("AWS Key Pair", ""),
+                        "remediation": "Deactivate the AWS access key and secret key immediately. Use IAM roles or AWS Secrets Manager.",
+                        "detection_method": "Secret Correlation",
                         "location": f"AK {loc_ak}, SK {loc_sk}",
-                        "line_number": ak_data["line"],
                         "value_masked": f"{_mask(ak)} & {_mask(sk)}",
                         "verified": False,
-                        "confidence": pair_conf,
-                        "confidence_calculation": "Correlated Access Key and Secret Key within 3000 chars.",
-                        "severity": "critical",
-                        "poc": _poc_command("AWS Key Pair", ""),
-                        "risk": "AWS Access + Secret Key found – possible full account compromise.",
-                        "context": _extract_context(content, ak_data["start"], sk_data["end"]),
-                        "detection_reason": "Correlated AWS Access Key ID and Secret Access Key.",
-                        "detection_method": "Secret Correlation",
-                        "cwe": metadata["cwe"],
-                        "owasp": metadata["owasp"],
-                        "remediation": metadata["remediation"],
-                    })
+                        "line_number": ak_data["line"]
+                    }
+                    findings.append(finding)
                     break
 
-    # Firebase configuration detection
     for match in FIREBASE_CONFIG.finditer(content):
         apikey = match.group(1)
         project_id = match.group(2)
         start, end = match.start(), match.end()
         if any(start < e and end > s for s, e in matched_spans):
             continue
-
+        
         verified_fb = False
         verify_resp_fb = ""
         async with semaphore:
@@ -737,40 +723,35 @@ async def _scan_content(
                 verify_resp_fb = fb_result["preview"][:300]
             elif "error" in fb_result:
                 verify_resp_fb = f"Error: {fb_result['error']}"
-
+        
         confidence_fb = 95 if verified_fb else 70
         if confidence_fb < min_confidence:
             continue
-        severity_fb = "critical" if verified_fb else "medium"
+        severity_fb = "critical" if verified_fb else ("high" if confidence_fb >= 80 else "medium")
         line_no = _line_number(content, start)
         location = location_fn_factory(line_no)
-        metadata = SECRET_METADATA.get("Firebase Configuration", SECRET_METADATA["Firebase API Key"])
-
-        evidence = {
-            "type": "Firebase Configuration",
+        metadata = SECRET_METADATA.get("Firebase API Key", {"cwe": "CWE-798", "owasp": "A07:2021", "remediation": "Restrict Firebase API key using GCP API restrictions."})
+        
+        finding = {
+            "title": "Firebase Configuration Exposed",
+            "severity": severity_fb,
+            "confidence": confidence_fb,
+            "cwe": metadata.get("cwe", "CWE-798"),
+            "owasp": metadata.get("owasp", "A07:2021"),
+            "evidence": f"Firebase apiKey={_mask(apikey)}, projectId={project_id}. Verified: {verified_fb}. Context: {_extract_context(content, start, end)}",
+            "poc": f"Firebase project {project_id} with key (see evidence field)",
+            "remediation": metadata.get("remediation", "Restrict Firebase API key using GCP API restrictions."),
+            "detection_method": "Regex Pattern Match",
             "location": location,
-            "line_number": line_no,
             "value_masked": f"apiKey={_mask(apikey)}, projectId={project_id}",
             "verified": verified_fb,
-            "confidence": confidence_fb,
-            "confidence_calculation": f"Base: 70, Verified: {verified_fb}",
-            "severity": severity_fb,
-            "poc": f"Firebase project {project_id} with key (see evidence field)",
-            "risk": "Firebase configuration verified – API key is active." if verified_fb else "Firebase config exposed – may allow unauthorised access.",
-            "context": _extract_context(content, start, end),
-            "detection_reason": "Matched Firebase apiKey and projectId configuration.",
-            "detection_method": "Regex Pattern Match",
-            "cwe": metadata["cwe"],
-            "owasp": metadata["owasp"],
-            "remediation": metadata["remediation"],
+            "line_number": line_no
         }
         if verify_resp_fb:
-            evidence["verification_response"] = verify_resp_fb
-
-        findings.append(evidence)
+            finding["evidence"] += f" Verification Response: {verify_resp_fb}"
+        findings.append(finding)
         matched_spans.append((start, end))
 
-    # High‑entropy generic secrets
     if min_confidence <= 50:
         for match in ENTROPY_CANDIDATE.finditer(content):
             start, end = match.start(), match.end()
@@ -779,86 +760,78 @@ async def _scan_content(
             candidate = match.group(1)
             if len(candidate) < 30 or _looks_like_placeholder(candidate):
                 continue
-
-            # Filter out common hashes
             if re.match(r'^[0-9a-f]{32}$', candidate, re.IGNORECASE): continue
             if re.match(r'^[0-9a-f]{40}$', candidate, re.IGNORECASE): continue
             if re.match(r'^[0-9a-f]{64}$', candidate, re.IGNORECASE): continue
-
             if _shannon_entropy(candidate) < 5.0:
                 continue
-
             ctx_window = content[max(0, start - 60):end + 60]
             if not ENTROPY_CONTEXT.search(ctx_window):
                 continue
             if HIGH_ENTROPY_EXCLUDES.search(ctx_window):
                 continue
-
+            
             line_no = _line_number(content, start)
             location = location_fn_factory(line_no)
-            metadata = SECRET_METADATA["High-Entropy Secret"]
-
-            findings.append({
-                "type": "High-Entropy Secret",
+            metadata = SECRET_METADATA.get("High-Entropy Secret", {"cwe": "CWE-798", "owasp": "A07:2021", "remediation": "Verify if this is a real secret. If so, rotate it and move to a secrets manager."})
+            
+            finding = {
+                "title": "High-Entropy Secret Detected",
+                "severity": "medium",
+                "confidence": 50,
+                "cwe": metadata.get("cwe", "CWE-798"),
+                "owasp": metadata.get("owasp", "A07:2021"),
+                "evidence": f"High entropy string detected in credential context. Masked: {_mask(candidate)}. Context: {_extract_context(content, start, end)}",
+                "poc": "Manual inspection required.",
+                "remediation": metadata.get("remediation", "Verify if this is a real secret. If so, rotate it and move to a secrets manager."),
+                "detection_method": "Entropy Analysis + Context",
                 "location": location,
-                "line_number": line_no,
                 "value_masked": _mask(candidate),
                 "verified": False,
-                "confidence": 50,
-                "confidence_calculation": f"Entropy: {_shannon_entropy(candidate):.2f}, Context Match: True",
-                "severity": "low",
-                "poc": "Manual inspection required.",
-                "risk": "Unrecognised format but high entropy in credential context.",
-                "context": _extract_context(content, start, end),
-                "detection_reason": "High entropy string detected in credential context.",
-                "detection_method": "Entropy Analysis + Context",
-                "cwe": metadata["cwe"],
-                "owasp": metadata["owasp"],
-                "remediation": metadata["remediation"],
-            })
+                "line_number": line_no
+            }
+            findings.append(finding)
             matched_spans.append((start, end))
 
     return findings
 
 # ────────────────────────────────────────────── Main entry point ──────────────────────────────────────────────
-async def run(
-    url: str,
-    shared_page: dict = None,
-    verify_live: bool = False,
-    session: aiohttp.ClientSession = None,
-    min_confidence: int = DEFAULT_MIN_CONFIDENCE,
-    *,
-    js_cache: dict = None,
-    fetch_js: callable = None,
-    skip_js_lib_scan: bool = False,
-) -> Dict[str, Any]:
-    target = url.strip()
-    if not target.startswith(("http://", "https://")):
-        target = "https://" + target
-
-    own_session = None
-    should_close = False
-    if session is None:
-        connector = aiohttp.TCPConnector(ssl=True, limit=10, limit_per_host=5)
-        headers = {"User-Agent": USER_AGENT}
-        own_session = aiohttp.ClientSession(connector=connector, headers=headers, timeout=TIMEOUT)
-        should_close = True
-    else:
-        own_session = session
-
-    findings = []
-    resources_scanned = 0
-    scanned_urls = []
-    fetch_failures = 0
-    sem_verify = asyncio.Semaphore(MAX_CONCURRENT_VERIFIES)
-    sem_js_fetch = asyncio.Semaphore(MAX_CONCURRENT_JS_FETCHES)
-    resp_headers = {}
-    raw_set_cookies = []
-
+async def run(url: str, **kwargs) -> Dict[str, Any]:
     try:
+        session = kwargs.get("session")
+        shared_page = kwargs.get("shared_page")
+        js_cache = kwargs.get("js_cache", {})
+        fetch_js = kwargs.get("fetch_js")
+        min_confidence = kwargs.get("min_confidence", 75)
+        waf_detected = kwargs.get("waf_detected") or (shared_page.get("waf_detected") if shared_page else None)
+        verify_live = kwargs.get("verify_live", False)
+        skip_js_lib_scan = kwargs.get("skip_js_lib_scan", False)
+
+        target = url.strip()
+        if not target.startswith(("http://", "https://")):
+            target = "https://" + target
+
+        own_session = session
+        should_close = False
+        if own_session is None:
+            connector = aiohttp.TCPConnector(ssl=True, limit=10, limit_per_host=5)
+            headers = {"User-Agent": USER_AGENT}
+            own_session = aiohttp.ClientSession(connector=connector, headers=headers, timeout=TIMEOUT)
+            should_close = True
+
+        findings = []
+        resources_scanned = 0
+        scanned_urls = []
+        fetch_failures = 0
+        sem_verify = asyncio.Semaphore(MAX_CONCURRENT_VERIFIES)
+        sem_js_fetch = asyncio.Semaphore(MAX_CONCURRENT_JS_FETCHES)
+        resp_headers = {}
+        raw_set_cookies = []
+
         html = None
         status = None
         soup_obj = None
+
         if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
             html = shared_page.get("html", "")
             status = shared_page.get("status", 0)
@@ -871,50 +844,34 @@ async def run(
                 status = resp.status
                 if status != 200:
                     return {
-                        "test_name": "secrets_detection", "status": "warning",
-                        "title": f"HTTP {status} – could not fetch target", "severity": "high",
-                        "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
-                        "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
-                                    "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                        "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
-                        "evidence": [], "remediation": "Check target URL accessibility."
+                        "findings": [],
+                        "details": {"error": f"HTTP {status} – could not fetch target", "status": status}
                     }
                 resp_headers = {k.lower(): v for k, v in resp.headers.items()}
                 raw_set_cookies = resp.headers.getall("set-cookie")
                 body_bytes = await resp.content.read(FETCH_MAX_BYTES_HTML + 1)
                 if len(body_bytes) > FETCH_MAX_BYTES_HTML:
                     return {
-                        "test_name": "secrets_detection", "status": "warning",
-                        "title": f"HTML exceeds size limit ({FETCH_MAX_BYTES_HTML} bytes)", "severity": "medium",
-                        "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
-                        "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
-                                    "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                        "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
-                        "evidence": [], "remediation": "Target page is too large to scan completely."
+                        "findings": [],
+                        "details": {"error": f"HTML exceeds size limit ({FETCH_MAX_BYTES_HTML} bytes)"}
                     }
                 html = body_bytes.decode("utf-8", errors="replace")
                 soup_obj = BeautifulSoup(html, "html.parser")
 
         if not html:
             return {
-                "test_name": "secrets_detection", "status": "warning", "title": "Empty response body", "severity": "medium",
-                "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
-                "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
-                            "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-                "resources_scanned": 0, "scanned_urls": [], "fetch_failures": 0},
-                "evidence": [], "remediation": "Target returned empty content."
+                "findings": [],
+                "details": {"error": "Empty response body"}
             }
 
         is_generic_403, generic_403_body = await _get_generic_403_info(own_session, target)
         ext_urls, inline_scripts = _extract_scripts(html, target, soup_obj=soup_obj)
 
-        # Phase 1: Fast scanning (HTML and inline scripts)
         for idx, script in enumerate(inline_scripts):
             resources_scanned += 1
             loc_fn = lambda ln, i=idx: f"Inline script #{i+1} line {ln}"
             f = await _scan_content(script, loc_fn, own_session, True, sem_verify, verify_live=verify_live, min_confidence=min_confidence)
             findings.extend(f)
-
             decoded_strings, method = _extract_decoded_strings(script)
             if decoded_strings:
                 combined = "\n".join(decoded_strings)
@@ -926,10 +883,9 @@ async def run(
         f = await _scan_content(html, html_loc_fn, own_session, False, sem_verify, verify_live=verify_live, min_confidence=min_confidence)
         findings.extend(f)
 
-        # Phase 2: External JS scanning with internal timeout
         external_findings = []
         external_scanned = 0
-
+        
         async def _scan_external_js_phase():
             nonlocal external_scanned, fetch_failures
             tasks = []
@@ -937,7 +893,6 @@ async def run(
                 if skip_js_lib_scan:
                     if any(lib in u for lib in ['jquery', 'bootstrap', 'react', 'angular', 'vue', 'lodash', 'moment']):
                         continue
-
                 async def fetch_and_scan(url):
                     nonlocal fetch_failures
                     async with sem_js_fetch:
@@ -946,13 +901,11 @@ async def run(
                             fetch_failures += 1
                             return None, url
                         return content, url
-
                 tasks.append(fetch_and_scan(u))
-
+            
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
                 if isinstance(result, Exception):
-                    logger.debug(f"Exception during JS fetch: {type(result).__name__}: {result}")
                     fetch_failures += 1
                     continue
                 if result is None:
@@ -960,92 +913,75 @@ async def run(
                 js_content, js_url = result
                 if js_content is None:
                     continue
-
                 external_scanned += 1
                 scanned_urls.append(js_url)
                 filename = urlparse(js_url).path.split("/")[-1] or "external.js"
                 loc_fn = lambda ln, fn=filename: f"{fn} line {ln}"
                 f = await _scan_content(js_content, loc_fn, own_session, True, sem_verify, verify_live=verify_live, min_confidence=min_confidence)
                 external_findings.extend(f)
-
                 decoded_strings, method = _extract_decoded_strings(js_content)
                 if decoded_strings:
                     combined = "\n".join(decoded_strings)
                     dec_loc_fn = lambda ln, fn=filename, m=method: f"{fn} (decoded {m}) line {ln}"
                     f_dec = await _scan_content(combined, dec_loc_fn, own_session, True, sem_verify, decoded_method=method, verify_live=verify_live, min_confidence=min_confidence)
                     external_findings.extend(f_dec)
-
             return external_findings
 
         try:
             external_findings = await asyncio.wait_for(_scan_external_js_phase(), timeout=45.0)
             findings.extend(external_findings)
             resources_scanned += external_scanned
-        except asyncio.TimeoutError:
-            logger.warning(f"External JS scan timed out after 45s. Scanned {external_scanned} of {len(ext_urls)} external files.")
-            findings.extend(external_findings)
-            resources_scanned += external_scanned
-        except asyncio.CancelledError:
-            logger.warning(f"External JS scan cancelled.")
-            findings.extend(external_findings)
-            resources_scanned += external_scanned
-        except Exception as e:
-            logger.error(f"Unexpected error in external JS scan: {type(e).__name__}: {e}")
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception) as e:
+            if isinstance(e, Exception) and not isinstance(e, (asyncio.TimeoutError, asyncio.CancelledError)):
+                logger.error(f"Unexpected error in external JS scan: {type(e).__name__}: {e}")
             findings.extend(external_findings)
             resources_scanned += external_scanned
 
-        # Phase 3: Risky files
         risky_urls = _find_risky_files(html, target, soup_obj=soup_obj)
         for path in SENSITIVE_PATHS:
             risky_urls.append(urljoin(target, path))
         risky_urls = list(set(risky_urls))
-
         risky_tasks = []
         for furl in risky_urls:
             async def fetch_risky(url):
                 return await _fetch_full(own_session, url, max_bytes=8192)
             risky_tasks.append(fetch_risky(furl))
-
+        
         risky_results = await asyncio.gather(*risky_tasks, return_exceptions=True)
         for i, result in enumerate(risky_results):
             if isinstance(result, Exception) or result is None:
                 continue
             status_code, body = result
             file_url = risky_urls[i]
-
             if status_code in (403, 401):
                 if status_code == 403 and is_generic_403:
                     if generic_403_body and body:
                         similarity = difflib.SequenceMatcher(None, body, generic_403_body).ratio()
                         if similarity > 0.9:
                             continue
-
                 parsed_path = urlparse(file_url).path
                 is_builtin = any(parsed_path == p for p in SENSITIVE_PATHS)
                 confidence = 80 if is_builtin else (70 if status_code == 403 else 60)
-                metadata = SECRET_METADATA["Forbidden Sensitive File"]
-
-                findings.append({
-                    "type": "Forbidden Sensitive File",
+                severity = "high" if confidence >= 80 else "medium"
+                
+                finding = {
+                    "title": "Forbidden Sensitive File Detected",
+                    "severity": severity,
+                    "confidence": confidence,
+                    "cwe": "CWE-538",
+                    "owasp": "A01:2021",
+                    "evidence": f"Sensitive configuration file appears to exist but is forbidden (HTTP {status_code}). Path: {parsed_path}",
+                    "poc": f"Check if file is accessible: {file_url}",
+                    "remediation": "Ensure sensitive files are not deployed to the web root. Use proper access controls.",
+                    "detection_method": "Path Enumeration",
                     "location": f"{parsed_path} (HTTP {status_code})",
-                    "line_number": 0,
                     "value_masked": file_url,
                     "verified": False,
-                    "confidence": confidence,
-                    "confidence_calculation": f"HTTP {status_code} response for sensitive path.",
-                    "severity": "low",
-                    "poc": f"Check if file is accessible: {file_url}",
-                    "risk": f"Sensitive configuration file appears to exist but is forbidden (HTTP {status_code}).",
-                    "context": "",
-                    "detection_reason": f"Detected sensitive file path {parsed_path} returning HTTP {status_code}.",
-                    "detection_method": "Path Enumeration",
-                    "cwe": metadata["cwe"],
-                    "owasp": metadata["owasp"],
-                    "remediation": metadata["remediation"],
-                })
+                    "line_number": 0
+                }
+                findings.append(finding)
                 resources_scanned += 1
                 scanned_urls.append(file_url)
-
             elif body and status_code == 200:
                 if _is_soft_404(body):
                     continue
@@ -1056,77 +992,25 @@ async def run(
                 f = await _scan_content(body, risky_loc_fn, own_session, False, sem_verify, verify_live=verify_live, min_confidence=min_confidence)
                 findings.extend(f)
 
+        findings = [f for f in findings if f.get("confidence", 100) >= min_confidence]
+
+        details = {
+            "resources_scanned": resources_scanned,
+            "scanned_urls": scanned_urls,
+            "fetch_failures": fetch_failures,
+            "waf_detected": waf_detected
+        }
+
+        return {"findings": findings, "details": details}
+
     except Exception as e:
-        logger.error(f"Critical error in run(): {type(e).__name__}: {e}")
         return {
-            "test_name": "secrets_detection", "status": "error", "title": f"Error: {e}", "severity": "critical",
-            "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
-            "summary": {"total_secrets": 0, "verified_active": 0, "high_confidence_unverified": 0, "forbidden_files_count": 0,
-                        "severity_breakdown": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
-            "resources_scanned": resources_scanned, "scanned_urls": scanned_urls, "fetch_failures": fetch_failures},
-            "evidence": findings, "remediation": "An unexpected error occurred during scanning."
+            "findings": [],
+            "details": {"error": str(e), "error_type": type(e).__name__}
         }
     finally:
         if should_close and own_session is not None:
             await own_session.close()
-
-    # ── Summary logic ──
-    all_secrets = [f for f in findings if f.get("type") != "Forbidden Sensitive File"]
-    forbidden_files = [f for f in findings if f.get("type") == "Forbidden Sensitive File"]
-    
-    # Handle tri-state verified (True, False, None)
-    verified = [s for s in all_secrets if s.get("verified") is True]
-    rate_limited = [s for s in all_secrets if s.get("verified") is None]
-    high_conf = [s for s in all_secrets if s.get("confidence", 0) >= 80 and s.get("verified") is False]
-
-    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    for f in all_secrets + forbidden_files:
-        sev = f.get("severity", "info")
-        severity_counts[sev] = severity_counts.get(sev, 0) + 1
-
-    if verified:
-        status = "fail"
-        overall_sev = "critical"
-        title = f"{len(verified)} ACTIVE secret(s) found!"
-    elif high_conf:
-        status = "fail"
-        overall_sev = "high"
-        title = f"{len(high_conf)} high‑confidence secrets"
-    elif all_secrets:
-        status = "warning"
-        overall_sev = "medium"
-        title = f"{len(all_secrets)} potential secrets"
-    elif forbidden_files:
-        status = "warning"
-        overall_sev = "low"
-        title = f"Sensitive files detected (403) – {len(forbidden_files)} forbidden"
-    else:
-        status = "pass"
-        overall_sev = "info"
-        title = "No secrets detected"
-
-    if rate_limited:
-        title += f" ({len(rate_limited)} rate-limited during verification)"
-
-    return {
-        "test_name": "secrets_detection",
-        "status": status,
-        "severity": overall_sev,
-        "title": title,
-        "description": "Deep scanning of client‑side code with active verification, deobfuscation, and header fingerprinting.",
-        "summary": {
-            "total_secrets": len(all_secrets),
-            "verified_active": len(verified),
-            "high_confidence_unverified": len(high_conf),
-            "forbidden_files_count": len(forbidden_files),
-            "severity_breakdown": severity_counts,
-            "resources_scanned": resources_scanned,
-            "scanned_urls": scanned_urls,
-            "fetch_failures": fetch_failures,
-        },
-        "evidence": findings,
-        "remediation": "Rotate verified keys immediately. For high‑confidence matches, manual inspection is strongly recommended."
-    }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Bravo6 Ultimate Secrets Hunter')
@@ -1134,4 +1018,13 @@ if __name__ == "__main__":
     parser.add_argument('--verify-live', action='store_true', help='Enable live Anthropic API verification (costs money)')
     parser.add_argument('--min-confidence', type=int, default=DEFAULT_MIN_CONFIDENCE, help=f'Minimum confidence score (0–100, default {DEFAULT_MIN_CONFIDENCE})')
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(run(args.url, verify_live=args.verify_live, min_confidence=args.min_confidence)), indent=2, ensure_ascii=False))
+    
+    async def main():
+        result = await run(
+            args.url, 
+            verify_live=args.verify_live, 
+            min_confidence=args.min_confidence
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        
+    asyncio.run(main())
