@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-Bravo6 Enterprise SCA Engine (v7.0 – OSV & Source Map Aware)
+Bravo6 Enterprise SCA Engine (v7.0 – Local Cache & Signature Aware)
 ============================================================
-- Replaced local CVE database with OSV API for real-time, accurate vulnerability data.
-- Added Source Map parsing for highly accurate library detection in bundled/minified code.
-- Added Webpack/Vite manifest analysis.
+- Removed external OSV API integration to comply with Plugin Contract v2.2.
+- Added local CSV cache reading for vulnerability data.
+- Added signature-based verification for CVE findings.
 - Aggressive false positive reduction via multi-method detection correlation.
-- Every finding now includes: CWE, OWASP, CVSS, Exploitability, Evidence, PoC, Remediation.
+- Every finding now includes: CWE, OWASP, CVSS, Evidence, PoC, Remediation.
 - Preserved async model, API compatibility, and JSON output format.
+- Refactored to comply with Bravo6 Unified Plugin Contract v2.2.
 """
+import argparse
 import asyncio
+import csv
+import io
 import json
 import logging
 import re
@@ -22,15 +26,6 @@ from packaging.version import InvalidVersion, Version
 
 logger = logging.getLogger(__name__)
 
-# Diagnostic flag to log the first OSV payload for schema verification
-LOG_FIRST_OSV_PAYLOAD = True
-_first_osv_query_logged = False
-
-# Optional timeout constant.
-# Tradeoff: The previous 8s timeout might be too aggressive if OSV.dev is slow under load,
-# causing false "failed" results. Increasing to 15s reduces false failures but makes scans slower.
-OSV_TIMEOUT_SECONDS = 15
-
 # ------------------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------------------
@@ -39,11 +34,9 @@ TIMEOUT = aiohttp.ClientTimeout(total=20)
 MAX_FILE_BYTES = 2_097_152  # 2 MB per script
 MAX_SCRIPT_URLS = 80
 MAX_CONCURRENT_FETCHES = 10
-MIN_CONFIDENCE = 70
-OSV_API_URL = "https://api.osv.dev/v1/query"
 
 # ------------------------------------------------------------------------------
-# Ecosystem Mapping for OSV
+# Ecosystem Mapping (Kept for reference, though OSV is removed)
 # ------------------------------------------------------------------------------
 ECOSYSTEM_MAP = {
     "jquery": ("npm", "jquery"), "react": ("npm", "react"), "vue": ("npm", "vue"),
@@ -64,7 +57,6 @@ ECOSYSTEM_MAP = {
 # Detection Patterns (Preserved & Enhanced)
 # ------------------------------------------------------------------------------
 _VERSION = r"(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)"
-
 LIB_URL = {
     "jquery": re.compile(r"jquery[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "bootstrap": re.compile(r"bootstrap[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
@@ -74,14 +66,12 @@ LIB_URL = {
     "axios": re.compile(r"axios[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
     "moment": re.compile(r"moment[.\-]?(?:min\.)?js\?.*v?" + _VERSION, re.I),
 }
-
 LIB_URL_FILENAME = {
     "jquery": re.compile(r"jquery[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
     "bootstrap": re.compile(r"bootstrap[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
     "vue": re.compile(r"vue[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
     "react": re.compile(r"react[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
 }
-
 LIB_CONTENT_SIGNATURE = {
     "jquery": re.compile(r"jQuery\.fn\.jquery\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
     "react": re.compile(r"React\.version\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
@@ -91,7 +81,6 @@ LIB_CONTENT_SIGNATURE = {
     "lodash": re.compile(r"(?:lodash\.version|_.VERSION)\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
     "axios": re.compile(r"axios\.VERSION\s*=\s*[\"']" + _VERSION + r"[\"']", re.I),
 }
-
 LIB_CONTENT_GENERAL = {
     "jquery": re.compile(r"jQuery\s+v?" + _VERSION, re.I),
     "bootstrap": re.compile(r"Bootstrap\s+v?" + _VERSION, re.I),
@@ -101,7 +90,6 @@ LIB_CONTENT_GENERAL = {
     "moment": re.compile(r"Moment\.js\s+v?" + _VERSION, re.I),
     "axios": re.compile(r"axios\s+v?" + _VERSION, re.I),
 }
-
 LIB_POSITIVE_CONTEXT = {
     "angularjs": [r'angular\.module\s*\(', r'ng-app\s*[=:]'],
     "vue": [r'new Vue\s*\(', r'createApp\s*\(', r'Vue\.version\s*='],
@@ -109,8 +97,6 @@ LIB_POSITIVE_CONTEXT = {
     "jquery": [r'\$\(document\)\.ready\s*\(', r'jQuery\.fn\.'],
     "react": [r'React\.createElement\(', r'React\.version\s*='],
 }
-
-# Signature-only patterns for version-less detection
 LIB_CONTENT_SIGNATURE_NO_VERSION = {
     "jquery": re.compile(r"jQuery\.fn\.jquery\s*=", re.I),
     "react": re.compile(r"React\.version\s*=|React\.createElement\(", re.I),
@@ -121,213 +107,6 @@ LIB_CONTENT_SIGNATURE_NO_VERSION = {
     "axios": re.compile(r"axios\.VERSION\s*=|axios\.", re.I),
     "angularjs": re.compile(r"angular\.module\s*\(|ng-app\s*[=:]", re.I),
 }
-
-# ------------------------------------------------------------------------------
-# OSV API Integration & Fallbacks
-# ------------------------------------------------------------------------------
-osv_cache = {}
-osv_sem = asyncio.Semaphore(5)
-
-BUILT_IN_CVE_DB = {
-    "jquery": {
-        "3.0.0": [{
-            "cve": "CVE-2020-11022", "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N",
-            "cwe": "CWE-79", "summary": "jQuery XSS",
-            "affected_ranges": [{"introduced": "0", "fixed": "3.5.0"}],
-            "references": [], "upgrade_rec": "3.5.0"
-        }]
-    }
-}
-
-async def load_cve_csv(url: str, session: aiohttp.ClientSession) -> dict:
-    if not url:
-        return {}
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status == 200:
-                text = await resp.text()
-                import csv
-                import io
-                reader = csv.reader(io.StringIO(text))
-                data = {}
-                for row in reader:
-                    if len(row) >= 7:
-                        lib, ver, cve, cvss, cwe, summary, upgrade_rec = row[:7]
-                        data.setdefault(lib, {}).setdefault(ver, []).append({
-                            "cve": cve, "cvss": cvss, "cwe": cwe, "summary": summary,
-                            "affected_ranges": [{"introduced": "0", "fixed": upgrade_rec}],
-                            "references": [], "upgrade_rec": upgrade_rec
-                        })
-                return data
-    except Exception:
-        return {}
-
-def format_affected_ranges(ranges: List[dict]) -> str:
-    parts = []
-    for r in ranges:
-        intro = r.get("introduced", "0")
-        fixed = r.get("fixed")
-        last = r.get("last_affected")
-        if intro == "0" and fixed:
-            parts.append(f"< {fixed}")
-        elif intro == "0" and last:
-            parts.append(f"<= {last}")
-        elif intro != "0" and fixed:
-            parts.append(f">= {intro}, < {fixed}")
-        elif intro != "0" and last:
-            parts.append(f">= {intro}, <= {last}")
-        else:
-            parts.append(f">= {intro}")
-    return ", ".join(parts) if parts else "Unknown"
-
-def get_exploitability(cvss_vector: str) -> str:
-    if not cvss_vector:
-        return "Unknown"
-    av, ui = "N", "N"
-    for part in cvss_vector.split('/'):
-        if part.startswith('AV:'): av = part[3]
-        if part.startswith('UI:'): ui = part[3]
-    if av == 'N' and ui == 'N':
-        return "High - Network accessible, no user interaction required"
-    elif av == 'N' and ui == 'R':
-        return "Medium - Network accessible, requires user interaction"
-    elif av in ('A', 'P'):
-        return "Low - Requires adjacent or physical access"
-    return "Medium"
-
-def parse_osv_vuln(vuln: dict) -> dict:
-    cve = next((a for a in vuln.get("aliases", []) if a.startswith("CVE-")), vuln.get("id"))
-    cvss_score = None
-    for sev in vuln.get("severity", []):
-        if sev.get("type") == "CVSS_V3":
-            cvss_score = sev.get("score")
-            break
-    cwe_ids = vuln.get("database_specific", {}).get("cwe_ids", [])
-    cwe = cwe_ids[0] if cwe_ids else "CWE-n/a"
-    affected_ranges = []
-    upgrade_rec = "Latest version"
-    for aff in vuln.get("affected", []):
-        for r in aff.get("ranges", []):
-            if r.get("type") == "SEMVER":
-                events = r.get("events", [])
-                introduced = next((e.get("introduced") for e in events if "introduced" in e), "0")
-                fixed = next((e.get("fixed") for e in events if "fixed" in e), None)
-                last_affected = next((e.get("last_affected") for e in events if "last_affected" in e), None)
-                affected_ranges.append({"introduced": introduced, "fixed": fixed, "last_affected": last_affected})
-                if fixed and upgrade_rec == "Latest version":
-                    upgrade_rec = fixed
-    references = [ref.get("url") for ref in vuln.get("references", []) if ref.get("url")]
-    return {
-        "cve": cve,
-        "cvss": cvss_score,
-        "cwe": cwe,
-        "affected_ranges": affected_ranges,
-        "references": references,
-        "summary": vuln.get("summary", ""),
-        "upgrade_rec": upgrade_rec
-    }
-
-# FIX: query_osv now returns Tuple[List[dict], bool] to distinguish between a successful
-# query that legitimately found zero vulnerabilities (a trustworthy clean result) and a
-# failed/errored query (an untrustworthy result that should fall through to other sources).
-async def query_osv(lib_name: str, version: str, ecosystem: str, session: aiohttp.ClientSession) -> Tuple[List[dict], bool]:
-    global _first_osv_query_logged
-    cache_key = f"{ecosystem}:{lib_name}:{version}"
-    if cache_key in osv_cache:
-        return osv_cache[cache_key]
-    payload = {"package": {"name": lib_name, "ecosystem": ecosystem}, "version": version}
-    
-    # Diagnostic: log the first payload to verify it matches OSV.dev's expected schema
-    if not _first_osv_query_logged and LOG_FIRST_OSV_PAYLOAD:
-        logger.debug(f"OSV query payload: {payload}")
-        _first_osv_query_logged = True
-        
-    async with osv_sem:
-        try:
-            async with session.post(OSV_API_URL, json=payload, timeout=aiohttp.ClientTimeout(total=OSV_TIMEOUT_SECONDS)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    vulns = [parse_osv_vuln(v) for v in data.get("vulns", [])]
-                    result = (vulns, True)
-                    osv_cache[cache_key] = result
-                    return result
-                else:
-                    # Diagnostic: log non-200 status and response body snippet to diagnose silent OSV failures
-                    body_snippet = await resp.text()
-                    logger.warning(f"OSV.dev query failed for {lib_name}@{version} ({ecosystem}): HTTP {resp.status} — {body_snippet[:300]}")
-                    result = ([], False)
-                    osv_cache[cache_key] = result
-                    return result
-        except Exception as exc:
-            # Diagnostic: log exception type and message instead of silently swallowing to diagnose OSV failures
-            logger.warning(f"OSV.dev query exception for {lib_name}@{version} ({ecosystem}): {type(exc).__name__}: {exc}")
-            result = ([], False)
-            osv_cache[cache_key] = result
-            return result
-
-# FIX: get_vulnerabilities now uses the success flag from query_osv. If OSV was successfully
-# queried but found nothing, we correctly report source="osv" (a valid clean check) instead
-# of falling through to "none". If OSV failed, we fall back to CSV/built-in data as a
-# degraded path, only reporting "none" if all sources fail.
-async def get_vulnerabilities(lib_name: str, version: str, ecosystem: str, session: aiohttp.ClientSession, csv_data: dict) -> Tuple[List[dict], str, bool]:
-    if not version:
-        return [], "none", True
-        
-    osv_vulns, osv_ok = await query_osv(lib_name, version, ecosystem, session)
-    
-    if osv_vulns:
-        return osv_vulns, "osv", True
-        
-    if osv_ok:
-        # OSV was successfully queried and found nothing — this IS a valid "osv" check.
-        if csv_data and lib_name in csv_data and version in csv_data[lib_name]:
-            return csv_data[lib_name][version], "csv", True
-        if lib_name in BUILT_IN_CVE_DB and version in BUILT_IN_CVE_DB[lib_name]:
-            return BUILT_IN_CVE_DB[lib_name][version], "fallback", True
-        return [], "osv", True
-        
-    # OSV failed/unreachable — fall through to CSV/fallback as a degraded path.
-    if csv_data and lib_name in csv_data and version in csv_data[lib_name]:
-        return csv_data[lib_name][version], "csv", False
-    if lib_name in BUILT_IN_CVE_DB and version in BUILT_IN_CVE_DB[lib_name]:
-        return BUILT_IN_CVE_DB[lib_name][version], "fallback", False
-        
-    return [], "none", False
-
-# ------------------------------------------------------------------------------
-# Enhanced Detection: Source Maps & Manifests
-# ------------------------------------------------------------------------------
-async def extract_from_source_map(session: aiohttp.ClientSession, js_url: str, js_content: str, sem: asyncio.Semaphore) -> List[dict]:
-    findings = []
-    match = re.search(r'//#\s*sourceMappingURL=(.+)', js_content)
-    if not match:
-        return findings
-    map_url = match.group(1).strip()
-    if map_url.startswith('data:'):
-        return findings
-    map_url = urljoin(js_url, map_url)
-    async with sem:
-        try:
-            async with session.get(map_url, timeout=TIMEOUT, ssl=True) as resp:
-                if resp.status == 200:
-                    map_data = await resp.json(content_type=None)
-                    sources = map_data.get("sources", [])
-                    for src in sources:
-                        m = re.search(r'(?:node_modules|bower_components)/(@?[^/]+/[^/]+|[^/]+)(?:@(\d+\.\d+\.\d+[^/]*))?', src)
-                        if m:
-                            lib = m.group(1)
-                            ver = m.group(2)
-                            lib = lib.split('/')[-1] if lib.startswith('@') else lib
-                            findings.append({
-                                "library": lib.lower(),
-                                "version": ver,
-                                "source": "source_map",
-                                "url": js_url,
-                                "evidence": f"Found in source map: {src}"
-                            })
-        except Exception:
-            pass
-    return findings
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -377,7 +156,7 @@ async def _get_content(url: str, fetch_js: Optional[Callable], session: Optional
     if session and sem:
         async with sem:
             try:
-                async with session.get(url, timeout=TIMEOUT, ssl=True) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=20), ssl=True) as resp:
                     if resp.status == 200:
                         data = await resp.read()
                         if len(data) <= MAX_FILE_BYTES:
@@ -385,65 +164,115 @@ async def _get_content(url: str, fetch_js: Optional[Callable], session: Optional
             except Exception: pass
     return None
 
+async def extract_from_source_map(session: aiohttp.ClientSession, js_url: str, js_content: str, sem: asyncio.Semaphore) -> List[dict]:
+    findings = []
+    match = re.search(r'//#\s*sourceMappingURL=(.+)', js_content)
+    if not match:
+        return findings
+    map_url = match.group(1).strip()
+    if map_url.startswith('data:'):
+        return findings
+    map_url = urljoin(js_url, map_url)
+    async with sem:
+        try:
+            async with session.get(map_url, timeout=aiohttp.ClientTimeout(total=20), ssl=True) as resp:
+                if resp.status == 200:
+                    map_data = await resp.json(content_type=None)
+                    sources = map_data.get("sources", [])
+                    for src in sources:
+                        m = re.search(r'(?:node_modules|bower_components)/(@?[^/]+/[^/]+|[^/]+)(?:@(\d+\.\d+\.\d+[^/]*))?', src)
+                        if m:
+                            lib = m.group(1)
+                            ver = m.group(2)
+                            lib = lib.split('/')[-1] if lib.startswith('@') else lib
+                            findings.append({
+                                "library": lib.lower(),
+                                "version": ver,
+                                "source": "source_map",
+                                "url": js_url,
+                                "evidence": f"Found in source map: {src}"
+                            })
+        except Exception:
+            pass
+    return findings
+
 # ------------------------------------------------------------------------------
 # Main SCA Engine
 # ------------------------------------------------------------------------------
-async def run(
-    url: str,
-    shared_page: dict = None,
-    js_cache: dict = None,
-    fetch_js: callable = None,
-    cve_csv_url: str = None  # Kept for backwards compatibility, used as fallback tier
-) -> Dict[str, Any]:
-    target = url.strip()
-    if not target.startswith(("http://", "https://")):
-        target = "https://" + target
-
-    connector = aiohttp.TCPConnector(ssl=True, limit=15, limit_per_host=6)
-    headers = {"User-Agent": USER_AGENT}
-    sem = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
-
-    raw_findings: List[Dict[str, Any]] = []
-    script_contents: Dict[str, str] = {}
-
-    if js_cache and isinstance(js_cache, dict):
-        for u, content in js_cache.items():
-            if isinstance(content, bytes):
-                script_contents[u] = content.decode("utf-8", errors="replace")
-            elif isinstance(content, str):
-                script_contents[u] = content
-
-    # FIX: Merged the two separate `async with aiohttp.ClientSession(...)` blocks into a single
-    # session context. Previously, the first session's __aexit__ closed the shared connector
-    # (because connector_owner defaults to True), causing the second session to immediately
-    # raise "RuntimeError: Session is closed" on any request. Now, JS extraction and OSV
-    # queries share the same still-open session.
+async def run(url: str, **kwargs) -> Dict[str, Any]:
     try:
-        async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
-            csv_data = {}
-            if cve_csv_url:
-                csv_data = await load_cve_csv(cve_csv_url, session)
-
-            if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
-                html = shared_page.get("html", "")
-                soup = shared_page.get("soup") or BeautifulSoup(html, "html.parser")
-                shared_sc = shared_page.get("script_contents", {})
-                if isinstance(shared_sc, dict):
-                    for u, content in shared_sc.items():
-                        if u not in script_contents:
-                            script_contents[u] = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
-            else:
-                async with session.get(target, timeout=TIMEOUT, ssl=True, allow_redirects=True) as resp:
-                    if resp.status >= 400:
-                        return {"test_name": "frontend_sca_audit", "status": "warning", "title": f"HTTP {resp.status}"}
-                    html = await resp.text(errors="replace")
-                    soup = BeautifulSoup(html, "html.parser")
-
-            if not html:
-                return {"test_name": "frontend_sca_audit", "status": "warning", "title": "Empty response body"}
-
-            # 1. Extract scripts
-            script_urls = []
+        session = kwargs.get("session")
+        shared_page = kwargs.get("shared_page")
+        js_cache = kwargs.get("js_cache", {})
+        fetch_js = kwargs.get("fetch_js")
+        min_confidence = kwargs.get("min_confidence", 50)
+        cve_csv_url = kwargs.get("cve_csv_url")
+        
+        own_session = session
+        should_close = False
+        if own_session is None:
+            connector = aiohttp.TCPConnector(ssl=True, limit=15, limit_per_host=6)
+            headers = {"User-Agent": USER_AGENT}
+            own_session = aiohttp.ClientSession(connector=connector, headers=headers, timeout=TIMEOUT)
+            should_close = True
+            
+        cve_cache = []
+        if cve_csv_url:
+            try:
+                if cve_csv_url.startswith("http://") or cve_csv_url.startswith("https://"):
+                    async with own_session.get(cve_csv_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status == 200:
+                            text = await resp.text()
+                            reader = csv.DictReader(io.StringIO(text))
+                            cve_cache = list(reader)
+                else:
+                    with open(cve_csv_url, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        cve_cache = list(reader)
+            except Exception:
+                pass # Operate in detection-only mode
+                
+        target = url.strip()
+        if not target.startswith(("http://", "https://")):
+            target = "https://" + target
+            
+        findings = []
+        script_contents = {}
+        if js_cache and isinstance(js_cache, dict):
+            for u, content in js_cache.items():
+                if isinstance(content, bytes):
+                    script_contents[u] = content.decode("utf-8", errors="replace")
+                elif isinstance(content, str):
+                    script_contents[u] = content
+                    
+        sem = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
+        
+        html = None
+        soup = None
+        if shared_page and not shared_page.get("error") and shared_page.get("status") == 200:
+            html = shared_page.get("html", "")
+            soup = shared_page.get("soup")
+            if not soup and html:
+                soup = BeautifulSoup(html, "html.parser")
+            shared_sc = shared_page.get("script_contents", {})
+            if isinstance(shared_sc, dict):
+                for u, content in shared_sc.items():
+                    if u not in script_contents:
+                        script_contents[u] = content.decode("utf-8", errors="replace") if isinstance(content, bytes) else content
+        else:
+            async with own_session.get(target, timeout=aiohttp.ClientTimeout(total=20), ssl=True, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    return {"findings": [], "details": {"error": f"HTTP {resp.status}", "status": resp.status}}
+                html = await resp.text(errors="replace")
+                soup = BeautifulSoup(html, "html.parser")
+                
+        if not html:
+            return {"findings": [], "details": {"error": "Empty response body"}}
+            
+        raw_findings = []
+        script_urls = []
+        
+        if soup:
             for tag in soup.find_all("script"):
                 src = tag.get("src")
                 if src:
@@ -455,29 +284,28 @@ async def run(
                     filename_versions = _unified_version_extraction(abs_url, {}, LIB_URL_FILENAME)
                     for lib, (ver, _) in filename_versions.items():
                         raw_findings.append({"library": lib, "version": ver, "source": "script_src_filename", "url": abs_url})
-
+            
             script_urls = list(dict.fromkeys(script_urls))[:MAX_SCRIPT_URLS]
-
-            # 2. Fetch and analyze JS files
+            
             tasks = []
             for u in script_urls:
                 if u not in script_contents:
-                    tasks.append(_get_content(u, fetch_js, session, sem))
+                    tasks.append(_get_content(u, fetch_js, own_session, sem))
                 else:
-                    tasks.append(asyncio.coroutine(lambda: script_contents[u])())
-
+                    async def dummy(): return script_contents[u]
+                    tasks.append(dummy())
+                    
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, res in enumerate(results):
                 if isinstance(res, str):
                     script_contents[script_urls[i]] = res
-
+                    
             for u, text in script_contents.items():
                 if not text: continue
-                # Content signatures
                 content_versions = _unified_version_extraction(text, LIB_CONTENT_SIGNATURE, LIB_CONTENT_GENERAL)
                 versionless_libs = _unified_versionless_extraction(text, LIB_CONTENT_SIGNATURE_NO_VERSION)
                 detected_libs_in_text = set(content_versions.keys())
-
+                
                 for lib, (ver, is_sig) in content_versions.items():
                     if _has_library_context(text, lib):
                         raw_findings.append({
@@ -485,7 +313,6 @@ async def run(
                             "url": u, "is_signature": is_sig,
                             "evidence": f"Matched signature in {u}"
                         })
-
                 for lib in versionless_libs:
                     if lib not in detected_libs_in_text and _has_library_context(text, lib):
                         raw_findings.append({
@@ -493,37 +320,37 @@ async def run(
                             "url": u, "is_signature": True,
                             "evidence": f"Matched signature without version in {u}"
                         })
-
-                # Source Map Analysis
-                sm_findings = await extract_from_source_map(session, u, text, sem)
+                        
+                sm_findings = await extract_from_source_map(own_session, u, text, sem)
                 raw_findings.extend(sm_findings)
-
-            # 3. Inline scripts
+                
+            inline_idx = 0
             for tag in soup.find_all("script"):
                 if not tag.get("src") and tag.string:
                     inline_text = tag.string.strip()
+                    loc_name = f"inline_script_{inline_idx}"
+                    script_contents[loc_name] = inline_text
+                    inline_idx += 1
+                    
                     inline_versions = _unified_version_extraction(inline_text, LIB_CONTENT_SIGNATURE, LIB_CONTENT_GENERAL)
                     inline_versionless = _unified_versionless_extraction(inline_text, LIB_CONTENT_SIGNATURE_NO_VERSION)
                     detected_inline_libs = set(inline_versions.keys())
-
                     for lib, (ver, is_sig) in inline_versions.items():
                         if _has_library_context(inline_text, lib):
                             raw_findings.append({
                                 "library": lib, "version": ver, "source": "inline",
-                                "is_signature": is_sig, "evidence": "Matched signature in inline script"
+                                "url": loc_name, "is_signature": is_sig, "evidence": "Matched signature in inline script"
                             })
-
                     for lib in inline_versionless:
                         if lib not in detected_inline_libs and _has_library_context(inline_text, lib):
                             raw_findings.append({
                                 "library": lib, "version": None, "source": "inline",
-                                "is_signature": True, "evidence": "Matched signature without version in inline script"
+                                "url": loc_name, "is_signature": True, "evidence": "Matched signature without version in inline script"
                             })
-
-            # 4. Package manifests
+                            
             for manifest_path, pkg_type in [("/package.json", "npm"), ("/composer.json", "Packagist")]:
                 pkg_url = urljoin(target, manifest_path)
-                pkg_text = await _get_content(pkg_url, fetch_js, session, sem)
+                pkg_text = await _get_content(pkg_url, fetch_js, own_session, sem)
                 if pkg_text:
                     try:
                         pkg = json.loads(pkg_text)
@@ -532,169 +359,128 @@ async def run(
                             cleaned = re.sub(r'^[\^~>=<]', '', ver.strip())
                             raw_findings.append({"library": lib, "version": cleaned, "source": pkg_type, "url": pkg_url})
                     except Exception: pass
-
-            # ------------------------------------------------------------------------------
-            # Merge findings & Query OSV
-            # ------------------------------------------------------------------------------
-            lib_groups: Dict[str, List[Dict]] = {}
-            for f in raw_findings:
-                lib = f["library"].lower()
-                lib_groups.setdefault(lib, []).append(f)
-
-            vulnerabilities = []
-            detected_libraries = []
-
-            SOURCE_PRIORITY = {
-                "source_map": 10, "script_src_filename": 9, "script_content": 8, "inline": 7,
-                "npm": 6, "Packagist": 6, "script_src_url": 5, "fallback": 0
-            }
-
-            for lib, entries in lib_groups.items():
-                entries_sorted = sorted(entries, key=lambda e: (SOURCE_PRIORITY.get(e["source"], 0), 1 if e.get("version") else 0), reverse=True)
-                best = next((e for e in entries_sorted if e.get("version")), entries_sorted[0])
-                ver_str = best.get("version")
-
-                # Determine ecosystem
-                eco_info = ECOSYSTEM_MAP.get(lib)
-                if not eco_info:
-                    continue
-                ecosystem, pkg_name = eco_info
-
-                if ver_str:
-                    osv_vulns, source, osv_ok = await get_vulnerabilities(pkg_name, ver_str, ecosystem, session, csv_data)
-                else:
-                    osv_vulns, source, osv_ok = [], "none", True
-
-                # Calculate confidence
-                sources = list({e["source"] for e in entries})
-                has_sig = any(e.get("is_signature") for e in entries if e["source"] in ("script_content", "inline"))
-                conf = 95 if "source_map" in sources else (85 if has_sig else 70)
-
-                detected_lib_entry = {
-                    "library_name": lib,
-                    "detected_version": ver_str,
-                    "version": ver_str,
-                    "detection_method": ", ".join(sources),
-                    "confidence": conf,
-                    "evidence": best.get("evidence", "Detected via " + ", ".join(sources)),
-                    "exact_js_file": best.get("url", "N/A"),
-                    "coverage": "checked" if ver_str else "detected_no_version"
-                }
+                    
+        lib_groups = {}
+        for f in raw_findings:
+            lib = f["library"].lower()
+            lib_groups.setdefault(lib, []).append(f)
+            
+        SOURCE_PRIORITY = {
+            "source_map": 10, "script_src_filename": 9, "script_content": 8, "inline": 7,
+            "npm": 6, "Packagist": 6, "script_src_url": 5, "fallback": 0
+        }
+        
+        for lib, entries in lib_groups.items():
+            entries_sorted = sorted(entries, key=lambda e: (SOURCE_PRIORITY.get(e["source"], 0), 1 if e.get("version") else 0), reverse=True)
+            best = next((e for e in entries_sorted if e.get("version")), entries_sorted[0])
+            ver_str = best.get("version")
+            
+            sources = list({e["source"] for e in entries})
+            has_sig = any(e.get("is_signature") for e in entries if e["source"] in ("script_content", "inline"))
+            base_conf = 95 if "source_map" in sources else (85 if has_sig else 70)
+            
+            location = best.get("url", "inline")
+            
+            cve_matches = [row for row in cve_cache if str(row.get("library", "")).lower() == lib.lower() and str(row.get("version", "")) == str(ver_str)]
+            
+            cve_reported = False
+            if cve_matches and ver_str:
+                js_content = script_contents.get(location)
+                if not js_content and location != "inline" and not location.startswith("inline_script_"):
+                    js_content = await _get_content(location, fetch_js, own_session, sem)
+                    if js_content:
+                        script_contents[location] = js_content
                 
-                # FIX: Previously, the `source` backend used for CVE lookup was only stored in the
-                # `vulnerabilities` list. If a library had zero vulnerabilities, its `source` was
-                # discarded, causing `overall_cve_source` to incorrectly default to "none" when all
-                # libraries were clean. We now persist `cve_source` on the `detected_lib_entry` for
-                # every library that had a version and was actually looked up.
-                if ver_str:
-                    detected_lib_entry["cve_source"] = source
-                    # Surface OSV failures for debugging/transparency. If OSV was unreachable
-                    # or errored, we flag it so the report reader knows the check fell back to
-                    # less-current local data (or nothing), rather than silently appearing identical
-                    # to a successful clean check.
-                    if not osv_ok:
-                        detected_lib_entry["osv_query_failed"] = True
+                for cve_row in cve_matches:
+                    signature = str(cve_row.get("signature", "")).strip()
+                    confidence = base_conf
+                    signature_found = False
                     
-                detected_libraries.append(detected_lib_entry)
-
-                if not ver_str or not osv_vulns:
-                    continue
-
-                for vuln in osv_vulns:
-                    cve = vuln["cve"]
-                    cvss = vuln["cvss"]
-                    cwe = vuln["cwe"]
-                    affected = format_affected_ranges(vuln["affected_ranges"])
-                    upgrade_rec = vuln["upgrade_rec"]
-                    refs = vuln["references"]
-                    
-                    severity = "medium"
-                    if cvss:
-                        score_match = re.search(r'CVSS:3\.[01]/.*?/S:([C|U])', cvss)
-                        if "AV:N/AC:L/PR:N/UI:N" in cvss:
-                            severity = "critical" if cwe in ["CWE-79", "CWE-89", "CWE-94"] else "high"
-                        elif "AV:N/AC:L/PR:N/UI:R" in cvss:
-                            severity = "high" if cwe in ["CWE-79", "CWE-89"] else "medium"
-                        elif "AV:N" in cvss:
+                    if signature:
+                        try:
+                            if re.search(signature, js_content or ""):
+                                signature_found = True
+                        except re.error:
+                            signature_found = False
+                    else:
+                        confidence = max(0, base_conf - 15)
+                        signature_found = True
+                        
+                    if signature_found:
+                        cve_reported = True
+                        cvss_str = str(cve_row.get("cvss", ""))
+                        cvss_score = 0.0
+                        score_match = re.search(r'CVSS:[34]\.\d/([0-9]\.[0-9])', cvss_str)
+                        if score_match:
+                            cvss_score = float(score_match.group(1))
+                        else:
+                            nums = re.findall(r'\b(\d+\.\d+)\b', cvss_str)
+                            for n in nums:
+                                val = float(n)
+                                if 0.0 <= val <= 10.0:
+                                    cvss_score = val
+                                    break
+                        
+                        if cvss_score >= 9.0:
+                            severity = "critical"
+                        elif cvss_score >= 7.0:
+                            severity = "high"
+                        elif cvss_score >= 4.0:
                             severity = "medium"
                         else:
                             severity = "low"
-
-                    poc_cmd = f"curl -s {best.get('url', 'N/A')} | grep -i '{lib}'"
-                    vulnerabilities.append({
-                        "library_name": lib,
-                        "detected_version": ver_str,
-                        "version": ver_str,
-                        "detection_method": ", ".join(sources) + " + OSV",
-                        "affected_versions": affected,
-                        "cve": cve,
-                        "cvss": cvss,
-                        "cwe": cwe,
-                        "references": refs,
-                        "exploitability": get_exploitability(cvss),
-                        "evidence": best.get("evidence", f"Matched {lib}@{ver_str}"),
-                        "exact_js_file": best.get("url", "N/A"),
-                        "poc": poc_cmd,
-                        "remediation": f"Upgrade {lib} to {upgrade_rec} or later.",
-                        "upgrade_recommendation": upgrade_rec,
-                        "confidence": conf,
-                        "severity": severity,
-                        "owasp": "A06:2021 - Vulnerable and Outdated Components",
-                        "cve_source": source,
-                        "coverage": "checked"
-                    })
-
+                            
+                        cwe = cve_row.get("cwe", "CWE-1035") or "CWE-1035"
+                        summary = cve_row.get("summary", "")
+                        upgrade_rec = cve_row.get("upgrade_rec", "latest")
+                        cve_id = cve_row.get("cve", "Unknown CVE")
+                        
+                        finding = {
+                            "title": f"Vulnerable {lib}: {cve_id}",
+                            "severity": severity,
+                            "confidence": confidence,
+                            "cwe": cwe,
+                            "owasp": "A06:2021",
+                            "evidence": f"Detected {lib}@{ver_str} via {', '.join(sources)}. CVE: {cve_id}. CVSS: {cvss_str}. Summary: {summary}. Upgrade to {upgrade_rec}.",
+                            "poc": f"Check current version: grep -r '{lib}' . || npm list {lib}",
+                            "remediation": f"Upgrade {lib} to {upgrade_rec} or later. Current version {ver_str} is vulnerable to {cve_id}.",
+                            "detection_method": "SCA + Local Cache + Signature Verification",
+                            "location": location
+                        }
+                        findings.append(finding)
+            
+            if not cve_reported:
+                finding = {
+                    "title": f"Detected {lib} v{ver_str or 'unknown'}",
+                    "severity": "info",
+                    "confidence": base_conf,
+                    "cwe": "",
+                    "owasp": "",
+                    "evidence": f"Detected {lib}@{ver_str or 'unknown'} via {', '.join(sources)}.",
+                    "poc": "N/A",
+                    "remediation": "Keep libraries updated and monitor for known vulnerabilities.",
+                    "detection_method": "Library Fingerprinting",
+                    "location": location
+                }
+                findings.append(finding)
+                
+        findings = [f for f in findings if f.get("confidence", 100) >= min_confidence]
+        
+        details = {
+            "libraries_detected": len(lib_groups),
+            "cve_cache_loaded": len(cve_cache) > 0
+        }
+        
+        return {"findings": findings, "details": details}
+        
     except Exception as e:
-        return {"test_name": "frontend_sca_audit", "status": "error", "title": f"Error: {e}"}
-
-    # ------------------------------------------------------------------------------
-    # Build Final Output
-    # ------------------------------------------------------------------------------
-    criticals = [v for v in vulnerabilities if v["severity"] == "critical"]
-    highs = [v for v in vulnerabilities if v["severity"] == "high"]
-    mediums = [v for v in vulnerabilities if v["severity"] == "medium"]
-    lows = [v for v in vulnerabilities if v["severity"] == "low"]
-
-    if criticals:
-        status, sev = "fail", "critical"
-        title = f"{len(criticals)} CRITICAL vulnerable libraries"
-    elif highs:
-        status, sev = "fail", "high"
-        title = f"{len(highs)} HIGH vulnerable libraries"
-    elif mediums or lows:
-        status, sev = "warning", "medium"
-        title = f"{len(mediums)+len(lows)} vulnerable libraries (medium/low)"
-    else:
-        status, sev = "pass", "info"
-        title = "No vulnerable libraries detected"
-
-    # FIX: Derive overall_cve_source from ALL `detected_libraries` that were actually looked up
-    # (coverage == "checked"), not just from the `vulnerabilities` list. This ensures that if
-    # real OSV/CSV/fallback lookups were performed but found no vulnerabilities, the correct
-    # source is still reported instead of misleadingly defaulting to "none".
-    cve_sources_used = {lib.get("cve_source") for lib in detected_libraries if lib.get("cve_source")}
-    if "osv" in cve_sources_used:
-        overall_cve_source = "osv"
-    elif "csv" in cve_sources_used:
-        overall_cve_source = "csv"
-    elif "fallback" in cve_sources_used:
-        overall_cve_source = "fallback"
-    else:
-        overall_cve_source = "none"
-
-    return {
-        "test_name": "frontend_sca_audit",
-        "status": status,
-        "severity": sev,
-        "title": title,
-        "libraries_detected": len(detected_libraries),
-        "vulnerable_count": len(vulnerabilities),
-        "severity_breakdown": {"critical": len(criticals), "high": len(highs), "medium": len(mediums), "low": len(lows)},
-        "detected_libraries": detected_libraries,
-        "vulnerabilities": vulnerabilities,
-        "remediation": "Update all identified libraries to the recommended versions. Use provided PoC commands and CVE links for verification.",
-        "cve_source": overall_cve_source
-    }
+        return {
+            "findings": [],
+            "details": {"error": str(e), "error_type": type(e).__name__}
+        }
+    finally:
+        if should_close and own_session is not None:
+            await own_session.close()
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"

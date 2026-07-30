@@ -190,7 +190,7 @@ async def _verify_with_retry(verifier, key, session, *args) -> dict:
                 if i < max_attempts - 1:
                     await asyncio.sleep(backoffs[i])
                 continue
-            return {"verified": None, "note": "rate_limited", "status": 429}
+            return result
         except Exception as e:
             if i < max_attempts - 1:
                 await asyncio.sleep(backoffs[i])

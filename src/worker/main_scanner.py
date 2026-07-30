@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bravo6 Enterprise Orchestrator (v8.2 – Production Grade)
+Bravo6 Enterprise Orchestrator (v8.3 – Production Grade)
 ========================================================
 - Dynamic plugin architecture (auto-discovers test_XX_*.py).
 - Unified finding schema enforcement (CWE, OWASP, PoC, Evidence).
@@ -9,8 +9,11 @@ Bravo6 Enterprise Orchestrator (v8.2 – Production Grade)
 - Robust timeout, retry, and concurrency management.
 - Deterministic, normalized scoring across all modules.
 - CRITICAL FIX: Single HTTP fetch for main page, synchronous WAF detection.
+- v8.3 — CRITICAL FIX: Dependency injection now correctly detects **kwargs-based 
+  plugin signatures (all 5 production Scouts use `async def run(url, **kwargs)`), 
+  fixing a bug where shared_page, session, js_cache, fetch_js, cve_csv_url, and 
+  waf_detected were never actually delivered to any plugin.
 - Scout 3 (Mixed Content) eliminated — logic merged into Scout 4.
-
 Supported Scouts: 1 (Secrets), 2 (Frontend Libs), 4 (SSL/TLS + Mixed Content), 5 (Security Headers), 6 (Info Disclosure). Scout 3 eliminated.
 """
 import asyncio
@@ -45,7 +48,7 @@ except ImportError:
 # ------------------------------------------------------------------------------
 # Configuration & Constants
 # ------------------------------------------------------------------------------
-USER_AGENT = "Bravo6-Scanner/8.2"
+USER_AGENT = "Bravo6-Scanner/8.3"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2
@@ -73,6 +76,19 @@ logger = logging.getLogger("Bravo6-Orchestrator")
 # ------------------------------------------------------------------------------
 # Context & Dependency Injection
 # ------------------------------------------------------------------------------
+def _accepts_kwarg(sig: inspect.Signature, name: str) -> bool:
+    """
+    Returns True if the function can receive this named argument —
+    either because it's an explicit parameter, OR because the function
+    accepts **kwargs (VAR_KEYWORD), which absorbs any keyword argument.
+    """
+    if name in sig.parameters:
+        return True
+    return any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in sig.parameters.values()
+    )
+
 @dataclass
 class ScannerContext:
     """Centralized context for dependency injection across all plugins."""
@@ -137,7 +153,7 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
     if url in ctx.main_page_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.main_page_cache[url]
-        
+    
     if url in ctx.fetch_events:
         await ctx.fetch_events[url].wait()
         ctx.metrics["cache_hits"] += 1
@@ -162,7 +178,6 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
         ctx.main_page_cache[url] = result
         event.set()
         ctx.fetch_events.pop(url, None)
-        
     return result
 
 async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
@@ -170,7 +185,7 @@ async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
     if js_url in ctx.js_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.js_cache[js_url]
-        
+    
     if js_url in ctx.js_fetch_events:
         await ctx.js_fetch_events[js_url].wait()
         ctx.metrics["cache_hits"] += 1
@@ -299,14 +314,12 @@ def deduplicate_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if key not in best:
             best[key] = f
             continue
-            
         existing = best[key]
         if f["confidence"] > existing["confidence"]:
             best[key] = f
         elif f["confidence"] == existing["confidence"]:
             if _SEVERITY_RANK.get(f["severity"], 0) > _SEVERITY_RANK.get(existing["severity"], 0):
                 best[key] = f
-                
     return list(best.values())
 
 def filter_findings(findings: List[Dict[str, Any]], min_confidence: int) -> List[Dict[str, Any]]:
@@ -332,7 +345,6 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
         sev = f["severity"]
         if sev not in sev_counts:
             continue
-            
         sev_counts[sev] += 1
         conf = f["confidence"] / 100.0
         base = BASE_PENALTY[sev]
@@ -438,38 +450,43 @@ async def run_scout(
             kwargs = {}
             
             # Inject shared page (already resolved)
-            if "shared_page" in sig.parameters:
+            if _accepts_kwarg(sig, "shared_page"):
                 kwargs["shared_page"] = shared_page_value
                 
             # Inject caches and fetch functions
-            if "js_cache" in sig.parameters:
+            if _accepts_kwarg(sig, "js_cache"):
                 kwargs["js_cache"] = ctx.js_cache
                 
-            if "fetch_js" in sig.parameters:
+            if _accepts_kwarg(sig, "fetch_js"):
                 async def _fetch_js_wrapper(js_url: str, ctx=ctx) -> str:
                     return await fetch_js_cached(ctx, js_url)
                 kwargs["fetch_js"] = _fetch_js_wrapper
                 
             # Inject shared session for connection pooling
-            if "session" in sig.parameters:
+            if _accepts_kwarg(sig, "session"):
                 kwargs["session"] = ctx.session
                 
             # FIX 3: Inject specific config (cve_csv_url)
-            if "cve_csv_url" in sig.parameters and cve_csv_url is not None:
+            if _accepts_kwarg(sig, "cve_csv_url") and cve_csv_url is not None:
                 kwargs["cve_csv_url"] = cve_csv_url
                 
             # FIX 2: Always inject min_confidence
             kwargs["min_confidence"] = min_confidence
             
             # FIX 1: Inject waf_detected
-            if "waf_detected" in sig.parameters:
+            if _accepts_kwarg(sig, "waf_detected"):
                 kwargs["waf_detected"] = waf_detected
                 
             # Inject context if supported
-            if "ctx" in sig.parameters or "context" in sig.parameters:
-                param_name = "ctx" if "ctx" in sig.parameters else "context"
+            if _accepts_kwarg(sig, "ctx") or _accepts_kwarg(sig, "context"):
+                if "ctx" in sig.parameters:
+                    param_name = "ctx"
+                elif "context" in sig.parameters:
+                    param_name = "context"
+                else:
+                    param_name = "ctx"
                 kwargs[param_name] = ctx
-                
+
             coro = mod.run(url, **kwargs)
             
             # Apply per-module timeout
@@ -499,7 +516,6 @@ async def run_scout(
                     err_msg = f"{mod_name}: timed out after {DEFAULT_TIMEOUTS.get(mod_name, 60)}s"
                 else:
                     err_msg = f"{mod_name}: {type(res).__name__}: {res}"
-                    
                 tb_str = "".join(traceback.format_exception(type(res), res, res.__traceback__))
                 errors.append(err_msg)
                 tests[mod_name] = {
@@ -518,7 +534,6 @@ async def run_scout(
                     tests_run += 1
                     ctx.metrics["modules_executed"] += 1
                     tests[mod_name] = res
-                    
                     findings = extract_findings_from_result(res, mod_name)
                     all_raw_findings.extend(findings)
             else:
@@ -631,7 +646,6 @@ if __name__ == "__main__":
             if not generator_path.exists():
                 print(f"❌ report_generator.py not found at {generator_path.resolve()}")
                 sys.exit(1)
-                
             from report_generator import build_html
             html = build_html(result)
             report_path = script_dir / "security_report.html"
