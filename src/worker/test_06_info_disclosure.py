@@ -13,6 +13,7 @@ import os
 import random
 import re
 import sys
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Set, Tuple
@@ -35,6 +36,9 @@ PATH_PROBE_RETRY_MAX = 1
 PATH_PROBE_BACKOFF_BASE = 0.1
 RETRY_MAX = 3
 RETRY_BACKOFF_BASE = 1
+
+# -- HTTP Request Counter ----------------------------------------------------------------
+requests_made = 0
 
 # -- Severity Ranking Map ----------------------------------------------------------------
 SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
@@ -175,7 +179,7 @@ async def _categorize_site(hostname, port=443, html=None, headers=None):
     return result
 
 def _make_finding(title, description, severity, confidence, location="", evidence="",
-                  remediation="", cwe="", owasp="", poc=None, category="passive",
+                  remediation="", cwe="", owasp="", poc=None,
                   detection_method="pattern_match", response_status=None,
                   response_headers=None, response_size=None, extracted_info=None,
                   exact_url=None):
@@ -199,9 +203,8 @@ def _make_finding(title, description, severity, confidence, location="", evidenc
     if response_headers:
         safe_headers = {k: v for k, v in response_headers.items()
                         if k.lower() in ("content-type", "content-length", "server",
-                                         "x-powered-by", "x-generator", "set-cookie",
-                                         "etag", "last-modified", "x-frame-options",
-                                         "strict-transport-security", "x-content-type-options")}
+                                         "x-frame-options", "x-content-type-options",
+                                         "strict-transport-security")}
         finding["response_headers"] = safe_headers
     if response_size is not None:
         finding["response_size"] = response_size
@@ -215,12 +218,14 @@ TECH_COOKIES = {
     "ci_session": "CodeIgniter", "wp-settings-": "WordPress",
     "wordpress_logged_in_": "WordPress", "drupal_session": "Drupal", "Magento": "Magento",
 }
+
 HEADER_FINGERPRINTS = {
     "Server": {"nginx": "Nginx", "Apache": "Apache", "IIS": "IIS", "cloudflare": "Cloudflare", "Express": "Express.js"},
     "X-Powered-By": {"PHP": "PHP", "ASP.NET": "ASP.NET", "Express": "Express.js", "Next.js": "Next.js",
                      "Laravel": "Laravel", "Django": "Django", "Flask": "Flask", "Ruby": "Ruby on Rails"},
     "X-Generator": {"WordPress": "WordPress", "Joomla": "Joomla", "Drupal": "Drupal", "Magento": "Magento"},
 }
+
 HTML_TECH_SIGNATURES = {
     "WordPress": [r'/wp-content/', r'/wp-includes/', r'wp-json'],
     "Django": [r'csrfmiddlewaretoken'],
@@ -259,6 +264,7 @@ HIGH_SENSITIVE_PATHS = {
     ".vscode/tasks.json": ("medium", 70), ".idea/workspace.xml": ("high", 85),
     ".idea/dataSources.xml": ("high", 85), ".idea/httpRequests/": ("medium", 70),
 }
+
 MEDIUM_SENSITIVE_PATHS = {
     "phpinfo.php": ("high", 90), "info.php": ("high", 90), "test.php": ("medium", 65),
     "error.log": ("medium", 75), "debug.log": ("medium", 75), "storage/logs/laravel.log": ("medium", 75),
@@ -271,6 +277,7 @@ MEDIUM_SENSITIVE_PATHS = {
     "v2/api-docs": ("high", 85), "v3/api-docs": ("high", 85), "api-docs": ("high", 85),
     "graphql": ("high", 85), "graphiql": ("high", 85), "playground": ("high", 85),
 }
+
 LOW_SENSITIVE_PATHS = {
     "robots.txt": ("low", 50), "sitemap.xml": ("low", 50), ".well-known/security.txt": ("low", 55),
     ".well-known/openid-configuration": ("medium", 70), "crossdomain.xml": ("low", 50),
@@ -278,7 +285,9 @@ LOW_SENSITIVE_PATHS = {
     "status": ("low", 60), "healthcheck": ("low", 55), ".DS_Store": ("low", 60), "Thumbs.db": ("low", 55),
     ".bash_history": ("high", 85), "tmp/restart.txt": ("low", 50),
 }
+
 BACKUP_EXTS = [".zip", ".tar.gz", ".sql", ".bak", ".tar", ".7z", ".rar", ".gz", ".bz2"]
+
 TECH_SPECIFIC_PATHS = {
     "WordPress": ["wp-config.php", "wp-content/backup/", "wp-content/uploads/", "wp-content/debug.log", "xmlrpc.php"],
     "Laravel": ["storage/logs/laravel.log", ".env.example", "composer.lock", "vendor/", "storage/framework/views/", "storage/app/"],
@@ -294,6 +303,7 @@ TECH_SPECIFIC_PATHS = {
     "Next.js": [".next/", "out/", ".env.local", "next.config.js"],
     "Nuxt.js": [".nuxt/", ".output/", ".env", "nuxt.config.js"],
 }
+
 API_ENDPOINTS = [
     "graphql", "/api/v1/users", "/api/v1/products", "/api/v1/orders",
     "/api/v2/users", "/debug", "/admin", "/dashboard", "/login",
@@ -301,10 +311,12 @@ API_ENDPOINTS = [
     "/.well-known/openid-configuration", "/actuator/health", "/actuator/env",
     "/graphql/console", "/swagger-resources", "/v2/api-docs", "/v3/api-docs",
 ]
+
 K8S_PATHS = [
     "api/v1/namespaces", "api/v1/pods", "api/v1/services", "api/v1/configmaps",
     "api/v1/secrets", "version", "healthz", "readyz", "livez", "metrics", ".kube/config",
 ]
+
 CLOUD_STORAGE_PATTERNS = [
     (r'https?://([a-z0-9\-]+)\.s3\.amazonaws\.com/?', 'AWS S3'),
     (r'https?://storage\.cloud\.google\.com/([a-z0-9\-_]+)/?', 'GCS'),
@@ -314,6 +326,8 @@ CLOUD_STORAGE_PATTERNS = [
 
 def _get_path_severity(path):
     path_lower = path.lower().lstrip('/')
+    if "adminer.php" in path_lower or "phpmyadmin" in path_lower:
+        return ("high", 90)
     if path_lower in HIGH_SENSITIVE_PATHS: return HIGH_SENSITIVE_PATHS[path_lower]
     if path_lower in MEDIUM_SENSITIVE_PATHS: return MEDIUM_SENSITIVE_PATHS[path_lower]
     if path_lower in LOW_SENSITIVE_PATHS: return LOW_SENSITIVE_PATHS[path_lower]
@@ -326,8 +340,40 @@ def _get_path_severity(path):
     if any(x in path_lower for x in ["terraform", "k8s", "kubernetes", "docker"]): return ("high", 85)
     return ("low", 60)
 
-def _is_soft_404(body, homepage_body):
+def _get_fingerprint(body):
+    if not body: return ""
+    clean = re.sub(r'\s+', '', body)
+    return clean[:200]
+
+def _is_catch_all(status, content_length, server_header, body_fingerprint, baselines):
+    if not baselines: return False
+    for baseline in baselines:
+        if status != baseline.get("status_code"): continue
+        if server_header != baseline.get("server_header"): continue
+        bl_len = baseline.get("content_length", 0)
+        if bl_len > 0:
+            if not (bl_len * 0.9 <= content_length <= bl_len * 1.1):
+                continue
+        elif content_length != 0:
+            continue
+        bl_fp = baseline.get("body_fingerprint", "")
+        if not body_fingerprint and not bl_fp:
+            return True
+        if not body_fingerprint or not bl_fp:
+            continue
+        ratio = difflib.SequenceMatcher(None, body_fingerprint, bl_fp).ratio()
+        if ratio > 0.8:
+            return True
+    return False
+
+def _is_soft_404(body, homepage_body, baseline_fingerprint=None):
     if not body: return False
+    if baseline_fingerprint:
+        body_fp = re.sub(r'\s+', '', body)[:200]
+        if body_fp and baseline_fingerprint:
+            ratio = difflib.SequenceMatcher(None, body_fp, baseline_fingerprint).ratio()
+            if ratio > 0.8:
+                return True
     if re.search(r'(404\s*(Not Found|Page Not Found)|File not found|Page not found|Not Found)', body, re.IGNORECASE): return True
     if not homepage_body: return False
     if abs(len(body) - len(homepage_body)) <= max(len(homepage_body) * 0.1, 100):
@@ -337,11 +383,11 @@ def _is_soft_404(body, homepage_body):
         home_title = re.search(r'<title>(.*?)</title>', homepage_body, re.IGNORECASE)
         if title_match and home_title and title_match.group(1) == home_title.group(1):
             if abs(len(body) - len(homepage_body)) <= max(len(homepage_body) * 0.15, 200): return True
-    try:
-        ratio = difflib.SequenceMatcher(None, body[:2000], homepage_body[:2000]).ratio()
-        if ratio > 0.85: return True
-    except Exception:
-        pass
+        try:
+            ratio = difflib.SequenceMatcher(None, body[:2000], homepage_body[:2000]).ratio()
+            if ratio > 0.85: return True
+        except Exception:
+            pass
     return False
 
 class ResponsePlaceholder:
@@ -356,6 +402,8 @@ class RateLimiter:
         self.max_delay = max_delay
 
     async def probe(self, session, url, method='GET'):
+        global requests_made
+        requests_made += 1
         async with self.sem:
             await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
             try:
@@ -387,18 +435,22 @@ ENTROPY_EXCLUDE_DOMAINS = [
     "cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com",
     "polyfill.io", "static.cloudflareinsights.com",
 ]
+
 JS_SAFE_TOKENS = ['localStorage', 'getToken', 'setToken', 'removeToken', 'clearToken',
                   'token_type', 'grant_type', 'access_token', 'refresh_token']
 JS_CODE_KEYWORDS = ['function', 'var', 'let', 'const', 'return']
+
 HIGH_CONFIDENCE_SECRET_PATTERNS = [
     r'(?:AKIA|ASIA)[A-Z0-9]{16}', r'sk-[a-zA-Z0-9]{32,}',
     r'github_pat_[a-zA-Z0-9_]{22,}', r'AIza[0-9A-Za-z\-_]{35}',
     r'eyJ[a-zA-Z0-9\-_]{10,}\.[a-zA-Z0-9\-_]{10,}\.[a-zA-Z0-9\-_]{10,}',
     r'pk_(live|test)_[a-zA-Z0-9]{24,}',
 ]
+
 BROAD_SECRET_PATTERN = re.compile(
     r'(?:api[_-]?key|apikey|secret|password|token|auth)\s*[:=]\s*["\']?([a-zA-Z0-9_\-]{8,})["\']?', re.IGNORECASE
 )
+
 JS_ROUTE_PATTERNS = [
     re.compile(r'fetch\s*\(\s*["\']([^"\']+/api/[^"\']+)["\']', re.IGNORECASE),
     re.compile(r'fetch\s*\(\s*`([^`]+/api/[^`]+)`', re.IGNORECASE),
@@ -451,6 +503,7 @@ async def _check_js_source_maps(session, base_url, html, rate_limiter, findings)
                         poc=f"curl -s {map_url} | head -c 500",
                         detection_method="pattern_match",
                     ))
+
         async def check_js_map(js_url):
             if not js_url.endswith('.js'): return None
             map_url = js_url + '.map'
@@ -476,6 +529,7 @@ async def _check_js_source_maps(session, base_url, html, rate_limiter, findings)
                         exact_url=map_url,
                     )
             return None
+
         tasks = [check_js_map(js_url) for js_url in js_links]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
@@ -491,6 +545,7 @@ async def _check_js_leaked_credentials(session, base_url, html, rate_limiter, fi
         js_urls = set()
         for script in soup.find_all("script", src=True):
             js_urls.add(urljoin(base_url, script["src"]))
+
         async def check_js_file(js_url):
             content = await _fetch_js_cached(session, js_url, rate_limiter, js_cache, fetch_js)
             if not content: return []
@@ -545,6 +600,7 @@ async def _check_js_leaked_credentials(session, base_url, html, rate_limiter, fi
                             exact_url=js_url,
                         ))
             return local_findings
+
         tasks = [check_js_file(js_url) for js_url in js_urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
@@ -565,6 +621,7 @@ async def _extract_js_routes(session, base_url, html, rate_limiter, findings, js
             if not script.get("src") and script.string:
                 inline_scripts.append(script.string)
         extracted_routes = set()
+
         def extract_from_content(content, source_label):
             for pattern in JS_ROUTE_PATTERNS:
                 for match in pattern.finditer(content):
@@ -574,17 +631,22 @@ async def _extract_js_routes(session, base_url, html, rate_limiter, findings, js
                     if any(x in route.lower() for x in ['example.com', 'localhost', '${', 'http://', 'https://']): continue
                     if len(route) > 200: continue
                     extracted_routes.add((route, source_label))
+
         for inline in inline_scripts:
             extract_from_content(inline, "inline_script")
+
         async def process_js(js_url):
             content = await _fetch_js_cached(session, js_url, rate_limiter, js_cache, fetch_js)
             if content:
                 extract_from_content(content, js_url)
+
         tasks = [process_js(url) for url in js_urls]
         await asyncio.gather(*tasks, return_exceptions=True)
+
         routes_by_path = defaultdict(list)
         for route, source in extracted_routes:
             routes_by_path[route].append(source)
+
         for route, sources in list(routes_by_path.items())[:20]:
             probe_url = urljoin(base_url, route)
             try:
@@ -649,6 +711,8 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                     try:
                         async with rate_limiter.sem:
                             await asyncio.sleep(random.uniform(rate_limiter.min_delay, rate_limiter.max_delay))
+                            global requests_made
+                            requests_made += 1
                             intro_resp = await session.post(
                                 url, json={"query": "query { __schema { types { name } } }"},
                                 timeout=REQUEST_TIMEOUT
@@ -745,6 +809,7 @@ async def _enumerate_api_endpoints(session, base_url, rate_limiter, findings):
                     exact_url=url,
                 )
             return None
+
         tasks = [check_endpoint(endpoint) for endpoint in API_ENDPOINTS]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
@@ -760,6 +825,7 @@ async def _check_kubernetes_exposure(session, base_url, rate_limiter, findings):
         ("api/v1/pods", "Kubernetes pods"), ("api/v1/services", "Kubernetes services"),
         ("api/v1/configmaps", "Kubernetes configmaps"), ("api/v1/secrets", "Kubernetes secrets"),
     ]
+
     async def check_k8s(path, description):
         url = urljoin(base_url, path)
         try:
@@ -796,6 +862,7 @@ async def _check_kubernetes_exposure(session, base_url, rate_limiter, findings):
         except Exception:
             pass
         return None
+
     tasks = [check_k8s(p, d) for p, d in k8s_endpoints]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:
@@ -814,6 +881,7 @@ async def _check_docker_terraform(session, base_url, rate_limiter, findings):
         (".terraform/terraform.tfstate", "Terraform state in hidden dir", "terraform_exposure"),
         (".terraform.lock.hcl", "Terraform lock file", "terraform_exposure"),
     ]
+
     async def check_path(path, description, category):
         url = urljoin(base_url, path)
         try:
@@ -871,6 +939,7 @@ async def _check_docker_terraform(session, base_url, rate_limiter, findings):
         except Exception:
             pass
         return None
+
     tasks = [check_path(p, d, c) for p, d, c in paths]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:
@@ -890,6 +959,7 @@ async def _check_cloud_storage(session, base_url, html, rate_limiter, findings):
     for name in common_names:
         bucket_urls.add((f"https://s3.amazonaws.com/{name}/", "AWS S3"))
         bucket_urls.add((f"https://storage.googleapis.com/{name}/", "GCS"))
+
     async def check_bucket(bucket_url, provider):
         try:
             resp = await rate_limiter.probe(session, bucket_url, 'GET')
@@ -925,6 +995,7 @@ async def _check_cloud_storage(session, base_url, html, rate_limiter, findings):
         except Exception:
             pass
         return None
+
     tasks = [check_bucket(url, provider) for url, provider in list(bucket_urls)[:15]]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:
@@ -936,6 +1007,7 @@ async def _check_interesting_files_from_headers(session, base_url, main_headers,
         return
     interesting = ["/robots.txt", "/sitemap.xml", "/favicon.ico", "/.well-known/security.txt",
                    "/crossdomain.xml", "/clientaccesspolicy.xml"]
+
     async def check_file(path):
         url = urljoin(base_url, path)
         resp = await rate_limiter.probe(session, url, 'HEAD')
@@ -953,6 +1025,7 @@ async def _check_interesting_files_from_headers(session, base_url, main_headers,
                 exact_url=url,
             )
         return None
+
     tasks = [check_file(path) for path in interesting]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:
@@ -1018,6 +1091,7 @@ HTML_COMMENT_NOISE_PATTERNS = [
     r'Generated by', r'Do not edit', r'Do not remove', r'Copyright',
     r'License:', r'SPDX-License-Identifier',
 ]
+
 CREDENTIAL_PATTERNS = [
     r'(?:password|pass|pwd|secret|api[_-]?key|token|auth|private[_-]?key|access[_-]?key)\s*[:=]\s*["\']?[A-Za-z0-9_\-+/=]{8,}["\']?',
     r'(?:aws|gcp|azure|heroku|sendgrid|stripe|twilio)[_-]?(?:access[_-]?key|secret|token|password)\s*[:=]\s*["\']?[A-Za-z0-9_\-]{16,}["\']?',
@@ -1025,9 +1099,12 @@ CREDENTIAL_PATTERNS = [
     r'github_pat_[a-zA-Z0-9_]{22,}', r'AIza[0-9A-Za-z\-_]{35}',
     r'eyJ[a-zA-Z0-9\-_]{10,}\.[a-zA-Z0-9\-_]{10,}\.[a-zA-Z0-9\-_]{10,}',
 ]
+
 DEVELOPER_NOTE_KEYWORDS = ['TODO', 'FIXME', 'BUG', 'HACK', 'XXX', 'NOTE', 'DEBUG']
 
 async def run(url: str, **kwargs) -> Dict[str, Any]:
+    global requests_made
+    requests_made = 0
     try:
         target = _normalize_url(url)
         parsed = urlparse(target)
@@ -1051,7 +1128,6 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
         is_partial = False
         scan_note = ""
         partial_phases = []
-
         main_body = ""
         main_headers = {}
         soup = None
@@ -1085,6 +1161,44 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
 
             site_context = await _categorize_site(hostname, port, html=main_body, headers=main_headers)
             site_context["is_api"] = hostname.startswith("api.") or "/api/" in parsed.path
+
+            # Baseline 403 / Catch-All Detection (FIX 2a)
+            baselines = []
+            baseline_fingerprint = None
+
+            baseline_urls = [
+                f"{base_url}/{uuid.uuid4()}_bravo6_baseline.html",
+                f"{base_url}/.bravo6_{uuid.uuid4()}_test",
+                f"{base_url}/config_{uuid.uuid4()}.php"
+            ]
+
+            for b_url in baseline_urls:
+                try:
+                    async def do_baseline(url=b_url):
+                        global requests_made
+                        requests_made += 1
+                        return await session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                    bl_resp = await retry_path_probe(do_baseline)
+                    if bl_resp:
+                        bl_body = ""
+                        try:
+                            bl_body = await asyncio.wait_for(bl_resp.text(errors='replace'), timeout=5)
+                        except:
+                            pass
+                        bl_cl = int(bl_resp.headers.get("Content-Length", len(bl_body)))
+                        bl_fp = _get_fingerprint(bl_body)
+                        baselines.append({
+                            "status_code": bl_resp.status,
+                            "content_length": bl_cl,
+                            "server_header": bl_resp.headers.get("Server", ""),
+                            "body_fingerprint": bl_fp
+                        })
+                        if baseline_fingerprint is None:
+                            baseline_fingerprint = bl_fp
+                except Exception as e:
+                    _log_debug(f"Baseline request failed for {b_url}: {e}")
+
+            baseline_403 = baselines[0] if baselines else None
 
             async def main_work():
                 nonlocal findings, tech_stack, js_cache, paths_checked, paths_total, is_partial, scan_note, partial_phases
@@ -1164,8 +1278,8 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
                     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
                         comm = comment.strip()
                         if comm.startswith('<') or comm.startswith('function') or comm.startswith('$') or \
-                                comm.startswith('var ') or comm.startswith('const ') or comm.startswith('let ') or \
-                                comm.startswith('('):
+                           comm.startswith('var ') or comm.startswith('const ') or comm.startswith('let ') or \
+                           comm.startswith('('):
                             continue
                         parent = getattr(comment, 'parent', None)
                         if parent and getattr(parent, 'name', '') in ('script', 'style', 'noscript'):
@@ -1244,16 +1358,22 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
                     if bn not in all_paths: all_paths.append(bn)
                 paths_total = len(all_paths)
 
+                # FIX 2b & 2c: Mutable counters and 403 suppression
+                pending_403_findings = []
+                signature_counts = defaultdict(int)
+                paths_checked_ref = {"count": 0}
+
                 try:
                     async def _probe_all_paths():
-                        nonlocal paths_checked
-                        checked = 0
                         for path in all_paths:
                             url = urljoin(base_url, path)
                             try:
-                                resp = await retry_path_probe(lambda: session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True))
+                                async def do_get():
+                                    global requests_made
+                                    requests_made += 1
+                                    return await session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                                resp = await retry_path_probe(do_get)
                                 if resp is None:
-                                    checked += 1
                                     continue
                                 status = resp.status
                                 resp_headers = dict(resp.headers)
@@ -1262,6 +1382,11 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
                                         body = await asyncio.wait_for(resp.text(errors='replace'), timeout=5)
                                     except Exception:
                                         body = ""
+                                    body_fp = _get_fingerprint(body)
+                                    cl = int(resp_headers.get("Content-Length", len(body)))
+                                    is_catch = _is_catch_all(status, cl, resp_headers.get("Server", ""), body_fp, baselines)
+                                    if is_catch:
+                                        continue
                                     severity, confidence = _get_path_severity(path)
                                     sensitive_file_emitted = False
                                     if _is_sensitive_content(path, body):
@@ -1269,174 +1394,196 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
                                             pass
                                         elif "phpinfo" in path:
                                             sensitive_file_emitted = True
-                                            findings.append(_make_finding(
-                                                title="PHP configuration disclosure via phpinfo.php",
-                                                description="phpinfo.php discloses full server configuration, loaded extensions, versions, and potentially environment variables.",
-                                                severity="critical", confidence=95, location=path,
-                                                evidence=f"Content verified as phpinfo, HTTP {status}, size: {len(body)} bytes",
-                                                remediation="Remove phpinfo.php from the web root or restrict access at the web server level.",
-                                                cwe="CWE-200", owasp="A01:2021",
-                                                poc=f"curl -s {url} | head -50",
-                                                detection_method="content_analysis",
-                                                response_status=status, response_headers=resp_headers,
-                                                response_size=len(body), exact_url=url,
-                                            ))
+                                            if not any(f.get("exact_url") == url for f in findings):
+                                                findings.append(_make_finding(
+                                                    title="PHP configuration disclosure via phpinfo.php",
+                                                    description="phpinfo.php discloses full server configuration, loaded extensions, versions, and potentially environment variables.",
+                                                    severity="critical", confidence=95, location=path,
+                                                    evidence=f"Content verified as phpinfo, HTTP {status}, size: {len(body)} bytes",
+                                                    remediation="Remove phpinfo.php from the web root or restrict access at the web server level.",
+                                                    cwe="CWE-200", owasp="A01:2021",
+                                                    poc=f"curl -s {url} | head -50",
+                                                    detection_method="content_analysis",
+                                                    response_status=status, response_headers=resp_headers,
+                                                    response_size=len(body), exact_url=url,
+                                                ))
                                         else:
                                             sensitive_file_emitted = True
                                             if ".env" in path and any(kw in body for kw in ["PASSWORD", "SECRET", "API_KEY"]):
                                                 severity = "critical"
                                                 confidence = 98
+                                            if not any(f.get("exact_url") == url for f in findings):
+                                                findings.append(_make_finding(
+                                                    title=f"Sensitive file exposed: {path}",
+                                                    description=f"Sensitive file accessible at {path}",
+                                                    severity=severity, confidence=confidence, location=path,
+                                                    evidence=f"Content verified, HTTP {status}, size: {len(body)} bytes",
+                                                    remediation=f"Restrict access to {path}.",
+                                                    cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
+                                                    owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
+                                                    poc=f"curl -s {url} | head -50",
+                                                    detection_method="content_analysis",
+                                                    response_status=status,
+                                                    response_headers=resp_headers,
+                                                    response_size=len(body),
+                                                    exact_url=url,
+                                                ))
+                                    if _is_directory_listing(body, main_body):
+                                        sensitive_file_emitted = True
+                                        if not any(f.get("exact_url") == url for f in findings):
                                             findings.append(_make_finding(
-                                                title=f"Sensitive file exposed: {path}",
-                                                description=f"Sensitive file accessible at {path}",
-                                                severity=severity, confidence=confidence, location=path,
-                                                evidence=f"Content verified, HTTP {status}, size: {len(body)} bytes",
-                                                remediation=f"Restrict access to {path}.",
-                                                cwe=CWE_MAP.get("sensitive_file", "CWE-538"),
-                                                owasp=OWASP_MAP.get("sensitive_file", "A01:2021"),
+                                                title=f"Directory listing enabled: {path}",
+                                                description=f"Directory listing found at {path}",
+                                                severity="medium", confidence=90, location=path,
+                                                evidence=f"HTTP {status} response, Content-Length: {len(body) if body else 'unknown'}",
+                                                remediation="Disable directory listing.",
+                                                cwe=CWE_MAP["dir_listing"], owasp=OWASP_MAP["dir_listing"],
                                                 poc=f"curl -s {url} | head -50",
-                                                detection_method="content_analysis",
+                                                detection_method="listing_detection",
                                                 response_status=status,
                                                 response_headers=resp_headers,
                                                 response_size=len(body),
                                                 exact_url=url,
                                             ))
-                                    if _is_directory_listing(body, main_body):
-                                        sensitive_file_emitted = True
-                                        findings.append(_make_finding(
-                                            title=f"Directory listing enabled: {path}",
-                                            description=f"Directory listing found at {path}",
-                                            severity="medium", confidence=90, location=path,
-                                            evidence=f"HTTP {status} response, Content-Length: {len(body) if body else 'unknown'}",
-                                            remediation="Disable directory listing.",
-                                            cwe=CWE_MAP["dir_listing"], owasp=OWASP_MAP["dir_listing"],
-                                            poc=f"curl -s {url} | head -50",
-                                            detection_method="listing_detection",
-                                            response_status=status,
-                                            response_headers=resp_headers,
-                                            response_size=len(body),
-                                            exact_url=url,
-                                        ))
                                     if path == "robots.txt":
                                         sensitive_paths = _is_robots_sensitive(body)
                                         if sensitive_paths:
-                                            findings.append(_make_finding(
-                                                title="Sensitive paths disclosed in robots.txt",
-                                                description=f"robots.txt reveals sensitive paths: {', '.join(sensitive_paths[:5])}",
-                                                severity="medium", confidence=85, location="/robots.txt",
-                                                evidence=f"Disallowed paths: {', '.join(sensitive_paths[:10])}",
-                                                remediation="Review robots.txt for sensitive path disclosure.",
-                                                cwe=CWE_MAP["sensitive_file"], owasp=OWASP_MAP["sensitive_file"],
-                                                poc=f"curl -s {url}",
-                                                detection_method="robots_analysis",
-                                                response_status=status,
-                                                response_headers=resp_headers,
-                                                response_size=len(body),
-                                                extracted_info=f"Paths: {', '.join(sensitive_paths[:10])}",
-                                                exact_url=url,
-                                            ))
+                                            if not any(f.get("exact_url") == url for f in findings):
+                                                findings.append(_make_finding(
+                                                    title="Sensitive paths disclosed in robots.txt",
+                                                    description=f"robots.txt reveals sensitive paths: {', '.join(sensitive_paths[:5])}",
+                                                    severity="medium", confidence=85, location="/robots.txt",
+                                                    evidence=f"Disallowed paths: {', '.join(sensitive_paths[:10])}",
+                                                    remediation="Review robots.txt for sensitive path disclosure.",
+                                                    cwe=CWE_MAP["sensitive_file"], owasp=OWASP_MAP["sensitive_file"],
+                                                    poc=f"curl -s {url}",
+                                                    detection_method="robots_analysis",
+                                                    response_status=status,
+                                                    response_headers=resp_headers,
+                                                    response_size=len(body),
+                                                    extracted_info=f"Paths: {', '.join(sensitive_paths[:10])}",
+                                                    exact_url=url,
+                                                ))
                                         else:
+                                            if not any(f.get("exact_url") == url for f in findings):
+                                                findings.append(_make_finding(
+                                                    title=f"Accessible file: {path}",
+                                                    description=f"robots.txt accessible (no sensitive paths disclosed)",
+                                                    severity="info", confidence=60, location=path,
+                                                    evidence=f"HTTP {status} response, size: {len(body)} bytes",
+                                                    remediation="Review if exposure is intentional.",
+                                                    poc=f"curl -s {url}",
+                                                    detection_method="file_accessible",
+                                                    response_status=status,
+                                                    response_headers=resp_headers,
+                                                    response_size=len(body),
+                                                    exact_url=url,
+                                                ))
+                                    elif path == "sitemap.xml":
+                                        sensitive = any(s in body.lower() for s in ['admin', 'backup', 'internal', 'private', 'debug'])
+                                        if not any(f.get("exact_url") == url for f in findings):
                                             findings.append(_make_finding(
                                                 title=f"Accessible file: {path}",
-                                                description=f"robots.txt accessible (no sensitive paths disclosed)",
-                                                severity="info", confidence=60, location=path,
+                                                description=f"sitemap.xml accessible" + (" and may reveal internal paths" if sensitive else ""),
+                                                severity="info", confidence=70 if sensitive else 55,
+                                                location=path,
                                                 evidence=f"HTTP {status} response, size: {len(body)} bytes",
                                                 remediation="Review if exposure is intentional.",
-                                                poc=f"curl -s {url}",
+                                                poc=f"curl -s {url} | head -30",
                                                 detection_method="file_accessible",
                                                 response_status=status,
                                                 response_headers=resp_headers,
                                                 response_size=len(body),
                                                 exact_url=url,
                                             ))
-                                    elif path == "sitemap.xml":
-                                        sensitive = any(s in body.lower() for s in ['admin', 'backup', 'internal', 'private', 'debug'])
-                                        findings.append(_make_finding(
-                                            title=f"Accessible file: {path}",
-                                            description=f"sitemap.xml accessible" + (" and may reveal internal paths" if sensitive else ""),
-                                            severity="info", confidence=70 if sensitive else 55,
-                                            location=path,
-                                            evidence=f"HTTP {status} response, size: {len(body)} bytes",
-                                            remediation="Review if exposure is intentional.",
-                                            poc=f"curl -s {url} | head -30",
-                                            detection_method="file_accessible",
-                                            response_status=status,
-                                            response_headers=resp_headers,
-                                            response_size=len(body),
-                                            exact_url=url,
-                                        ))
-                                    elif not sensitive_file_emitted and not _is_soft_404(body, main_body) and path not in ["/robots.txt", "/sitemap.xml", "/favicon.ico"]:
-                                        findings.append(_make_finding(
-                                            title=f"Accessible file: {path}",
-                                            description=f"File accessible at {path}",
-                                            severity=severity if severity in ("critical", "high") else "low",
-                                            confidence=confidence if severity in ("critical", "high") else 65,
-                                            location=path,
-                                            evidence=f"HTTP {status} response, size: {len(body)} bytes",
-                                            remediation="Review if exposure is intentional.",
-                                            poc=f"curl -s {url} | head -30",
-                                            detection_method="file_accessible",
-                                            response_status=status,
-                                            response_headers=resp_headers,
-                                            response_size=len(body),
-                                            exact_url=url,
-                                        ))
+                                    elif not sensitive_file_emitted and not _is_soft_404(body, main_body, baseline_fingerprint) and path not in ["/robots.txt", "/sitemap.xml", "/favicon.ico"]:
+                                        if not any(f.get("exact_url") == url for f in findings):
+                                            findings.append(_make_finding(
+                                                title=f"Accessible file: {path}",
+                                                description=f"File accessible at {path}",
+                                                severity=severity if severity in ("critical", "high") else "low",
+                                                confidence=confidence if severity in ("critical", "high") else 65,
+                                                location=path,
+                                                evidence=f"HTTP {status} response, size: {len(body)} bytes",
+                                                remediation="Review if exposure is intentional.",
+                                                poc=f"curl -s {url} | head -30",
+                                                detection_method="file_accessible",
+                                                response_status=status,
+                                                response_headers=resp_headers,
+                                                response_size=len(body),
+                                                exact_url=url,
+                                            ))
                                 elif status == 403:
                                     if path not in EXPECTED_403_PATHS:
-                                        severity, confidence = _get_path_severity(path)
+                                        body = ""
+                                        try:
+                                            body = await asyncio.wait_for(resp.text(errors='replace'), timeout=2)
+                                        except:
+                                            pass
+                                        body_fp = _get_fingerprint(body)
+                                        cl = int(resp_headers.get("Content-Length", len(body)))
+                                        is_catch = _is_catch_all(status, cl, resp_headers.get("Server", ""), body_fp, baselines)
+                                        if not is_catch:
+                                            severity, confidence = _get_path_severity(path)
+                                            confidence = max(0, confidence - 15)
+                                            
+                                            sig_tuple = (cl, resp_headers.get("Server", ""), body_fp[:50])
+                                            
+                                            finding = _make_finding(
+                                                title=f"Forbidden access to sensitive path: {path}",
+                                                description=f"Path {path} returned 403 Forbidden",
+                                                severity="low" if severity == "low" else "medium",
+                                                confidence=confidence, location=path,
+                                                evidence=f"HTTP {status} response",
+                                                remediation=f"Verify access controls for {path}.",
+                                                cwe=CWE_MAP["sensitive_file"], owasp=OWASP_MAP["sensitive_file"],
+                                                poc=f"curl -I {url}",
+                                                detection_method="status_code",
+                                                response_status=status,
+                                                response_headers=resp_headers,
+                                                exact_url=url,
+                                            )
+                                            pending_403_findings.append((finding, sig_tuple))
+                                            signature_counts[sig_tuple] += 1
+                                elif status == 401:
+                                    if not any(f.get("exact_url") == url for f in findings):
                                         findings.append(_make_finding(
-                                            title=f"Forbidden access to sensitive path: {path}",
-                                            description=f"Path {path} returned 403 Forbidden",
-                                            severity="low" if severity == "low" else "medium",
-                                            confidence=confidence - 10, location=path,
+                                            title=f"Unauthorized access to: {path}",
+                                            description=f"Path {path} returned 401 Unauthorized",
+                                            severity="info", confidence=75, location=path,
                                             evidence=f"HTTP {status} response",
-                                            remediation=f"Verify access controls for {path}.",
-                                            cwe=CWE_MAP["sensitive_file"], owasp=OWASP_MAP["sensitive_file"],
+                                            remediation="Verify authentication requirements.",
                                             poc=f"curl -I {url}",
                                             detection_method="status_code",
                                             response_status=status,
                                             response_headers=resp_headers,
                                             exact_url=url,
                                         ))
-                                elif status == 401:
-                                    findings.append(_make_finding(
-                                        title=f"Unauthorized access to: {path}",
-                                        description=f"Path {path} returned 401 Unauthorized",
-                                        severity="info", confidence=75, location=path,
-                                        evidence=f"HTTP {status} response",
-                                        remediation="Verify authentication requirements.",
-                                        poc=f"curl -I {url}",
-                                        detection_method="status_code",
-                                        response_status=status,
-                                        response_headers=resp_headers,
-                                        exact_url=url,
-                                    ))
-                                checked += 1
-                                paths_checked = checked
-                            except asyncio.TimeoutError:
-                                checked += 1
-                                paths_checked = checked
-                                continue
                             except Exception as e:
                                 _log_debug(f"Path probe failed for {path}: {e}")
-                                checked += 1
-                                paths_checked = checked
-                                continue
-                        return checked
+                            finally:
+                                paths_checked_ref["count"] += 1
 
-                    paths_checked = await asyncio.wait_for(_probe_all_paths(), timeout=remaining_budget)
+                    await asyncio.wait_for(_probe_all_paths(), timeout=remaining_budget)
                 except asyncio.TimeoutError:
                     is_partial = True
-                    scan_note = f"Path probing budget reached; results are partial. Checked {paths_checked}/{paths_total} paths."
-                    _log_debug(f"[FIX #1/#3] Path probing budget reached: {paths_checked}/{paths_total} paths checked")
+                    scan_note = f"Path probing budget reached; results are partial. Checked {paths_checked_ref['count']}/{paths_total} paths."
+                    _log_debug(f"[FIX #1/#3] Path probing budget reached: {paths_checked_ref['count']}/{paths_total} paths checked")
                     partial_phases.append("path_probing")
-                    paths_checked = min(paths_checked, paths_total)
+
+                paths_checked = paths_checked_ref["count"]
+
+                # FIX 2b: Dynamic majority-based 403 signature suppression
+                confirmed_catchall_sigs = {sig for sig, count in signature_counts.items() if count >= 3}
+                for finding, sig in pending_403_findings:
+                    if sig not in confirmed_catchall_sigs:
+                        findings.append(finding)
 
                 # -- Deduplicate --------------------------------------------------------------
                 seen = set()
                 unique_findings = []
                 for f in findings:
-                    key = (f["title"], f.get("location", ""), f.get("detection_method", ""))
+                    key = (f["title"], f.get("exact_url") or f.get("location", ""))
                     if key not in seen:
                         seen.add(key)
                         unique_findings.append(f)
@@ -1454,30 +1601,36 @@ async def run(url: str, **kwargs) -> Dict[str, Any]:
                 scan_note = "Safety net timeout after 55s; returning all accumulated findings."
                 partial_phases.append("safety_net")
                 _log_debug("[FIX #5] Safety net timeout; returning partial results")
+            finally:
+                if temp_session:
+                    await session.close()
 
-        finally:
-            if temp_session:
-                await session.close()
+            # Filter by min_confidence
+            findings = [f for f in findings if f.get("confidence", 100) >= min_confidence]
 
-        # Filter by min_confidence
-        findings = [f for f in findings if f.get("confidence", 100) >= min_confidence]
+            confirmed_catchall_signatures_list = [
+                {"content_length": s[0], "server_header": s[1], "body_fingerprint": s[2]} 
+                for s in confirmed_catchall_sigs
+            ]
 
-        details = {
-            "tech_stack": list(tech_stack),
-            "waf_detected": waf_detected,
-            "context": site_context,
-            "paths_checked": paths_checked,
-            "paths_total": paths_total,
-            "partial": is_partial,
-            "partial_phases": partial_phases,
-            "note": scan_note,
-        }
-
-        return {
-            "findings": findings,
-            "details": details
-        }
-
+            details = {
+                "tech_stack": list(tech_stack),
+                "waf_detected": waf_detected,
+                "context": site_context,
+                "paths_checked": paths_checked,
+                "paths_total": paths_total,
+                "partial": is_partial,
+                "partial_phases": partial_phases,
+                "note": scan_note,
+                "baselines": baselines,
+                "baseline_403": baseline_403,
+                "confirmed_catchall_signatures": confirmed_catchall_signatures_list,
+                "requests_made": requests_made,
+            }
+            return {
+                "findings": findings,
+                "details": details
+            }
     except Exception as e:
         return {
             "findings": [],

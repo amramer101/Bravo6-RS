@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
 """
-Bravo6 Enterprise Orchestrator (v8.3 – Production Grade)
+Bravo6 Enterprise Orchestrator (v8.4)
 ========================================================
-- Dynamic plugin architecture (auto-discovers test_XX_*.py).
-- Unified finding schema enforcement (CWE, OWASP, PoC, Evidence).
-- Centralized dependency injection (Session, Caches, Context).
-- Advanced metrics, tracing, and structured logging.
-- Robust timeout, retry, and concurrency management.
-- Deterministic, normalized scoring across all modules.
-- CRITICAL FIX: Single HTTP fetch for main page, synchronous WAF detection.
-- v8.3 — CRITICAL FIX: Dependency injection now correctly detects **kwargs-based 
-  plugin signatures (all 5 production Scouts use `async def run(url, **kwargs)`), 
-  fixing a bug where shared_page, session, js_cache, fetch_js, cve_csv_url, and 
-  waf_detected were never actually delivered to any plugin.
-- Scout 3 (Mixed Content) eliminated — logic merged into Scout 4.
-Supported Scouts: 1 (Secrets), 2 (Frontend Libs), 4 (SSL/TLS + Mixed Content), 5 (Security Headers), 6 (Info Disclosure). Scout 3 eliminated.
+- Dynamic plugin discovery and dependency injection
+- Centralized caching, WAF detection, and metrics
+- Unified finding normalization, deduplication, and scoring
+- Cosmos DB + JSON fallback persistence
 """
 import asyncio
 import contextlib
@@ -48,7 +39,7 @@ except ImportError:
 # ------------------------------------------------------------------------------
 # Configuration & Constants
 # ------------------------------------------------------------------------------
-USER_AGENT = "Bravo6-Scanner/8.3"
+USER_AGENT = "Bravo6-Scanner/8.4"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2
@@ -120,7 +111,6 @@ def discover_plugins() -> List[Any]:
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
-            
             if hasattr(module, "run") and inspect.iscoroutinefunction(module.run):
                 plugins.append(module)
                 logger.debug(f"Loaded plugin: {module_name}")
@@ -158,11 +148,11 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
         await ctx.fetch_events[url].wait()
         ctx.metrics["cache_hits"] += 1
         return ctx.main_page_cache[url]
-
+        
     event = asyncio.Event()
     ctx.fetch_events[url] = event
-    
     result = {"status": 0, "html": "", "headers": {}, "soup": None, "error": None}
+    
     try:
         resp = await fetch_with_retry(ctx, url)
         result["status"] = resp.status
@@ -178,6 +168,7 @@ async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
         ctx.main_page_cache[url] = result
         event.set()
         ctx.fetch_events.pop(url, None)
+        
     return result
 
 async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
@@ -185,14 +176,15 @@ async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
     if js_url in ctx.js_cache:
         ctx.metrics["cache_hits"] += 1
         return ctx.js_cache[js_url]
-    
+        
     if js_url in ctx.js_fetch_events:
         await ctx.js_fetch_events[js_url].wait()
         ctx.metrics["cache_hits"] += 1
         return ctx.js_cache.get(js_url, "")
-
+        
     event = asyncio.Event()
     ctx.js_fetch_events[js_url] = event
+    
     try:
         resp = await fetch_with_retry(ctx, js_url)
         if resp.status == 200:
@@ -253,6 +245,10 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     confidence = max(0, min(100, confidence))
     
     evidence_parts = []
+    # FIX 2: Prioritize raw evidence field
+    if raw.get("evidence"):
+        evidence_parts.append(str(raw["evidence"]))
+    
     if raw.get("context"): evidence_parts.append(f"Context: {raw['context']}")
     if raw.get("location"): evidence_parts.append(f"Location: {raw['location']}")
     if raw.get("value_masked"): evidence_parts.append(f"Value: {raw['value_masked']}")
@@ -391,6 +387,8 @@ async def run_scout(
 ) -> Dict[str, Any]:
     """Execute all security tests, return aggregated result."""
     start_time = time.time()
+    start_time_iso = datetime.now().isoformat()
+    
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -407,10 +405,9 @@ async def run_scout(
             **config
         }
     )
-    
     logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
-    connector = aiohttp.TCPConnector(ssl=True, limit=20, limit_per_host=10)
     
+    connector = aiohttp.TCPConnector(ssl=True, limit=20, limit_per_host=10)
     async with aiohttp.ClientSession(
         timeout=REQUEST_TIMEOUT,
         headers={"User-Agent": USER_AGENT},
@@ -456,7 +453,6 @@ async def run_scout(
             # Inject caches and fetch functions
             if _accepts_kwarg(sig, "js_cache"):
                 kwargs["js_cache"] = ctx.js_cache
-                
             if _accepts_kwarg(sig, "fetch_js"):
                 async def _fetch_js_wrapper(js_url: str, ctx=ctx) -> str:
                     return await fetch_js_cached(ctx, js_url)
@@ -466,27 +462,17 @@ async def run_scout(
             if _accepts_kwarg(sig, "session"):
                 kwargs["session"] = ctx.session
                 
-            # FIX 3: Inject specific config (cve_csv_url)
-            if _accepts_kwarg(sig, "cve_csv_url") and cve_csv_url is not None:
+            # FIX 5: Always inject cve_csv_url
+            if _accepts_kwarg(sig, "cve_csv_url"):
                 kwargs["cve_csv_url"] = cve_csv_url
                 
-            # FIX 2: Always inject min_confidence
+            # Always inject min_confidence
             kwargs["min_confidence"] = min_confidence
             
-            # FIX 1: Inject waf_detected
+            # Inject waf_detected
             if _accepts_kwarg(sig, "waf_detected"):
                 kwargs["waf_detected"] = waf_detected
                 
-            # Inject context if supported
-            if _accepts_kwarg(sig, "ctx") or _accepts_kwarg(sig, "context"):
-                if "ctx" in sig.parameters:
-                    param_name = "ctx"
-                elif "context" in sig.parameters:
-                    param_name = "context"
-                else:
-                    param_name = "ctx"
-                kwargs[param_name] = ctx
-
             coro = mod.run(url, **kwargs)
             
             # Apply per-module timeout
@@ -510,8 +496,9 @@ async def run_scout(
         tests_run = 0
         
         for mod_name, res in zip(test_names, test_results):
+            duration_plugin = time.time() - plugin_start_times.get(mod_name, start_time)
+            
             if isinstance(res, Exception):
-                duration_plugin = time.time() - plugin_start_times.get(mod_name, start_time)
                 if isinstance(res, asyncio.TimeoutError):
                     err_msg = f"{mod_name}: timed out after {DEFAULT_TIMEOUTS.get(mod_name, 60)}s"
                 else:
@@ -529,17 +516,19 @@ async def run_scout(
             if isinstance(res, dict):
                 if "error" in res:
                     errors.append(f"{mod_name}: {res['error']}")
+                    res["duration_seconds"] = round(duration_plugin, 2)
                     tests[mod_name] = res
                 else:
                     tests_run += 1
                     ctx.metrics["modules_executed"] += 1
+                    res["duration_seconds"] = round(duration_plugin, 2)
                     tests[mod_name] = res
                     findings = extract_findings_from_result(res, mod_name)
                     all_raw_findings.extend(findings)
             else:
                 err_msg = f"{mod_name}: unexpected return type {type(res).__name__}"
                 errors.append(err_msg)
-                tests[mod_name] = {"error": err_msg}
+                tests[mod_name] = {"error": err_msg, "duration_seconds": round(duration_plugin, 2)}
                 
         waf = waf_detected
         
@@ -554,6 +543,13 @@ async def run_scout(
             if sev in summary:
                 summary[sev] += 1
                 
+        # FIX 1: Aggregate Plugin HTTP Requests into Final Metrics
+        for mod_name, res in zip(test_names, test_results):
+            if isinstance(res, dict) and isinstance(res.get("details"), dict):
+                plugin_reqs = res["details"].get("requests_made", 0)
+                if isinstance(plugin_reqs, int):
+                    ctx.metrics["http_requests"] += plugin_reqs
+
         assembly_error = None
         try:
             score_info = compute_bravo6_score(final_findings, waf)
@@ -565,12 +561,14 @@ async def run_scout(
             assembly_error = f"{type(e).__name__}: {e}"
             logger.error(f"Failed to compute score or assemble result: {assembly_error}")
             
+        end_time_iso = datetime.now().isoformat()
+        
         # Build final result
         final_result = {
             "scanId": str(uuid.uuid4()),
             "url": url,
-            "start_time": datetime.now().isoformat(),
-            "end_time": datetime.now().isoformat(),
+            "start_time": start_time_iso,
+            "end_time": end_time_iso,
             "duration_seconds": round(duration, 2),
             "tests_run": tests_run,
             "total_findings": len(final_findings),
