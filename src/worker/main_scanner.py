@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Bravo6 Enterprise Orchestrator (v8.4)
+Bravo6 Enterprise Orchestrator (v8.5)
 ========================================================
-- Dynamic plugin discovery and dependency injection
-- Centralized caching, WAF detection, and metrics
-- Unified finding normalization, deduplication, and scoring
+- Centralized caching, context sharing, and WAF detection
+- Unified 12-field finding normalization with strict schemas
+- Granular deduplication and Two-Tier Scoring
 - Cosmos DB + JSON fallback persistence
+- Unified comprehensive sensitive paths enumeration list
 """
 import asyncio
 import contextlib
@@ -39,11 +40,10 @@ except ImportError:
 # ------------------------------------------------------------------------------
 # Configuration & Constants
 # ------------------------------------------------------------------------------
-USER_AGENT = "Bravo6-Scanner/8.4"
+USER_AGENT = "Bravo6-Scanner/8.5"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2
-MIN_CONFIDENCE_DEFAULT = 50
 
 # Default timeouts per module (seconds)
 DEFAULT_TIMEOUTS = {
@@ -55,7 +55,7 @@ DEFAULT_TIMEOUTS = {
 }
 
 # ------------------------------------------------------------------------------
-# Logging Configuration (Tracing)
+# Logging Configuration
 # ------------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -64,44 +64,146 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Bravo6-Orchestrator")
 
+# Canonical, shared table of known sensitive paths, owned by Orchestrator
+# Expanded to be a superset including all test_06_info_disclosure targets
+COMMON_SENSITIVE_PATHS = [
+    # Environment & Secrets
+    "/.env", "/.aws/credentials", "/.npmrc", "/.htpasswd",
+    # Version Control
+    "/.git/config", "/.git/HEAD", "/.svn/entries",
+    # Server & PHP Info
+    "/server-status", "/phpinfo.php", "/info.php",
+    # Config files & Backups
+    "/config.php", "/config.php.bak", "/wp-config.php", "/wp-config.php.bak",
+    "/web.config", "/docker-compose.yml",
+    # DB Tools
+    "/adminer.php", 
+    # IDEs & OS files
+    "/.vscode/settings.json", "/.DS_Store",
+    # Package Managers
+    "/composer.json", "/package.json"
+]
+
 # ------------------------------------------------------------------------------
 # Context & Dependency Injection
 # ------------------------------------------------------------------------------
-def _accepts_kwarg(sig: inspect.Signature, name: str) -> bool:
-    """
-    Returns True if the function can receive this named argument —
-    either because it's an explicit parameter, OR because the function
-    accepts **kwargs (VAR_KEYWORD), which absorbs any keyword argument.
-    """
-    if name in sig.parameters:
-        return True
-    return any(
-        p.kind == inspect.Parameter.VAR_KEYWORD
-        for p in sig.parameters.values()
-    )
-
 @dataclass
 class ScannerContext:
-    """Centralized context for dependency injection across all plugins."""
+    """
+    Centralized context for dependency injection across all plugins.
+    Passed as a single explicit parameter to all scouts.
+    """
     url: str
-    config: Dict[str, Any]
-    session: Optional[aiohttp.ClientSession] = None
-    main_page_cache: Dict[str, Dict] = field(default_factory=dict)
-    js_cache: Dict[str, str] = field(default_factory=dict)
-    fetch_events: Dict[str, asyncio.Event] = field(default_factory=dict)
-    js_fetch_events: Dict[str, asyncio.Event] = field(default_factory=dict)
+    session: aiohttp.ClientSession
+    config: Dict[str, Any] = field(default_factory=dict)
+    
+    # Shared signal telling scouts if response is representative
+    page_is_representative: bool = True
+    waf_challenge_detected: Optional[str] = None
+    
+    # Path enumeration ownership belongs here
+    sensitive_paths: List[str] = field(default_factory=lambda: COMMON_SENSITIVE_PATHS)
+    
     metrics: Dict[str, Any] = field(default_factory=lambda: {
         "http_requests": 0,
         "cache_hits": 0,
         "modules_executed": 0,
         "errors": []
     })
+    
+    main_page_cache: Dict[str, Any] = field(default_factory=dict)
+    
+    # Centralized event-gated Cache
+    js_cache: Dict[str, str] = field(default_factory=dict)
+    _js_fetch_events: Dict[str, asyncio.Event] = field(default_factory=dict)
+
+    async def fetch_js(self, js_url: str) -> str:
+        """Fetch JS file with caching and asyncio Event deduplication."""
+        if js_url in self.js_cache:
+            self.metrics["cache_hits"] += 1
+            logger.debug(f"Cache HIT for JS: {js_url}")
+            return self.js_cache[js_url]
+            
+        if js_url in self._js_fetch_events:
+            await self._js_fetch_events[js_url].wait()
+            if js_url in self.js_cache:
+                self.metrics["cache_hits"] += 1
+                logger.debug(f"Cache HIT (waited) for JS: {js_url}")
+                return self.js_cache[js_url]
+                
+        logger.debug(f"Cache MISS for JS: {js_url}")
+        event = asyncio.Event()
+        self._js_fetch_events[js_url] = event
+        
+        try:
+            self.metrics["http_requests"] += 1
+            async with self.session.get(js_url, timeout=10) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    self.js_cache[js_url] = text
+                    return text
+        except Exception as e:
+            logger.debug(f"Failed to fetch JS {js_url}: {e}")
+        finally:
+            event.set()
+            self._js_fetch_events.pop(js_url, None)
+        return ""
 
 # ------------------------------------------------------------------------------
-# Plugin Architecture (Dynamic Discovery)
+# Initialization & Pre-Flight
 # ------------------------------------------------------------------------------
+async def fetch_main_page_and_analyze(ctx: ScannerContext):
+    """Fetch main page once, store it, and analyze for WAF/Challenge Pages."""
+    url = ctx.url
+    ctx.main_page_cache = {"status": 0, "html": "", "headers": {}, "soup": None, "error": None}
+    
+    try:
+        ctx.metrics["http_requests"] += 1
+        async with ctx.session.get(url) as resp:
+            status = resp.status
+            headers = dict(resp.headers)
+            html = await resp.text()
+            
+            ctx.main_page_cache["status"] = status
+            ctx.main_page_cache["headers"] = headers
+            ctx.main_page_cache["html"] = html
+            ctx.main_page_cache["soup"] = BeautifulSoup(html, "html.parser")
+            
+            # WAF and Representative Page Gate
+            headers_lower = {k.lower(): str(v).lower() for k, v in headers.items()}
+            html_lower = html.lower()
+            
+            waf = None
+            rep = True
+            
+            if "cf-ray" in headers_lower or "cloudflare" in headers_lower.get("server", ""):
+                waf = "Cloudflare"
+            elif "x-sucuri-id" in headers_lower: waf = "Sucuri"
+            elif "x-amz-cf-id" in headers_lower: waf = "AWS CloudFront"
+            elif "x-akamai-transformed" in headers_lower: waf = "Akamai"
+            elif "x-iinfo" in headers_lower or "x-cdn" in headers_lower: waf = "Imperva/Incapsula"
+            
+            if status >= 400:
+                rep = False
+                
+            if "cf-chl" in html_lower or "cf-mitigated" in html_lower or "just a moment..." in html_lower:
+                waf = "Cloudflare"
+                rep = False
+            elif "akamai" in html_lower and "access denied" in html_lower:
+                rep = False
+                waf = "Akamai"
+            elif "incapsula incident id" in html_lower:
+                rep = False
+                waf = "Imperva/Incapsula"
+                
+            ctx.waf_challenge_detected = waf
+            ctx.page_is_representative = rep
+
+    except Exception as e:
+        ctx.main_page_cache["error"] = str(e)
+        ctx.page_is_representative = False
+
 def discover_plugins() -> List[Any]:
-    """Dynamically discover and load all test_XX_*.py modules in the same directory."""
     plugins = []
     current_dir = Path(__file__).parent
     for filepath in sorted(current_dir.glob("test_*.py")):
@@ -114,117 +216,35 @@ def discover_plugins() -> List[Any]:
             if hasattr(module, "run") and inspect.iscoroutinefunction(module.run):
                 plugins.append(module)
                 logger.debug(f"Loaded plugin: {module_name}")
-            else:
-                logger.warning(f"Module {module_name} does not have an async 'run' function.")
         except Exception as e:
             logger.error(f"Failed to load plugin {module_name}: {e}")
     return plugins
 
 # ------------------------------------------------------------------------------
-# HTTP Helpers with Retry & Metrics
-# ------------------------------------------------------------------------------
-async def fetch_with_retry(ctx: ScannerContext, url: str, max_retries: int = MAX_RETRIES) -> aiohttp.ClientResponse:
-    """GET with exponential backoff and metrics tracking."""
-    last_exc = None
-    for attempt in range(max_retries):
-        try:
-            ctx.metrics["http_requests"] += 1
-            resp = await ctx.session.get(url)
-            return resp
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            last_exc = e
-            if attempt < max_retries - 1:
-                await asyncio.sleep(RETRY_BACKOFF ** attempt)
-    raise last_exc
-
-async def fetch_main_page_cached(ctx: ScannerContext) -> Dict:
-    """Fetch main page once and cache with event-based deduplication."""
-    url = ctx.url
-    if url in ctx.main_page_cache:
-        ctx.metrics["cache_hits"] += 1
-        return ctx.main_page_cache[url]
-    
-    if url in ctx.fetch_events:
-        await ctx.fetch_events[url].wait()
-        ctx.metrics["cache_hits"] += 1
-        return ctx.main_page_cache[url]
-        
-    event = asyncio.Event()
-    ctx.fetch_events[url] = event
-    result = {"status": 0, "html": "", "headers": {}, "soup": None, "error": None}
-    
-    try:
-        resp = await fetch_with_retry(ctx, url)
-        result["status"] = resp.status
-        result["headers"] = dict(resp.headers)
-        if resp.status == 200:
-            html = await resp.text()
-            result["html"] = html
-            result["soup"] = BeautifulSoup(html, "html.parser")
-    except Exception as e:
-        result["error"] = str(e)
-        ctx.metrics["errors"].append(f"Main page fetch failed: {e}")
-    finally:
-        ctx.main_page_cache[url] = result
-        event.set()
-        ctx.fetch_events.pop(url, None)
-        
-    return result
-
-async def fetch_js_cached(ctx: ScannerContext, js_url: str) -> str:
-    """Fetch JS file with caching and deduplication."""
-    if js_url in ctx.js_cache:
-        ctx.metrics["cache_hits"] += 1
-        return ctx.js_cache[js_url]
-        
-    if js_url in ctx.js_fetch_events:
-        await ctx.js_fetch_events[js_url].wait()
-        ctx.metrics["cache_hits"] += 1
-        return ctx.js_cache.get(js_url, "")
-        
-    event = asyncio.Event()
-    ctx.js_fetch_events[js_url] = event
-    
-    try:
-        resp = await fetch_with_retry(ctx, js_url)
-        if resp.status == 200:
-            text = await resp.text()
-            ctx.js_cache[js_url] = text
-            return text
-        return ""
-    except Exception:
-        return ""
-    finally:
-        event.set()
-        ctx.js_fetch_events.pop(js_url, None)
-
-# ------------------------------------------------------------------------------
-# WAF Detection (Synchronous - Uses already fetched headers)
-# ------------------------------------------------------------------------------
-def _detect_waf_from_headers(headers: Dict[str, str]) -> Optional[str]:
-    """Detect WAF/CDN from response headers without making additional HTTP requests."""
-    if not headers:
-        return None
-    headers_lower = {k.lower(): str(v).lower() for k, v in headers.items()}
-    if "cf-ray" in headers_lower: return "Cloudflare"
-    if "x-sucuri-id" in headers_lower: return "Sucuri"
-    if "x-amz-cf-id" in headers_lower or "cloudfront" in headers_lower.get("server", ""): return "AWS CloudFront"
-    if "x-akamai-transformed" in headers_lower or "x-akamai-request-id" in headers_lower: return "Akamai"
-    if "x-iinfo" in headers_lower or "x-cdn" in headers_lower: return "Imperva/Incapsula"
-    return None
-
-# ------------------------------------------------------------------------------
 # Finding Normalization & Schema Enforcement
 # ------------------------------------------------------------------------------
+def get_confidence_tier(raw_conf: Any) -> str:
+    """Map numeric values or unknown strings to the 4 strictly permitted tiers."""
+    allowed = ["verified-live", "verified-static", "plausible-unconfirmed", "informational"]
+    if isinstance(raw_conf, str) and raw_conf in allowed:
+        return raw_conf
+    try:
+        val = int(raw_conf)
+        if val >= 90: return "verified-live"
+        if val >= 70: return "verified-static"
+        if val >= 30: return "plausible-unconfirmed"
+        return "informational"
+    except (ValueError, TypeError):
+        return "informational"
+
 def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict[str, Any]:
     """
-    Enforce a unified schema for all findings across all modules.
-    Ensures: id, title, severity, confidence, cwe, owasp, evidence, poc, remediation, detection_method.
+    Enforce strict 12+1-field schema and preserve location verbatim.
     """
-    # Map legacy keys to unified schema
     title = raw.get("title") or raw.get("type") or raw.get("cve") or "Unknown Finding"
     cwe = raw.get("cwe") or ""
     owasp = raw.get("owasp") or ""
+    
     location = raw.get("location") or raw.get("header") or raw.get("exact_js_file") or ""
     
     stable_fields = {
@@ -241,21 +261,12 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     if severity not in ["critical", "high", "medium", "low", "info"]:
         severity = "info"
         
-    confidence = int(raw.get("confidence", 50))
-    confidence = max(0, min(100, confidence))
+    confidence = get_confidence_tier(raw.get("confidence", 50))
     
     evidence_parts = []
-    # FIX 2: Prioritize raw evidence field
-    if raw.get("evidence"):
-        evidence_parts.append(str(raw["evidence"]))
-    
+    if raw.get("evidence"): evidence_parts.append(str(raw["evidence"]))
     if raw.get("context"): evidence_parts.append(f"Context: {raw['context']}")
-    if raw.get("location"): evidence_parts.append(f"Location: {raw['location']}")
     if raw.get("value_masked"): evidence_parts.append(f"Value: {raw['value_masked']}")
-    if raw.get("library") and raw.get("version_detected"): evidence_parts.append(f"Library: {raw['library']}@{raw['version_detected']}")
-    if raw.get("sources"): evidence_parts.append(f"Sources: {', '.join(raw['sources'])}")
-    if raw.get("url"): evidence_parts.append(f"URL: {raw['url']}")
-    if raw.get("description"): evidence_parts.append(f"Description: {raw['description']}")
     
     evidence = "\n".join(evidence_parts) if evidence_parts else json.dumps(raw, default=str)[:500]
     poc = raw.get("poc") or raw.get("poc_curl") or raw.get("poc_js") or "Manual verification required."
@@ -270,6 +281,7 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
         "confidence": confidence,
         "cwe": str(cwe),
         "owasp": str(owasp),
+        "location": str(location)[:500],
         "evidence": str(evidence)[:1000],
         "poc": str(poc)[:500],
         "remediation": str(remediation)[:500],
@@ -277,89 +289,66 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
         "raw_data": raw
     }
 
-def extract_findings_from_result(res: Dict[str, Any], module_name: str) -> List[Dict[str, Any]]:
-    """Extract findings from various possible keys in the module result, avoiding duplicates."""
-    raw_findings = []
-    seen_ids = set()
-    finding_keys = ["findings", "evidence", "vulnerabilities"]
-    
-    for key in finding_keys:
-        if key in res and isinstance(res[key], list):
-            for item in res[key]:
-                if isinstance(item, dict):
-                    item_id = hashlib.md5(json.dumps(item, sort_keys=True, default=str).encode()).hexdigest()
-                    if item_id not in seen_ids:
-                        seen_ids.add(item_id)
-                        raw_findings.append(item)
-                        
-    normalized = []
-    for i, f in enumerate(raw_findings):
-        normalized.append(normalize_finding(f, module_name, i))
-    return normalized
-
 # ------------------------------------------------------------------------------
 # Deduplication & Filtering
 # ------------------------------------------------------------------------------
-_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+_CONF_RANK = {"verified-live": 4, "verified-static": 3, "plausible-unconfirmed": 2, "informational": 1}
+_SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
 def deduplicate_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate by normalized title + CWE + OWASP, keeping highest confidence/severity."""
+    """Location MUST be included in the deduplication key to preserve distinct resources."""
     best: Dict[str, Dict[str, Any]] = {}
     for f in findings:
-        key = f"{f['title']}|{f['cwe']}|{f['owasp']}"
+        loc = f.get("location", "").strip().lower()
+        key = f"{f['module']}|{f['title']}|{f['cwe']}|{f['owasp']}|{loc}"
+        
         if key not in best:
             best[key] = f
             continue
+            
         existing = best[key]
-        if f["confidence"] > existing["confidence"]:
+        f_conf = _CONF_RANK.get(f["confidence"], 0)
+        ex_conf = _CONF_RANK.get(existing["confidence"], 0)
+        
+        if f_conf > ex_conf:
             best[key] = f
-        elif f["confidence"] == existing["confidence"]:
-            if _SEVERITY_RANK.get(f["severity"], 0) > _SEVERITY_RANK.get(existing["severity"], 0):
+        elif f_conf == ex_conf:
+            if _SEV_RANK.get(f["severity"], 0) > _SEV_RANK.get(existing["severity"], 0):
                 best[key] = f
     return list(best.values())
-
-def filter_findings(findings: List[Dict[str, Any]], min_confidence: int) -> List[Dict[str, Any]]:
-    """Keep findings with confidence >= min_confidence."""
-    return [f for f in findings if f["confidence"] >= min_confidence]
 
 # ------------------------------------------------------------------------------
 # Unified Scoring Methodology
 # ------------------------------------------------------------------------------
 def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> Dict[str, Any]:
     """
-    Canonical scoring methodology for the Bravo6 project.
-    Computes a 0-100 score and letter grade based on findings.
+    Two-Tier Scoring Calibration Fix: 
+    Prevent heavily weighing bleeding-edge headers like COOP, COEP, etc.
+    (Bug 1 Fix: reads directly from raw_data tier).
     """
-    BASE_PENALTY = {"critical": 18, "high": 15, "medium": 3, "low": 1}
-    DIMINISHING_THRESHOLD = {"critical": 4, "high": 3, "medium": 5, "low": 7}
-    MAX_DEDUCTION = {"critical": 50, "high": 45, "medium": 15, "low": 15}
+    BASE_PENALTY = {"critical": 30, "high": 15, "medium": 5, "low": 2, "info": 0}
     
-    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    sev_ded = {"critical": 0.0, "high": 0.0, "medium": 0.0, "low": 0.0}
+    tier1_deduction = 0.0
+    tier2_deduction = 0.0
     
     for f in findings:
-        sev = f["severity"]
-        if sev not in sev_counts:
-            continue
-        sev_counts[sev] += 1
-        conf = f["confidence"] / 100.0
-        base = BASE_PENALTY[sev]
-        idx = sev_counts[sev]
+        sev = f["severity"].lower()
+        penalty = BASE_PENALTY.get(sev, 0)
         
-        if idx <= DIMINISHING_THRESHOLD[sev]:
-            penalty = base * conf
+        # FIX 1: Read proper tier assigned natively by the scout
+        raw_tier = f.get("raw_data", {}).get("tier", "")
+        is_tier2 = (raw_tier == "hardening")
+        
+        if is_tier2:
+            tier2_deduction += penalty
         else:
-            extra = idx - DIMINISHING_THRESHOLD[sev]
-            penalty = base * conf / (1 + math.sqrt(extra))
+            tier1_deduction += penalty
             
-        sev_ded[sev] += penalty
-        
-    for sev in sev_ded:
-        if sev_ded[sev] > MAX_DEDUCTION[sev]:
-            sev_ded[sev] = MAX_DEDUCTION[sev]
-            
-    total_deductions = sum(sev_ded.values())
-    score = max(0.0, 100.0 - total_deductions)
+    # Tier 2 deduction capped so it never alone tanks a score
+    tier2_deduction = min(tier2_deduction, 10.0)
+    
+    total_deduction = tier1_deduction + tier2_deduction
+    score = max(0.0, 100.0 - total_deduction)
     int_score = round(score)
     
     if int_score >= 85: grade = "A"
@@ -371,21 +360,17 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
     return {
         "score": int_score,
         "grade": grade,
-        "deductions": {k: round(v, 2) for k, v in sev_ded.items()},
+        "deductions": {
+            "tier1": round(tier1_deduction, 2),
+            "tier2": round(tier2_deduction, 2)
+        },
         "waf_detected": waf is not None
     }
 
 # ------------------------------------------------------------------------------
-# Main Orchestrator
+# Main Orchestrator Execution
 # ------------------------------------------------------------------------------
-async def run_scout(
-    url: str,
-    verbose: bool = False,
-    min_confidence: int = MIN_CONFIDENCE_DEFAULT,
-    cve_csv_url: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """Execute all security tests, return aggregated result."""
+async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start_time = time.time()
     start_time_iso = datetime.now().isoformat()
     
@@ -393,18 +378,7 @@ async def run_scout(
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
         
-    if config is None:
-        config = {}
-        
-    ctx = ScannerContext(
-        url=url,
-        config={
-            "min_confidence": min_confidence,
-            "cve_csv_url": cve_csv_url,
-            "verbose": verbose,
-            **config
-        }
-    )
+    config = config or {}
     logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
     
     connector = aiohttp.TCPConnector(ssl=True, limit=20, limit_per_host=10)
@@ -413,181 +387,130 @@ async def run_scout(
         headers={"User-Agent": USER_AGENT},
         connector=connector
     ) as session:
-        ctx.session = session
         
-        # CRITICAL FIX: Fetch main page EXACTLY ONCE
-        shared_page_value = await fetch_main_page_cached(ctx)
+        ctx = ScannerContext(url=url, session=session, config=config)
+        await fetch_main_page_and_analyze(ctx)
         
-        # Detect WAF synchronously from the already-fetched headers (No extra HTTP request)
-        waf_detected = _detect_waf_from_headers(shared_page_value.get("headers", {}))
-        
-        # Inject waf_detected into shared_page for backward compatibility with plugins
-        shared_page_value["waf_detected"] = waf_detected
-        
-        # Discover plugins dynamically
         plugins = discover_plugins()
         if not plugins:
-            logger.error("No test plugins found. Exiting.")
             return {"error": "No test plugins found."}
             
-        logger.info(f"Discovered {len(plugins)} plugins: {[p.__name__ for p in plugins]}")
-        
-        # Prepare coroutines for each plugin with Dependency Injection
+        # FIX 2: Wrapper function to measure time precisely for each coroutine
+        async def _timed(coro, mod_name):
+            t0 = time.time()
+            try:
+                result = await coro
+                return mod_name, result, round(time.time() - t0, 2)
+            except Exception as e:
+                return mod_name, e, round(time.time() - t0, 2)
+            except asyncio.CancelledError as e:
+                return mod_name, e, round(time.time() - t0, 2)
+
         test_coroutines = []
-        test_names = []
-        plugin_start_times = {}
         
         for mod in plugins:
             module_name = mod.__name__
-            test_names.append(module_name)
-            plugin_start_times[module_name] = time.time()
-            
-            # Build kwargs via introspection
             sig = inspect.signature(mod.run)
-            kwargs = {}
             
-            # Inject shared page (already resolved)
-            if _accepts_kwarg(sig, "shared_page"):
-                kwargs["shared_page"] = shared_page_value
+            if "ctx" in sig.parameters:
+                coro = mod.run(url=url, ctx=ctx) if "url" in sig.parameters else mod.run(ctx)
+            elif "url" in sig.parameters:
+                coro = mod.run(url=url, ctx=ctx)
+            else:
+                coro = mod.run(ctx)
                 
-            # Inject caches and fetch functions
-            if _accepts_kwarg(sig, "js_cache"):
-                kwargs["js_cache"] = ctx.js_cache
-            if _accepts_kwarg(sig, "fetch_js"):
-                async def _fetch_js_wrapper(js_url: str, ctx=ctx) -> str:
-                    return await fetch_js_cached(ctx, js_url)
-                kwargs["fetch_js"] = _fetch_js_wrapper
-                
-            # Inject shared session for connection pooling
-            if _accepts_kwarg(sig, "session"):
-                kwargs["session"] = ctx.session
-                
-            # FIX 5: Always inject cve_csv_url
-            if _accepts_kwarg(sig, "cve_csv_url"):
-                kwargs["cve_csv_url"] = cve_csv_url
-                
-            # Always inject min_confidence
-            kwargs["min_confidence"] = min_confidence
-            
-            # Inject waf_detected
-            if _accepts_kwarg(sig, "waf_detected"):
-                kwargs["waf_detected"] = waf_detected
-                
-            coro = mod.run(url, **kwargs)
-            
-            # Apply per-module timeout
             timeout_val = DEFAULT_TIMEOUTS.get(module_name, 60)
-            coro = asyncio.wait_for(coro, timeout=timeout_val)
-            test_coroutines.append(coro)
+            coro_with_timeout = asyncio.wait_for(coro, timeout=timeout_val)
             
-        # Execute all tests concurrently
-        all_tasks = test_coroutines
-        if verbose:
-            test_results = await asyncio.gather(*all_tasks, return_exceptions=True)
-        else:
-            with contextlib.redirect_stdout(io.StringIO()):
-                test_results = await asyncio.gather(*all_tasks, return_exceptions=True)
-                
-        # Process results
+            test_coroutines.append(_timed(coro_with_timeout, module_name))
+            
+        # Execute concurrently and fetch correctly tracked timings
+        timed_results = await asyncio.gather(*test_coroutines)
+        
         duration = time.time() - start_time
         tests = {}
         all_raw_findings = []
         errors = []
         tests_run = 0
         
-        for mod_name, res in zip(test_names, test_results):
-            duration_plugin = time.time() - plugin_start_times.get(mod_name, start_time)
+        for mod_name, res, dur_plugin in timed_results:
             
-            if isinstance(res, Exception):
+            if isinstance(res, Exception) or isinstance(res, asyncio.CancelledError):
+                err_msg = f"{type(res).__name__}: {res}"
                 if isinstance(res, asyncio.TimeoutError):
-                    err_msg = f"{mod_name}: timed out after {DEFAULT_TIMEOUTS.get(mod_name, 60)}s"
-                else:
-                    err_msg = f"{mod_name}: {type(res).__name__}: {res}"
-                tb_str = "".join(traceback.format_exception(type(res), res, res.__traceback__))
-                errors.append(err_msg)
+                    err_msg = f"Timed out after {DEFAULT_TIMEOUTS.get(mod_name, 60)}s"
+                    
+                errors.append(f"{mod_name}: {err_msg}")
                 tests[mod_name] = {
-                    "error": err_msg,
-                    "exception_type": type(res).__name__,
-                    "traceback": tb_str,
-                    "duration_seconds": round(duration_plugin, 2)
+                    "status": "incomplete",
+                    "fatal_error": err_msg,
+                    "duration_seconds": dur_plugin
                 }
                 continue
                 
             if isinstance(res, dict):
-                if "error" in res:
-                    errors.append(f"{mod_name}: {res['error']}")
-                    res["duration_seconds"] = round(duration_plugin, 2)
-                    tests[mod_name] = res
+                if "fatal_error" in res:
+                    errors.append(f"{mod_name}: {res['fatal_error']}")
+                    tests[mod_name] = {
+                        "status": "incomplete",
+                        "fatal_error": res["fatal_error"],
+                        "duration_seconds": dur_plugin
+                    }
                 else:
                     tests_run += 1
                     ctx.metrics["modules_executed"] += 1
-                    res["duration_seconds"] = round(duration_plugin, 2)
+                    res["status"] = "complete"
+                    res["duration_seconds"] = dur_plugin
                     tests[mod_name] = res
-                    findings = extract_findings_from_result(res, mod_name)
-                    all_raw_findings.extend(findings)
+                    
+                    for key in ["findings", "evidence", "vulnerabilities"]:
+                        if key in res and isinstance(res[key], list):
+                            for idx, f in enumerate(res[key]):
+                                if isinstance(f, dict):
+                                    all_raw_findings.append(normalize_finding(f, mod_name, idx))
+                                    
+                    if "details" in res and isinstance(res["details"], dict):
+                        ctx.metrics["http_requests"] += res["details"].get("requests_made", 0)
             else:
-                err_msg = f"{mod_name}: unexpected return type {type(res).__name__}"
-                errors.append(err_msg)
-                tests[mod_name] = {"error": err_msg, "duration_seconds": round(duration_plugin, 2)}
+                err_msg = f"Unexpected return type {type(res).__name__}"
+                errors.append(f"{mod_name}: {err_msg}")
+                tests[mod_name] = {"status": "incomplete", "fatal_error": err_msg, "duration_seconds": dur_plugin}
                 
-        waf = waf_detected
-        
-        # Deduplicate and filter
         deduplicated = deduplicate_findings(all_raw_findings)
-        final_findings = filter_findings(deduplicated, min_confidence)
         
-        # Summary
         summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-        for f in final_findings:
+        for f in deduplicated:
             sev = f["severity"]
-            if sev in summary:
-                summary[sev] += 1
-                
-        # FIX 1: Aggregate Plugin HTTP Requests into Final Metrics
-        for mod_name, res in zip(test_names, test_results):
-            if isinstance(res, dict) and isinstance(res.get("details"), dict):
-                plugin_reqs = res["details"].get("requests_made", 0)
-                if isinstance(plugin_reqs, int):
-                    ctx.metrics["http_requests"] += plugin_reqs
-
-        assembly_error = None
-        try:
-            score_info = compute_bravo6_score(final_findings, waf)
-            score = score_info["score"]
-            grade = score_info["grade"]
-        except Exception as e:
-            score = 0
-            grade = "F"
-            assembly_error = f"{type(e).__name__}: {e}"
-            logger.error(f"Failed to compute score or assemble result: {assembly_error}")
+            if sev in summary: summary[sev] += 1
             
-        end_time_iso = datetime.now().isoformat()
-        
-        # Build final result
+        try:
+            score_info = compute_bravo6_score(deduplicated, ctx.waf_challenge_detected)
+        except Exception as e:
+            logger.error(f"Score computation failed: {e}")
+            score_info = {"score": 0, "grade": "F", "deductions": {}, "waf_detected": False}
+            
         final_result = {
             "scanId": str(uuid.uuid4()),
             "url": url,
             "start_time": start_time_iso,
-            "end_time": end_time_iso,
+            "end_time": datetime.now().isoformat(),
             "duration_seconds": round(duration, 2),
             "tests_run": tests_run,
-            "total_findings": len(final_findings),
-            "findings": final_findings,
+            "total_findings": len(deduplicated),
+            "findings": deduplicated,
             "tests": tests,
-            "waf": waf,
+            "waf": ctx.waf_challenge_detected,
+            "page_is_representative": ctx.page_is_representative,
             "errors": errors,
             "errors_count": len(errors),
             "deduplicated_count": len(all_raw_findings) - len(deduplicated),
             "summary": summary,
-            "score": score,
-            "grade": grade,
+            "score": score_info.get("score"),
+            "grade": score_info.get("grade"),
             "metrics": ctx.metrics
         }
         
-        if assembly_error:
-            final_result["assembly_error"] = assembly_error
-            
-        # Save results
+        # Save results Logic
         script_dir = Path(__file__).parent
         results_dir = script_dir / "results"
         os.makedirs(results_dir, exist_ok=True)
@@ -607,48 +530,60 @@ async def run_scout(
                 logger.info(f"Saved to {result_path}")
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
-            if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
-                try:
-                    result_path = results_dir / f"result_{final_result['scanId']}.json"
-                    with open(result_path, "w", encoding="utf-8") as f:
-                        json.dump(final_result, f, ensure_ascii=False, indent=2)
-                    logger.info(f"Fallback: Saved to {result_path}")
-                except Exception as local_e:
-                    logger.error(f"Failed to save results locally: {local_e}")
-                    
+            
         return final_result
 
+# ------------------------------------------------------------------------------
+# Test Execution blocks mandated by Spec
+# ------------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Bravo6 Enterprise Security Scanner")
     parser.add_argument("url", nargs="?", default="https://example.com", help="Target URL")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show console output")
-    parser.add_argument("--min-confidence", type=int, default=MIN_CONFIDENCE_DEFAULT, help="Min confidence threshold")
-    parser.add_argument("--cve-csv-url", default=None, help="URL to CVE CSV database")
-    parser.add_argument("--html", action="store_true", help="Generate HTML report")
-    
+    parser.add_argument("--test", action="store_true", help="Run Orchestrator Integration Tests")
     args = parser.parse_args()
-    cve_csv_url = args.cve_csv_url or os.environ.get("CVE_CSV_URL")
     
-    result = asyncio.run(run_scout(
-        args.url,
-        verbose=args.verbose,
-        min_confidence=args.min_confidence,
-        cve_csv_url=cve_csv_url
-    ))
-    
-    if args.html:
-        try:
-            script_dir = Path(__file__).parent
-            generator_path = script_dir / "report_generator.py"
-            if not generator_path.exists():
-                print(f"❌ report_generator.py not found at {generator_path.resolve()}")
-                sys.exit(1)
-            from report_generator import build_html
-            html = build_html(result)
-            report_path = script_dir / "security_report.html"
-            with open(report_path, "w", encoding="utf-8") as f:
-                f.write(html)
-            print(f"✅ HTML report generated: {report_path.resolve()}")
-        except Exception as e:
-            print(f"❌ Failed to generate report: {type(e).__name__}: {e}")
+    if args.test:
+        import unittest
+        class TestOrchestrator(unittest.IsolatedAsyncioTestCase):
+            def test_bug1_location_preservation(self):
+                """Bug 1: Assert the normalized output's location is identical to raw finding."""
+                raw = {"title": "Exposed Creds", "location": "Header: X-Token"}
+                norm = normalize_finding(raw, "test_01", 0)
+                self.assertEqual(norm["location"], "Header: X-Token", "Location was dropped during normalization.")
+                self.assertIn("id", norm, "Missing schema fields")
+                self.assertIn("cwe", norm, "Missing schema fields")
+
+            def test_bug2_dedup_distinct_locations(self):
+                """Bug 2: Assert deduplication doesn't merge same-titled findings on different paths."""
+                f1 = {"module": "test", "title": "File Exposed", "cwe": "200", "owasp": "A5", "location": "/api/v1/users", "confidence": "verified-live", "severity": "high"}
+                f2 = {"module": "test", "title": "File Exposed", "cwe": "200", "owasp": "A5", "location": "/api/v2/admin", "confidence": "verified-live", "severity": "high"}
+                res = deduplicate_findings([f1, f2])
+                self.assertEqual(len(res), 2, "Deduplication incorrectly collapsed findings with different locations.")
+
+            async def test_bug4_cache_hits(self):
+                """Bug 4: Integration test running 3 simulated concurrent checks. Assert cache_hits >= 1."""
+                class MockResponse:
+                    status = 200
+                    async def text(self): return "mock_js_content"
+                    async def __aenter__(self): return self
+                    async def __aexit__(self, *a): pass
+
+                class MockSession:
+                    def get(self, *a, **kw): return MockResponse()
+
+                ctx = ScannerContext("http://example.com", session=MockSession())
+                
+                async def mock_scout_task(c):
+                    await c.fetch_js("http://example.com/shared.js")
+                
+                # Fire concurrently to verify Event-gating
+                await asyncio.gather(mock_scout_task(ctx), mock_scout_task(ctx), mock_scout_task(ctx))
+                
+                self.assertEqual(ctx.metrics["http_requests"], 1, "Should only make one HTTP request due to Event locking.")
+                self.assertGreaterEqual(ctx.metrics["cache_hits"], 1, "Cache hits should be >= 1 for shared fetching.")
+
+        sys.argv = [sys.argv[0]]
+        unittest.main()
+    else:
+        result = asyncio.run(run_scout(args.url))

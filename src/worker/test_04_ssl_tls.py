@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """
-test_04_ssl_tls.py – Bravo6 Enterprise TLS Assessment Engine (v13.0 – Local Dev Compatibility)
-====================================================================================================
+test_04_ssl_tls.py – Bravo6 Enterprise TLS Assessment Engine (v8.5)
+===================================================================
 Evolution highlights:
-- Removed overlapping responsibilities (HSTS, CSP) to focus strictly on TLS/DNS/Mixed Content.
-- Added Weak Cipher Suite detection (RC4, DES, 3DES, EXPORT, NULL, aNULL) via OpenSSL probing.
-- Removed internal scoring/grading; Orchestrator handles canonical scoring.
-- Simplified finding generation to enforce strict schema compliance (10 mandatory fields).
-- Implemented dependency injection for HTTP sessions and shared page context.
-- Merged Scout 3 (Mixed Content) logic into this module.
-- Preserved all advanced TLS fingerprinting, protocol probing, and DNS security checks.
+- Adopted v8.5 ScannerContext standard (zero independent HTTP requests).
+- Decoupled completely from HTTP layer success (runs perfectly on 403s/WAFs).
+- Parallelized all OpenSSL probes (SSLv2-TLS1.3, Weak Ciphers) with bounded semaphores to respect scan budgets.
+- Implemented environment capability detection (graceful degradation if `openssl` or `dig` missing) with explicit disclosure.
+- Calibrated DNS hardening checks (folded missing DANE to reduce noise; CAA absence downgraded to informational).
 """
+
 import asyncio
 import hashlib
-import json
-import logging
 import re
 import socket
 import ssl
-import sys
-import warnings
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass
 from urllib.parse import urlparse
-
-import aiohttp
 from bs4 import BeautifulSoup
 
 try:
@@ -36,19 +30,19 @@ try:
 except ImportError:
     HAS_CRYPTO = False
 
-try:
-    import certifi
-    CA_BUNDLE_PATH = certifi.where()
-except ImportError:
-    CA_BUNDLE_PATH = None
+# ── Orchestrator Context Mock (For Standalone Type-Hinting) ────────────────
+@dataclass
+class ScannerContext:
+    url: str
+    session: Any
+    config: Dict[str, Any]
+    page_is_representative: bool
+    waf_challenge_detected: Optional[str]
+    sensitive_paths: List[str]
+    main_page_cache: Dict[str, Any]
 
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-logging.basicConfig(level=logging.WARNING)
-log = logging.getLogger("ssl_tls")
-
-USER_AGENT = "Bravo6-TLS-Scanner/13.0"
-TIMEOUT = 20
-OPENSSL_TIMEOUT = 12
+    async def fetch_js(self, js_url: str) -> str:
+        return ""
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def _normalize_url(url: str) -> Tuple[str, int]:
@@ -63,13 +57,27 @@ def _normalize_url(url: str) -> Tuple[str, int]:
     return hostname, port
 
 def _get_header(headers: Dict, name: str, default: Optional[str] = None) -> Optional[str]:
-    for key, val in headers.items():
+    for key, val in (headers or {}).items():
         if key.lower() == name.lower():
             return val
     return default
 
-def _make_finding(**kwargs) -> Dict[str, Any]:
-    return kwargs
+def _make_finding(
+    title: str, severity: str, confidence: str, cwe: str, owasp: str,
+    location: str, evidence: str, poc: str, remediation: str, detection_method: str
+) -> Dict[str, Any]:
+    return {
+        "title": title,
+        "severity": severity,
+        "confidence": confidence,
+        "cwe": cwe,
+        "owasp": owasp,
+        "location": location,
+        "evidence": evidence,
+        "poc": poc,
+        "remediation": remediation,
+        "detection_method": detection_method
+    }
 
 def _check_internal(hostname: str) -> bool:
     try:
@@ -85,8 +93,20 @@ def _check_internal(hostname: str) -> bool:
         pass
     return False
 
-# ── OpenSSL subprocess helper ──────────────────────────────────────────────
-async def _run_openssl(args: List[str], timeout: int = OPENSSL_TIMEOUT) -> Tuple[bytes, bytes, bool]:
+# ── Environment & Subprocess execution ─────────────────────────────────────
+async def _check_binary(cmd: str, arg: str) -> bool:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cmd, arg,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=3)
+        return proc.returncode == 0
+    except (FileNotFoundError, asyncio.TimeoutError, Exception):
+        return False
+
+async def _run_openssl(args: List[str], timeout: int = 5) -> Tuple[bytes, bytes, bool]:
     try:
         proc = await asyncio.create_subprocess_exec(
             "openssl", *args,
@@ -98,93 +118,33 @@ async def _run_openssl(args: List[str], timeout: int = OPENSSL_TIMEOUT) -> Tuple
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return out, err, False
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
             return b"", b"", True
-    except FileNotFoundError:
-        return b"", b"OPENSSL_MISSING", False
     except Exception:
         return b"", b"", False
 
-# ── Certificate analysis ───────────────────────────────────────────────────
-def _analyze_cert(der: bytes, hostname: str) -> dict:
-    cert = x509.load_der_x509_certificate(der)
-    now = datetime.now(timezone.utc)
-    days_left = (cert.not_valid_after_utc - now).days
-    try:
-        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        san_dns = san_ext.value.get_values_for_type(x509.DNSName)
-    except x509.ExtensionNotFound:
-        san_dns = []
-    
-    cn_attr = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    cn = cn_attr[0].value if cn_attr else ""
-    host_lower = hostname.lower()
-    match = any(
-        name.lower() == host_lower or (name.lower().startswith("*.") and host_lower.endswith(name.lower()[1:]))
-        for name in san_dns
-    )
-    if not match and cn:
-        match = (cn.lower() == host_lower or (cn.lower().startswith("*.") and host_lower.endswith(cn.lower()[1:])))
-        
-    self_signed = (cert.issuer == cert.subject)
-    sig_name = cert.signature_algorithm_oid._name
-    weak_sig = any(x in sig_name.lower() for x in ("sha1", "md5"))
-    
-    pub_key = cert.public_key()
-    key_size = None
-    key_type = "unknown"
-    if isinstance(pub_key, rsa.RSAPublicKey):
-        key_size = pub_key.key_size
-        key_type = "rsa"
-    elif isinstance(pub_key, ec.EllipticCurvePublicKey):
-        key_size = pub_key.curve.key_size
-        key_type = "ecdsa"
-        
-    is_le = any("Let's Encrypt" in attr.value for attr in cert.issuer)
-    must_staple = False
-    try:
-        tls_feature = cert.extensions.get_extension_for_oid(ExtensionOID.TLS_FEATURE)
-        for feature in tls_feature.value:
-            if feature == x509.TLSFeatureType.status_request:
-                must_staple = True
-                break
-    except x509.ExtensionNotFound:
-        pass
-        
-    return {
-        "subject": ", ".join(f"{a.oid._name}={a.value}" for a in cert.subject) if cert.subject else "",
-        "issuer": ", ".join(f"{a.oid._name}={a.value}" for a in cert.issuer) if cert.issuer else "",
-        "not_before": cert.not_valid_before_utc.isoformat(),
-        "not_after": cert.not_valid_after_utc.isoformat(),
-        "days_until_expiry": days_left,
-        "san_dns": san_dns,
-        "cn": cn,
-        "hostname_match": match,
-        "self_signed": self_signed,
-        "signature_algorithm": sig_name,
-        "weak_signature": weak_sig,
-        "key_size": key_size,
-        "key_type": key_type,
-        "is_lets_encrypt": is_le,
-        "must_staple": must_staple,
-    }
+# ── Certificate retrieval & Analysis (Blocking but wrapped in Executor) ────
+def _get_cert_der(hostname: str, port: int) -> bytes:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((hostname, port), timeout=7) as sock:
+        with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
+            der = ssock.getpeercert(binary_form=True)
+            if der:
+                return der
+            raise ValueError("No certificate returned")
 
-def _count_scts_from_cert(der: bytes) -> int:
-    try:
-        cert = x509.load_der_x509_certificate(der)
-        ext = cert.extensions.get_extension_for_oid(ExtensionOID.PRECERT_SIGNED_CERTIFICATE_TIMESTAMPS)
-        return len(list(ext.value))
-    except (x509.ExtensionNotFound, Exception):
-        return 0
-
-# ── Blocking SSL functions (run in executor) ───────────────────────────────
 def _verify_chain_via_ssl_connect(hostname: str, port: int) -> Tuple[Optional[bool], Optional[str]]:
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
-        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
+        with socket.create_connection((hostname, port), timeout=7) as sock:
             with ctx.wrap_socket(sock, server_hostname=hostname):
                 return True, None
     except ssl.SSLCertVerificationError as e:
@@ -192,32 +152,12 @@ def _verify_chain_via_ssl_connect(hostname: str, port: int) -> Tuple[Optional[bo
     except Exception:
         return None, None
 
-def _get_peer_cert_chain(hostname: str, port: int) -> Optional[List[str]]:
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
-            with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
-                if hasattr(tls_sock, "getpeercertchain"):
-                    certs = tls_sock.getpeercertchain()
-                    pem_chain = []
-                    for cert_dict in certs:
-                        der = cert_dict.get("certificate", b"")
-                        if der:
-                            pem = ssl.DER_cert_to_PEM_cert(der)
-                            pem_chain.append(pem)
-                    return pem_chain if pem_chain else None
-    except Exception:
-        pass
-    return None
-
 def _get_stapled_ocsp_response(hostname: str, port: int) -> Optional[bytes]:
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
+        with socket.create_connection((hostname, port), timeout=7) as sock:
             with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
                 if hasattr(tls_sock, "get_ocsp_response"):
                     ocsp_resp = tls_sock.get_ocsp_response()
@@ -232,7 +172,7 @@ def _get_scts_count_tls_ext(hostname: str, port: int) -> int:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
+        with socket.create_connection((hostname, port), timeout=7) as sock:
             with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
                 if hasattr(tls_sock, "get_scts"):
                     scts = tls_sock.get_scts()
@@ -241,289 +181,189 @@ def _get_scts_count_tls_ext(hostname: str, port: int) -> int:
         pass
     return 0
 
-# ── TLS Fingerprinting (JA3S/JA4S) & Session Resumption ────────────────────
-def _parse_ja3s_from_openssl_msg(openssl_output: str) -> Tuple[Optional[str], Optional[str]]:
-    lines = openssl_output.split('\n')
-    in_server_hello = False
-    hex_data = ""
-    for line in lines:
-        if "ServerHello" in line and "<<<" in line:
-            in_server_hello = True
-            continue
-        if in_server_hello:
-            if line.strip() == "" or ">>>" in line or ("<<<" in line and "ServerHello" not in line):
-                if hex_data:
-                    break
-            if " - " in line:
-                parts = line.split(" - ", 1)
-                if len(parts) == 2:
-                    hex_bytes = parts[1].replace(" ", "")
-                    hex_data += hex_bytes
-                    
-    if not hex_data or len(hex_data) < 100:
-        return None, None
-        
+def _analyze_cert(der: bytes, hostname: str) -> dict:
+    if not HAS_CRYPTO:
+        return {}
+    cert = x509.load_der_x509_certificate(der)
+    now = datetime.now(timezone.utc)
+    days_left = (cert.not_valid_after_utc - now).days
+    
+    san_dns = []
     try:
-        idx = 0
-        version = int(hex_data[idx:idx+4], 16)
-        idx += 4 + 64  # skip random
-        sid_len = int(hex_data[idx:idx+2], 16)
-        idx += 2 + (sid_len * 2)
-        cipher = hex_data[idx:idx+4]
-        idx += 4
-        comp = hex_data[idx:idx+2]
-        idx += 2
-        if idx + 4 > len(hex_data):
-            return None, None
-        ext_len = int(hex_data[idx:idx+4], 16)
-        idx += 4
-        ext_data = hex_data[idx:]
-        ext_types = []
-        curves = []
-        e_idx = 0
-        while e_idx + 8 <= len(ext_data):
-            ext_type = ext_data[e_idx:e_idx+4]
-            ext_len_val = int(ext_data[e_idx+4:e_idx+8], 16)
-            ext_types.append(ext_type)
-            if ext_type == "000a" and e_idx + 12 <= len(ext_data):  # supported_groups
-                groups_len = int(ext_data[e_idx+8:e_idx+12], 16)
-                for g in range(0, groups_len * 2, 4):
-                    if e_idx + 12 + g + 4 <= len(ext_data):
-                        curves.append(ext_data[e_idx+12+g:e_idx+16+g])
-            e_idx += 8 + (ext_len_val * 2)
-            
-        ext_str = "-".join(ext_types)
-        curve_str = "-".join(curves)
-        ja3s_raw = f"{version:04x},{cipher},{ext_str},{curve_str}"
-        ja3s = hashlib.md5(ja3s_raw.encode()).hexdigest()
-        ja4s_raw = f"{version:04x},{cipher},{ext_str},"
-        ja4s = hashlib.md5(ja4s_raw.encode()).hexdigest()
-        return ja3s, ja4s
-    except Exception:
-        return None, None
-
-async def _extract_tls_fingerprints_and_resumption(hostname: str, port: int, openssl_state: dict) -> Tuple[Optional[str], Optional[str], bool]:
-    if not openssl_state["available"]:
-        return None, None, False
-    out, err, timed_out = await _run_openssl(
-        ["s_client", "-connect", f"{hostname}:{port}", "-msg", "-servername", hostname, "-reconnect"],
-        timeout=15
+        san_ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        san_dns = san_ext.value.get_values_for_type(x509.DNSName)
+    except x509.ExtensionNotFound:
+        pass
+    
+    cn_attr = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    cn = cn_attr[0].value if cn_attr else ""
+    host_lower = hostname.lower()
+    
+    match = any(
+        name.lower() == host_lower or (name.lower().startswith("*.") and host_lower.endswith(name.lower()[1:]))
+        for name in san_dns
     )
-    if timed_out or b"OPENSSL_MISSING" in err:
-        return None, None, False
-    combined = (out + err).decode('utf-8', errors='ignore')
-    ja3s, ja4s = _parse_ja3s_from_openssl_msg(combined)
-    resumption_supported = "Reused, " in combined or "TLS session ticket" in combined.lower() or "Session-ID" in combined
-    return ja3s, ja4s, resumption_supported
-
-async def _check_alpn(hostname: str, port: int, openssl_state: dict) -> Optional[str]:
-    if not openssl_state["available"]:
-        return None
-    out, err, timed_out = await _run_openssl(
-        ["s_client", "-connect", f"{hostname}:{port}", "-alpn", "h2,http/1.1", "-servername", hostname],
-        timeout=10
-    )
-    if timed_out or b"OPENSSL_MISSING" in err:
-        return None
-    combined = (out + err).decode('utf-8', errors='ignore')
-    match = re.search(r"ALPN protocol:\s+([^\s]+)", combined)
-    if match:
-        return match.group(1)
-    return None
-
-# ── Weak Cipher Probing ────────────────────────────────────────────────────
-async def _check_weak_ciphers_openssl(hostname: str, port: int, openssl_state: dict) -> List[Dict[str, Any]]:
-    findings = []
-    if not openssl_state["available"]:
-        return findings
+    if not match and cn:
+        match = (cn.lower() == host_lower or (cn.lower().startswith("*.") and host_lower.endswith(cn.lower()[1:])))
         
-    weak_ciphers = ["RC4", "DES", "3DES", "EXPORT", "NULL", "aNULL"]
-    for cipher in weak_ciphers:
-        out, err, timed_out = await _run_openssl(
-            ["s_client", "-connect", f"{hostname}:{port}", "-cipher", cipher, "-servername", hostname],
-            timeout=10
-        )
+    sig_name = cert.signature_algorithm_oid._name
+    weak_sig = any(x in sig_name.lower() for x in ("sha1", "md5"))
+    
+    pub_key = cert.public_key()
+    key_size = None
+    key_type = "unknown"
+    if isinstance(pub_key, rsa.RSAPublicKey):
+        key_size = pub_key.key_size
+        key_type = "rsa"
+    elif isinstance(pub_key, ec.EllipticCurvePublicKey):
+        key_size = pub_key.curve.key_size
+        key_type = "ecdsa"
+        
+    must_staple = False
+    try:
+        tls_feature = cert.extensions.get_extension_for_oid(ExtensionOID.TLS_FEATURE)
+        for feature in tls_feature.value:
+            if feature == x509.TLSFeatureType.status_request:
+                must_staple = True
+                break
+    except x509.ExtensionNotFound:
+        pass
+        
+    # Count SCTs embedded
+    cert_scts = 0
+    try:
+        ext = cert.extensions.get_extension_for_oid(ExtensionOID.PRECERT_SIGNED_CERTIFICATE_TIMESTAMPS)
+        cert_scts = len(list(ext.value))
+    except (x509.ExtensionNotFound, Exception):
+        pass
+
+    return {
+        "subject": ", ".join(f"{a.oid._name}={a.value}" for a in cert.subject) if cert.subject else "",
+        "issuer": ", ".join(f"{a.oid._name}={a.value}" for a in cert.issuer) if cert.issuer else "",
+        "not_before": cert.not_valid_before_utc.isoformat(),
+        "not_after": cert.not_valid_after_utc.isoformat(),
+        "days_until_expiry": days_left,
+        "san_dns": san_dns,
+        "cn": cn,
+        "hostname_match": match,
+        "self_signed": (cert.issuer == cert.subject),
+        "signature_algorithm": sig_name,
+        "weak_signature": weak_sig,
+        "key_size": key_size,
+        "key_type": key_type,
+        "must_staple": must_staple,
+        "cert_scts": cert_scts
+    }
+
+# ── Concurrent OpenSSL Probes ──────────────────────────────────────────────
+async def _probe_protocol(hostname: str, port: int, flag: str, name: str, sem: asyncio.Semaphore) -> Tuple[str, str, bool]:
+    async with sem:
+        out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", flag, "-servername", hostname], timeout=5)
+        if timed_out or b"OPENSSL_MISSING" in err:
+            return ("protocol", name, False)
+        supported = b"BEGIN CERTIFICATE" in out and b"CONNECTED" in out
+        return ("protocol", name, supported)
+
+async def _probe_weak_cipher(hostname: str, port: int, cipher: str, sem: asyncio.Semaphore) -> Tuple[str, str, Optional[str]]:
+    async with sem:
+        out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", "-cipher", cipher, "-servername", hostname], timeout=5)
         if not timed_out and b"BEGIN CERTIFICATE" in out and b"CONNECTED" in out:
-            out_str = out.decode('utf-8', errors='ignore')
-            match = re.search(r"Cipher\s+:\s+([^\r\n]+)", out_str)
+            match = re.search(r"Cipher\s+:\s+([^\r\n]+)", out.decode('utf-8', errors='ignore'))
             if match:
                 negotiated = match.group(1).strip()
-                findings.append(_make_finding(
-                    title=f"Weak Cipher Suite Supported: {negotiated}",
-                    severity="high",
-                    confidence=90,
-                    cwe="CWE-326",
-                    owasp="A02:2021",
-                    location=f"{hostname}:{port}",
-                    evidence=f"Server accepted weak cipher {negotiated} during TLS handshake",
-                    poc=f"openssl s_client -connect {hostname}:{port} -cipher {cipher} -servername {hostname}",
-                    remediation="Disable weak cipher suites on the server. Configure only TLS 1.2+ with strong ciphers (AES-GCM, ChaCha20-Poly1305).",
-                    detection_method="Cipher Probe"
-                ))
-                break  # Found one weak cipher, stop to avoid spam
-    return findings
+                if negotiated != "0000":
+                    return ("weak_cipher", cipher, negotiated)
+        return ("weak_cipher", cipher, None)
 
-async def _check_default_cipher(hostname: str, port: int, openssl_state: dict) -> List[Dict[str, Any]]:
-    findings = []
-    if not openssl_state["available"]:
-        return findings
+async def _probe_default_cipher(hostname: str, port: int, sem: asyncio.Semaphore) -> Tuple[str, str, Optional[str]]:
+    async with sem:
+        out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", "-servername", hostname], timeout=5)
+        if not timed_out and b"CONNECTED" in out:
+            match = re.search(r"Cipher\s+:\s+([^\r\n]+)", out.decode('utf-8', errors='ignore'))
+            if match:
+                return ("default_cipher", "default", match.group(1).strip())
+        return ("default_cipher", "default", None)
+
+async def _probe_tls_fingerprints(hostname: str, port: int, sem: asyncio.Semaphore) -> Tuple[str, Optional[str], Optional[str], bool]:
+    async with sem:
+        out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", "-msg", "-servername", hostname, "-reconnect"], timeout=6)
+        if timed_out or b"OPENSSL_MISSING" in err:
+            return ("fingerprints", None, None, False)
+        combined = (out + err).decode('utf-8', errors='ignore')
         
-    out, err, timed_out = await _run_openssl(
-        ["s_client", "-connect", f"{hostname}:{port}", "-servername", hostname],
-        timeout=10
-    )
-    if not timed_out and b"CONNECTED" in out:
-        out_str = out.decode('utf-8', errors='ignore')
-        match = re.search(r"Cipher\s+:\s+([^\r\n]+)", out_str)
-        if match:
-            default_cipher = match.group(1).strip()
-            weak_keywords = ["RC4", "DES", "3DES", "EXPORT", "NULL", "aNULL"]
-            if any(w in default_cipher.upper() for w in weak_keywords):
-                findings.append(_make_finding(
-                    title=f"Weak Default Cipher Negotiated: {default_cipher}",
-                    severity="high",
-                    confidence=90,
-                    cwe="CWE-326",
-                    owasp="A02:2021",
-                    location=f"{hostname}:{port}",
-                    evidence=f"Default connection negotiated weak cipher: {default_cipher}",
-                    poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname}",
-                    remediation="Disable weak cipher suites on the server. Configure only TLS 1.2+ with strong ciphers.",
-                    detection_method="Cipher Probe"
-                ))
-            else:
-                findings.append(_make_finding(
-                    title="Strong Default Cipher Configured",
-                    severity="info",
-                    confidence=100,
-                    cwe="",
-                    owasp="",
-                    location=f"{hostname}:{port}",
-                    evidence=f"Default connection negotiated strong cipher: {default_cipher}",
-                    poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname}",
-                    remediation="No action needed.",
-                    detection_method="Cipher Probe"
-                ))
-    return findings
+        # Simple extraction logic for JA3S/JA4S mimicking original implementation
+        lines = combined.split('\n')
+        in_server_hello = False
+        hex_data = ""
+        for line in lines:
+            if "ServerHello" in line and "<<<" in line:
+                in_server_hello = True
+                continue
+            if in_server_hello:
+                if line.strip() == "" or ">>>" in line or ("<<<" in line and "ServerHello" not in line):
+                    if hex_data: break
+                if " - " in line:
+                    parts = line.split(" - ", 1)
+                    if len(parts) == 2:
+                        hex_data += parts[1].replace(" ", "")
+        
+        ja3s, ja4s = None, None
+        if hex_data and len(hex_data) >= 100:
+            try:
+                idx = 0
+                version = int(hex_data[idx:idx+4], 16)
+                idx += 4 + 64 # skip random
+                sid_len = int(hex_data[idx:idx+2], 16)
+                idx += 2 + (sid_len * 2)
+                cipher = hex_data[idx:idx+4]
+                idx += 4
+                comp = hex_data[idx:idx+2]
+                idx += 2
+                if idx + 4 <= len(hex_data):
+                    ext_len = int(hex_data[idx:idx+4], 16)
+                    idx += 4
+                    ext_data = hex_data[idx:]
+                    ext_types, curves = [], []
+                    e_idx = 0
+                    while e_idx + 8 <= len(ext_data):
+                        ext_type = ext_data[e_idx:e_idx+4]
+                        ext_len_val = int(ext_data[e_idx+4:e_idx+8], 16)
+                        ext_types.append(ext_type)
+                        if ext_type == "000a" and e_idx + 12 <= len(ext_data):
+                            groups_len = int(ext_data[e_idx+8:e_idx+12], 16)
+                            for g in range(0, groups_len * 2, 4):
+                                if e_idx + 12 + g + 4 <= len(ext_data):
+                                    curves.append(ext_data[e_idx+12+g:e_idx+16+g])
+                        e_idx += 8 + (ext_len_val * 2)
+                    ext_str = "-".join(ext_types)
+                    curve_str = "-".join(curves)
+                    
+                    ja3s = hashlib.md5(f"{version:04x},{cipher},{ext_str},{curve_str}".encode()).hexdigest()
+                    ja4s = hashlib.md5(f"{version:04x},{cipher},{ext_str},".encode()).hexdigest()
+            except Exception:
+                pass
+        
+        resumption = "Reused, " in combined or "TLS session ticket" in combined.lower() or "Session-ID" in combined
+        return ("fingerprints", ja3s, ja4s, resumption)
 
-# ── Mixed Content Detection ────────────────────────────────────────────────
-async def _check_mixed_content(url: str, shared_page: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    findings = []
-    if not shared_page or not shared_page.get("html") or not url.lower().startswith("https://"):
-        return findings
-    
-    html = shared_page.get("html", "")
-    soup = BeautifulSoup(html, "html.parser")
-    
-    # script
-    for tag in soup.find_all("script"):
-        src = tag.get("src", "")
-        if src and src.lower().startswith("http://"):
-            findings.append(_make_finding(
-                title="Mixed Content: Script loaded over HTTP",
-                severity="high",
-                confidence=95,
-                cwe="CWE-829",
-                owasp="A02:2021",
-                location=src,
-                evidence=f"Found <script> loading resource from {src} on HTTPS page {url}",
-                poc=f"curl -I {src}",
-                remediation="Serve all resources over HTTPS. Update the src attribute to use https:// or remove the resource.",
-                detection_method="HTML Parsing"
-            ))
-            
-    # link rel="stylesheet"
-    for tag in soup.find_all("link"):
-        if tag.get("rel") and "stylesheet" in tag.get("rel"):
-            href = tag.get("href", "")
-            if href and href.lower().startswith("http://"):
-                findings.append(_make_finding(
-                    title="Mixed Content: Stylesheet loaded over HTTP",
-                    severity="high",
-                    confidence=95,
-                    cwe="CWE-829",
-                    owasp="A02:2021",
-                    location=href,
-                    evidence=f"Found <link> loading resource from {href} on HTTPS page {url}",
-                    poc=f"curl -I {href}",
-                    remediation="Serve all resources over HTTPS. Update the href attribute to use https:// or remove the resource.",
-                    detection_method="HTML Parsing"
-                ))
-                
-    # img
-    for tag in soup.find_all("img"):
-        src = tag.get("src", "")
-        if src and src.lower().startswith("http://"):
-            findings.append(_make_finding(
-                title="Mixed Content: Image loaded over HTTP",
-                severity="medium",
-                confidence=90,
-                cwe="CWE-829",
-                owasp="A02:2021",
-                location=src,
-                evidence=f"Found <img> loading resource from {src} on HTTPS page {url}",
-                poc=f"curl -I {src}",
-                remediation="Serve all resources over HTTPS. Update the src attribute to use https:// or remove the resource.",
-                detection_method="HTML Parsing"
-            ))
-            
-    # iframe
-    for tag in soup.find_all("iframe"):
-        src = tag.get("src", "")
-        if src and src.lower().startswith("http://"):
-            findings.append(_make_finding(
-                title="Mixed Content: Iframe loaded over HTTP",
-                severity="medium",
-                confidence=90,
-                cwe="CWE-829",
-                owasp="A02:2021",
-                location=src,
-                evidence=f"Found <iframe> loading resource from {src} on HTTPS page {url}",
-                poc=f"curl -I {src}",
-                remediation="Serve all resources over HTTPS. Update the src attribute to use https:// or remove the resource.",
-                detection_method="HTML Parsing"
-            ))
-            
-    # form
-    for tag in soup.find_all("form"):
-        action = tag.get("action", "")
-        if action and action.lower().startswith("http://"):
-            findings.append(_make_finding(
-                title="Mixed Content: Form action over HTTP",
-                severity="high",
-                confidence=95,
-                cwe="CWE-319",
-                owasp="A02:2021",
-                location=action,
-                evidence=f"Found <form> with action over HTTP: {action} on HTTPS page {url}",
-                poc=f"curl -I {action}",
-                remediation="Serve all resources over HTTPS. Update the action attribute to use https:// or remove the form.",
-                detection_method="HTML Parsing"
-            ))
-            
-    return findings
+async def _probe_alpn(hostname: str, port: int, sem: asyncio.Semaphore) -> Tuple[str, Optional[str]]:
+    async with sem:
+        out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", "-alpn", "h2,http/1.1", "-servername", hostname], timeout=5)
+        if not timed_out:
+            combined = (out + err).decode('utf-8', errors='ignore')
+            match = re.search(r"ALPN protocol:\s+([^\s]+)", combined)
+            if match:
+                return ("alpn", match.group(1))
+        return ("alpn", None)
 
-# ── DNS Checks (CAA, DANE) ─────────────────────────────────────────────────
+# ── DNS Checks (CAA) ───────────────────────────────────────────────────────
 async def _check_dns_record(hostname: str, record_type: str) -> Optional[str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             'dig', record_type, hostname, '+short', '+time=2', '+tries=1',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=5)
-        res = out.decode().strip()
-        if res and "no " not in res.lower() and "not found" not in res.lower():
-            return res
-    except Exception:
-        pass
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            'host', '-t', record_type, hostname, '-W', '2',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=5)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=3)
         res = out.decode().strip()
         if res and "no " not in res.lower() and "not found" not in res.lower():
             return res
@@ -531,559 +371,528 @@ async def _check_dns_record(hostname: str, record_type: str) -> Optional[str]:
         pass
     return None
 
-# ══════════════════════════════════════════════════════════════════════════
-async def run(url: str, **kwargs) -> Dict[str, Any]:
-    temp_session = None
+# ── Main Entrypoint ────────────────────────────────────────────────────────
+async def run(ctx: ScannerContext) -> dict:
+    findings = []
+    details = {
+        "requests_made": 0,
+        "openssl_available": False,
+        "dig_available": False,
+        "context": "external"
+    }
+    
     try:
-        session = kwargs.get("session")
-        shared_page = kwargs.get("shared_page")
-        waf_detected = kwargs.get("waf_detected") or (shared_page.get("waf_detected") if shared_page else None)
-        min_confidence = kwargs.get("min_confidence", 50)
-        
-        hostname, port = _normalize_url(url)
-        
-        if not session:
-            temp_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
-            session = temp_session
-            
-        if not shared_page or shared_page.get("status") != 200 or shared_page.get("error"):
-            try:
-                async with session.get(url, ssl=False) as resp:
-                    html = await resp.text()
-                    shared_page = {
-                        "status": resp.status,
-                        "headers": dict(resp.headers),
-                        "html": html,
-                        "soup": BeautifulSoup(html, "html.parser"),
-                        "error": None
-                    }
-            except Exception as e:
-                shared_page = {"status": 0, "headers": {}, "html": "", "soup": None, "error": str(e)}
-                
-        findings = []
-        details = {
-            "openssl_available": True,
-            "mixed_content_count": 0,
-            "context": "internal" if _check_internal(hostname) else "external",
-            "http3": False,
-            "handshake_error": None
-        }
-        
-        if waf_detected:
-            details["waf_detected"] = waf_detected
-            
-        # Check openssl availability
+        hostname, port = _normalize_url(ctx.url)
+    except ValueError as e:
+        return {"fatal_error": f"Invalid URL parsing: {e}"}
+
+    details["context"] = "internal" if _check_internal(hostname) else "external"
+
+    # Step 1: Subprocess capability detection (Crucial for correct reporting confidence)
+    openssl_available = await _check_binary("openssl", "version")
+    dig_available = await _check_binary("dig", "-v")
+    details["openssl_available"] = openssl_available
+    details["dig_available"] = dig_available
+
+    if not openssl_available or not dig_available:
+        missing = []
+        if not openssl_available: missing.append("openssl")
+        if not dig_available: missing.append("dig")
+        findings.append(_make_finding(
+            title="TLS/DNS deep-inspection unavailable in this environment",
+            severity="info",
+            confidence="informational",
+            cwe="",
+            owasp="",
+            location="Scout Execution Environment",
+            evidence=f"Missing binaries required for advanced analysis: {', '.join(missing)}",
+            poc="which openssl; which dig",
+            remediation="Ensure openssl and dig are installed in the scanner's runtime environment for deeper TLS/DNS protocol and cipher checks.",
+            detection_method="Subprocess capability check"
+        ))
+
+    # Step 2: Fatal TLS Verification (If this fails, no HTTP checks would work anyway)
+    der = None
+    try:
+        der = await asyncio.get_running_loop().run_in_executor(None, _get_cert_der, hostname, port)
+    except Exception as e:
+        # Cannot connect via TLS at all - fatal error for this module.
+        return {"fatal_error": f"TLS Connection failed entirely: {type(e).__name__} - {str(e)}"}
+
+    # Step 3: Parse and analyze the certificate
+    cert_info = {}
+    if HAS_CRYPTO and der:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "openssl", "version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            out, err = await proc.communicate()
-            if proc.returncode != 0:
-                details["openssl_available"] = False
-        except FileNotFoundError:
-            details["openssl_available"] = False
-            
-        openssl_state = {"available": details["openssl_available"], "warned": False}
-        
-        # 1. Basic handshake & certificate parsing
-        cert_info = None
-        chain_valid = None
-        try:
-            pem = await asyncio.get_running_loop().run_in_executor(None, ssl.get_server_certificate, (hostname, port))
-            der = ssl.PEM_cert_to_DER_cert(pem)
-            cert_info = _analyze_cert(der, hostname)
-            cert_scts = _count_scts_from_cert(der)
-            details["ct_scts_total"] = cert_scts
+            cert_info = await asyncio.get_running_loop().run_in_executor(None, _analyze_cert, der, hostname)
             details["certificate"] = cert_info
             
-            days = cert_info["days_until_expiry"]
-            cert_expiry_date = cert_info["not_after"]
-            cert_issuer = cert_info["issuer"]
-            cert_subject = cert_info["subject"]
-            cert_cn = cert_info["cn"]
-            cert_san = cert_info["san_dns"]
-            cert_sig_alg = cert_info["signature_algorithm"]
-            cert_key_size = cert_info["key_size"]
-            cert_key_type = cert_info["key_type"]
-            cert_poc = f"openssl s_client -connect {hostname}:{port} -servername {hostname} < /dev/null 2>/dev/null | openssl x509 -noout -dates -subject -issuer"
+            days = cert_info.get("days_until_expiry", 0)
+            cert_poc = f"openssl s_client -connect {hostname}:{port} -servername {hostname} < /dev/null 2>/dev/null | openssl x509 -noout -text"
             
             if days < 0:
                 findings.append(_make_finding(
-                    title="Certificate expired",
+                    title="TLS Certificate Expired",
                     severity="critical",
-                    confidence=100,
+                    confidence="verified-live",
                     cwe="CWE-298",
-                    owasp="A02:2021",
-                    location=f"Expiry {hostname}:{port}",
-                    evidence=f"Certificate expired on {cert_expiry_date}",
-                    remediation="Renew immediately.",
+                    owasp="A02:2021-Cryptographic Failures",
+                    location=f"Certificate {hostname}:{port}",
+                    evidence=f"Certificate expired on {cert_info.get('not_after')}",
                     poc=cert_poc,
+                    remediation="Renew the SSL/TLS certificate immediately.",
                     detection_method="Certificate Analysis"
                 ))
             elif days < 7:
                 findings.append(_make_finding(
-                    title=f"Certificate expires in {days} days",
+                    title=f"TLS Certificate Expires Soon ({days} days)",
                     severity="high",
-                    confidence=100,
+                    confidence="verified-live",
                     cwe="CWE-298",
-                    owasp="A02:2021",
-                    location=f"Expiry {hostname}:{port}",
-                    evidence=f"Certificate expires on {cert_expiry_date} ({days} days remaining)",
-                    remediation="Renew now.",
-                    poc=cert_poc,
-                    detection_method="Certificate Analysis"
-                ))
-            elif days < 30:
-                findings.append(_make_finding(
-                    title=f"Certificate expires in {days} days",
-                    severity="medium",
-                    confidence=100,
-                    cwe="CWE-298",
-                    owasp="A02:2021",
-                    location=f"Expiry {hostname}:{port}",
-                    evidence=f"Certificate expires on {cert_expiry_date} ({days} days remaining)",
-                    remediation="Renew soon.",
-                    poc=cert_poc,
-                    detection_method="Certificate Analysis"
-                ))
-                
-            if not cert_info["hostname_match"]:
-                sev = "high" if details.get("context") != "internal" else "low"
-                findings.append(_make_finding(
-                    title="Hostname mismatch",
-                    severity=sev,
-                    confidence=100,
-                    cwe="CWE-295",
-                    owasp="A02:2021",
+                    owasp="A02:2021-Cryptographic Failures",
                     location=f"Certificate {hostname}:{port}",
-                    evidence=f"CN: {cert_cn}, SANs: {cert_san}, Hostname: {hostname}",
-                    remediation="Fix CN/SAN.",
+                    evidence=f"Certificate expires on {cert_info.get('not_after')}",
                     poc=cert_poc,
+                    remediation="Renew the SSL/TLS certificate to prevent service outage.",
                     detection_method="Certificate Analysis"
                 ))
                 
-            if cert_info["self_signed"]:
-                sev = "high" if details.get("context") != "internal" else "low"
+            if not cert_info.get("hostname_match"):
+                sev = "high" if details["context"] != "internal" else "low"
                 findings.append(_make_finding(
-                    title="Self-signed certificate",
+                    title="TLS Hostname Mismatch",
                     severity=sev,
-                    confidence=100,
+                    confidence="verified-live",
                     cwe="CWE-295",
-                    owasp="A02:2021",
+                    owasp="A02:2021-Cryptographic Failures",
                     location=f"Certificate {hostname}:{port}",
-                    evidence=f"Issuer: {cert_issuer}, Subject: {cert_subject}",
-                    remediation="Obtain CA-signed certificate.",
+                    evidence=f"CN: {cert_info.get('cn')}, SANs: {cert_info.get('san_dns')}, Hostname requested: {hostname}",
                     poc=cert_poc,
+                    remediation="Issue a certificate that explicitly includes the accessed hostname in its Subject Alternative Name (SAN) extension.",
                     detection_method="Certificate Analysis"
                 ))
                 
-            if cert_info["weak_signature"]:
+            if cert_info.get("self_signed"):
+                sev = "high" if details["context"] != "internal" else "low"
                 findings.append(_make_finding(
-                    title=f"Weak signature algorithm ({cert_info['signature_algorithm']})",
+                    title="Self-Signed TLS Certificate",
+                    severity=sev,
+                    confidence="verified-live",
+                    cwe="CWE-295",
+                    owasp="A02:2021-Cryptographic Failures",
+                    location=f"Certificate {hostname}:{port}",
+                    evidence=f"Issuer: {cert_info.get('issuer')} matches Subject: {cert_info.get('subject')}",
+                    poc=cert_poc,
+                    remediation="Obtain a certificate signed by a trusted public or internal Certificate Authority.",
+                    detection_method="Certificate Analysis"
+                ))
+                
+            if cert_info.get("weak_signature"):
+                findings.append(_make_finding(
+                    title=f"Weak Signature Algorithm ({cert_info.get('signature_algorithm')})",
                     severity="high",
-                    confidence=100,
+                    confidence="verified-live",
                     cwe="CWE-327",
-                    owasp="A02:2021",
+                    owasp="A02:2021-Cryptographic Failures",
                     location=f"Certificate {hostname}:{port}",
-                    evidence=f"Signature algorithm: {cert_sig_alg}",
-                    remediation="Re-issue with SHA-256.",
+                    evidence=f"Signature algorithm observed: {cert_info.get('signature_algorithm')}",
                     poc=cert_poc,
+                    remediation="Re-issue the certificate using SHA-256 or stronger algorithms.",
                     detection_method="Certificate Analysis"
                 ))
                 
-            if cert_info["key_type"] == "rsa" and cert_info["key_size"] and cert_info["key_size"] < 2048:
+            key_sz = cert_info.get("key_size")
+            key_typ = cert_info.get("key_type")
+            if key_typ == "rsa" and key_sz and key_sz < 2048:
                 findings.append(_make_finding(
-                    title=f"Weak RSA key ({cert_info['key_size']} bits)",
+                    title=f"Weak RSA Key Size ({key_sz} bits)",
                     severity="high",
-                    confidence=100,
+                    confidence="verified-live",
                     cwe="CWE-326",
-                    owasp="A02:2021",
+                    owasp="A02:2021-Cryptographic Failures",
                     location=f"Certificate {hostname}:{port}",
-                    evidence=f"Key type: RSA, Size: {cert_key_size} bits",
-                    remediation="Re-issue with >=2048-bit key.",
+                    evidence=f"Key type: RSA, Size: {key_sz} bits",
                     poc=cert_poc,
+                    remediation="Re-issue the certificate with an RSA key of at least 2048 bits.",
                     detection_method="Certificate Analysis"
                 ))
-            elif cert_info["key_type"] == "ecdsa" and cert_info["key_size"] and cert_info["key_size"] < 256:
+            elif key_typ == "ecdsa" and key_sz and key_sz < 256:
                 findings.append(_make_finding(
-                    title=f"Weak ECDSA key ({cert_info['key_size']} bits)",
+                    title=f"Weak ECDSA Key Size ({key_sz} bits)",
                     severity="high",
-                    confidence=100,
+                    confidence="verified-live",
                     cwe="CWE-326",
-                    owasp="A02:2021",
+                    owasp="A02:2021-Cryptographic Failures",
                     location=f"Certificate {hostname}:{port}",
-                    evidence=f"Key type: ECDSA, Size: {cert_key_size} bits",
-                    remediation="Re-issue with >=256-bit EC key.",
+                    evidence=f"Key type: ECDSA, Size: {key_sz} bits",
                     poc=cert_poc,
+                    remediation="Re-issue the certificate with an Elliptic Curve key of at least 256 bits.",
                     detection_method="Certificate Analysis"
                 ))
                 
         except Exception as e:
-            details["handshake_error"] = str(e)
+            details["cert_analysis_error"] = str(e)
+
+    # Step 4: Chain Validation & OCSP Stapling (Standard SSL blocking calls)
+    chain_valid, chain_err = await asyncio.get_running_loop().run_in_executor(None, _verify_chain_via_ssl_connect, hostname, port)
+    if chain_valid is False:
+        findings.append(_make_finding(
+            title="TLS Certificate Chain Not Trusted",
+            severity="high",
+            confidence="verified-live",
+            cwe="CWE-295",
+            owasp="A02:2021-Cryptographic Failures",
+            location=f"Certificate Chain {hostname}:{port}",
+            evidence=chain_err or "Chain validation failed to establish trust.",
+            poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -showcerts < /dev/null 2>/dev/null | openssl verify",
+            remediation="Ensure the server provides the complete certificate chain, and the root is trusted by public authorities.",
+            detection_method="Local Trust Verification"
+        ))
+
+    stapled_ocsp = await asyncio.get_running_loop().run_in_executor(None, _get_stapled_ocsp_response, hostname, port)
+    details["ocsp_stapling"] = stapled_ocsp is not None
+    if not stapled_ocsp and not ctx.waf_challenge_detected:
+        findings.append(_make_finding(
+            title="OCSP Stapling Not Enabled",
+            severity="low",
+            confidence="informational",
+            cwe="CWE-299",
+            owasp="A02:2021-Cryptographic Failures",
+            location=f"TLS Handshake {hostname}:{port}",
+            evidence="No OCSP response was provided during the TLS handshake.",
+            poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -status < /dev/null 2>/dev/null | grep -A5 'OCSP Response'",
+            remediation="Enable OCSP stapling on the web server to improve performance and privacy of revocation checks.",
+            detection_method="TLS Handshake OCSP Extension Check"
+        ))
+
+    tls_scts = await asyncio.get_running_loop().run_in_executor(None, _get_scts_count_tls_ext, hostname, port)
+    cert_scts = cert_info.get("cert_scts", 0) if cert_info else 0
+    total_scts = tls_scts + cert_scts
+    details["ct_scts_total"] = total_scts
+    if total_scts == 0:
+        sev = "high" if details["context"] == "external" else "medium"
+        findings.append(_make_finding(
+            title="Missing Certificate Transparency (SCTs)",
+            severity=sev,
+            confidence="verified-static",
+            cwe="CWE-299",
+            owasp="A02:2021-Cryptographic Failures",
+            location=f"Certificate CT {hostname}:{port}",
+            evidence=f"Total Signed Certificate Timestamps found: {total_scts}",
+            poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} < /dev/null 2>/dev/null | openssl x509 -noout -text | grep -i sct",
+            remediation="Issue a certificate that participates in Certificate Transparency (CT) logs.",
+            detection_method="CT Extension Parsing"
+        ))
+
+    # Step 5: Concurrent OpenSSL Probing for Protocols, Ciphers, and Fingerprints
+    tls_versions = {}
+    if openssl_available:
+        sem = asyncio.Semaphore(4)  # Bounded concurrency to respect target
+        tasks = []
+        
+        # Protocol tests
+        for p in [("-ssl2", "SSLv2"), ("-ssl3", "SSLv3"), ("-tls1", "TLSv1.0"),
+                  ("-tls1_1", "TLSv1.1"), ("-tls1_2", "TLSv1.2"), ("-tls1_3", "TLSv1.3")]:
+            tasks.append(_probe_protocol(hostname, port, p[0], p[1], sem))
             
-        # 2. Chain validation
-        if cert_info:
-            chain_valid, chain_error = await asyncio.get_running_loop().run_in_executor(
-                None, _verify_chain_via_ssl_connect, hostname, port
-            )
-            details["chain_valid"] = chain_valid
-            if chain_valid is False:
-                findings.append(_make_finding(
-                    title="Certificate chain not trusted",
-                    severity="high",
-                    confidence=95,
-                    cwe="CWE-295",
-                    owasp="A02:2021",
-                    location=f"Certificate chain {hostname}:{port}",
-                    evidence=chain_error or "Chain validation failed",
-                    remediation="Install the correct certificate chain.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -showcerts < /dev/null 2>/dev/null | openssl verify",
-                    detection_method="Certificate Analysis"
-                ))
-            elif chain_valid is None:
-                findings.append(_make_finding(
-                    title="Unable to verify certificate chain",
-                    severity="medium",
-                    confidence=70,
-                    cwe="CWE-295",
-                    owasp="A02:2021",
-                    location=f"Certificate chain {hostname}:{port}",
-                    evidence="SSL verification could not be completed",
-                    remediation="Ensure the server certificate is trusted by a public CA.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -showcerts < /dev/null",
-                    detection_method="Certificate Analysis"
-                ))
-                
-        # 3. Protocol probing
-        tls_versions = {}
-        if details["openssl_available"]:
-            tls_versions["SSLv2"] = await _test_protocol_openssl(hostname, port, "-ssl2", openssl_state)
-            tls_versions["SSLv3"] = await _test_protocol_openssl(hostname, port, "-ssl3", openssl_state)
-            for ver, flag in [("TLSv1.0", "-tls1"), ("TLSv1.1", "-tls1_1"), ("TLSv1.2", "-tls1_2"), ("TLSv1.3", "-tls1_3")]:
-                tls_versions[ver] = await _test_protocol_openssl(hostname, port, flag, openssl_state)
-                
-            details["protocols"] = [v for v, s in tls_versions.items() if s]
+        # Weak cipher tests
+        for c in ["RC4", "DES", "3DES", "EXPORT", "NULL", "aNULL"]:
+            tasks.append(_probe_weak_cipher(hostname, port, c, sem))
             
-            if tls_versions.get("SSLv2"):
-                findings.append(_make_finding(
-                    title="SSLv2 supported (DROWN)",
-                    severity="critical",
-                    confidence=100,
-                    cwe="CWE-757",
-                    owasp="A02:2021",
-                    location=f"SSLv2 {hostname}:{port}",
-                    evidence=f"SSLv2 is enabled on {hostname}:{port}",
-                    remediation="Disable SSLv2.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -ssl2",
-                    detection_method="Protocol Probe"
-                ))
-            if tls_versions.get("SSLv3"):
-                findings.append(_make_finding(
-                    title="SSLv3 supported (POODLE)",
-                    severity="critical",
-                    confidence=100,
-                    cwe="CWE-757",
-                    owasp="A02:2021",
-                    location=f"SSLv3 {hostname}:{port}",
-                    evidence=f"SSLv3 is enabled on {hostname}:{port}",
-                    remediation="Disable SSLv3.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -ssl3",
-                    detection_method="Protocol Probe"
-                ))
-            if tls_versions.get("TLSv1.0"):
-                findings.append(_make_finding(
-                    title="TLS 1.0 supported",
-                    severity="high",
-                    confidence=100,
-                    cwe="CWE-757",
-                    owasp="A02:2021",
-                    location=f"TLSv1.0 {hostname}:{port}",
-                    evidence=f"TLS 1.0 is enabled on {hostname}:{port}",
-                    remediation="Disable TLS 1.0.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -tls1",
-                    detection_method="Protocol Probe"
-                ))
-            if tls_versions.get("TLSv1.1"):
-                findings.append(_make_finding(
-                    title="TLS 1.1 supported",
-                    severity="high",
-                    confidence=100,
-                    cwe="CWE-757",
-                    owasp="A02:2021",
-                    location=f"TLSv1.1 {hostname}:{port}",
-                    evidence=f"TLS 1.1 is enabled on {hostname}:{port}",
-                    remediation="Disable TLS 1.1.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -tls1_1",
-                    detection_method="Protocol Probe"
-                ))
-                
-            if tls_versions.get("TLSv1.3") and not any(tls_versions.get(v) for v in ["TLSv1.2", "TLSv1.1", "TLSv1.0"]):
-                findings.append(_make_finding(
-                    title="TLS 1.3 only configuration",
-                    severity="info",
-                    confidence=100,
-                    cwe="",
-                    owasp="",
-                    location=f"TLS Configuration {hostname}:{port}",
-                    evidence="Only TLS 1.3 is enabled",
-                    remediation="No action needed unless legacy browser support is required.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -tls1_2",
-                    detection_method="Protocol Probe"
-                ))
-            elif not tls_versions.get("TLSv1.3") and not tls_versions.get("TLSv1.2"):
-                findings.append(_make_finding(
-                    title="No modern TLS versions supported",
-                    severity="critical",
-                    confidence=100,
-                    cwe="CWE-757",
-                    owasp="A02:2021",
-                    location=f"TLS Configuration {hostname}:{port}",
-                    evidence=f"Supported versions: {details['protocols']}",
-                    remediation="Enable TLS 1.2 and TLS 1.3.",
-                    poc=f"openssl s_client -connect {hostname}:{port}",
-                    detection_method="Protocol Probe"
-                ))
-                
-        # 4. Weak Cipher Checks
-        if details["openssl_available"]:
-            weak_cipher_findings = await _check_weak_ciphers_openssl(hostname, port, openssl_state)
-            findings.extend(weak_cipher_findings)
-            details["weak_ciphers_found"] = [f["title"] for f in weak_cipher_findings]
+        # Miscellaneous checks
+        tasks.append(_probe_default_cipher(hostname, port, sem))
+        tasks.append(_probe_tls_fingerprints(hostname, port, sem))
+        tasks.append(_probe_alpn(hostname, port, sem))
+
+        results = await asyncio.gather(*tasks)
+        
+        details["protocols"] = []
+        for res in results:
+            if res[0] == "protocol":
+                name, supported = res[1], res[2]
+                tls_versions[name] = supported
+                if supported: details["protocols"].append(name)
             
-            default_cipher_findings = await _check_default_cipher(hostname, port, openssl_state)
-            findings.extend(default_cipher_findings)
+            elif res[0] == "weak_cipher":
+                cipher, negotiated = res[1], res[2]
+                if negotiated:
+                    findings.append(_make_finding(
+                        title=f"Weak Cipher Suite Supported ({cipher})",
+                        severity="high",
+                        confidence="verified-live",
+                        cwe="CWE-326",
+                        owasp="A02:2021-Cryptographic Failures",
+                        location=f"TLS Configuration {hostname}:{port}",
+                        evidence=f"Server successfully negotiated weak cipher string '{cipher}', selecting: {negotiated}",
+                        poc=f"openssl s_client -connect {hostname}:{port} -cipher {cipher} -servername {hostname}",
+                        remediation="Disable deprecated and weak cipher suites in the server's TLS configuration.",
+                        detection_method="Active Cipher Probing"
+                    ))
             
-        # 5. TLS Fingerprints, ALPN, Session Resumption
-        if details["openssl_available"]:
-            ja3s, ja4s, resumption_supported = await _extract_tls_fingerprints_and_resumption(hostname, port, openssl_state)
-            details["ja3s"] = ja3s
-            details["ja4s"] = ja4s
-            details["session_resumption"] = resumption_supported
-            
-            if ja3s:
-                findings.append(_make_finding(
-                    title="TLS Server Fingerprint (JA3S/JA4S)",
-                    severity="info",
-                    confidence=100,
-                    cwe="",
-                    owasp="",
-                    location=f"TLS Handshake {hostname}:{port}",
-                    evidence=f"JA3S: {ja3s}\nJA4S: {ja4s}",
-                    remediation="No action needed. Fingerprints are for identification.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -msg",
-                    detection_method="TLS Fingerprinting"
-                ))
-                
-            if resumption_supported:
-                findings.append(_make_finding(
-                    title="TLS Session Resumption supported",
-                    severity="info",
-                    confidence=100,
-                    cwe="",
-                    owasp="",
-                    location=f"TLS Handshake {hostname}:{port}",
-                    evidence="Session resumption detected in handshake",
-                    remediation="No action needed. Improves performance.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -reconnect",
-                    detection_method="TLS Fingerprinting"
-                ))
-                
-            alpn_proto = await _check_alpn(hostname, port, openssl_state)
-            details["alpn"] = [alpn_proto] if alpn_proto else []
-            if alpn_proto:
-                findings.append(_make_finding(
-                    title="ALPN negotiated",
-                    severity="info",
-                    confidence=100,
-                    cwe="",
-                    owasp="",
-                    location=f"TLS Handshake {hostname}:{port}",
-                    evidence=f"ALPN protocol: {alpn_proto}",
-                    remediation="No action needed.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -alpn h2,http/1.1",
-                    detection_method="TLS Fingerprinting"
-                ))
-                
-        # 6. OCSP Stapling & CT
-        ocsp_stapling = False
-        stapled_revoked = None
-        if cert_info:
-            stapled_ocsp_bytes = await asyncio.get_running_loop().run_in_executor(
-                None, _get_stapled_ocsp_response, hostname, port
-            )
-            ocsp_stapling = stapled_ocsp_bytes is not None
-            details["ocsp_stapling"] = ocsp_stapling
-            
-            if stapled_ocsp_bytes:
-                try:
-                    ocsp_resp = crypto_ocsp.load_der_ocsp_response(stapled_ocsp_bytes)
-                    if ocsp_resp.response_status == crypto_ocsp.OCSPResponseStatus.SUCCESSFUL:
-                        single = ocsp_resp.responses[0]
-                        if single.certificate_status == crypto_ocsp.OCSPCertStatus.REVOKED:
-                            stapled_revoked = True
-                        elif single.certificate_status == crypto_ocsp.OCSPCertStatus.GOOD:
-                            stapled_revoked = False
-                except Exception:
-                    pass
-            details["ocsp_revoked"] = stapled_revoked
-            
-            if ocsp_stapling is False and not waf_detected:
-                findings.append(_make_finding(
-                    title="OCSP stapling not used",
-                    severity="low",
-                    confidence=85,
-                    cwe="CWE-299",
-                    owasp="A02:2021",
-                    location=f"OCSP stapling {hostname}:{port}",
-                    evidence="No OCSP response included in TLS handshake",
-                    remediation="Enable OCSP stapling in your web server configuration.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -status < /dev/null 2>/dev/null | grep -A5 'OCSP Response'",
-                    detection_method="OCSP Check"
-                ))
-                
-            tls_scts = await asyncio.get_running_loop().run_in_executor(
-                None, _get_scts_count_tls_ext, hostname, port
-            )
-            total_scts = tls_scts + cert_scts
-            details["ct_scts_total"] = total_scts
-            
-            has_ct = total_scts > 0
-            if not has_ct:
-                sev = "high" if details.get("context") in ["login", "ecommerce"] else "medium"
-                conf = 90 if sev == "high" else 70
-                findings.append(_make_finding(
-                    title="No Certificate Transparency (SCTs)",
-                    severity=sev,
-                    confidence=conf,
-                    cwe="CWE-299",
-                    owasp="A02:2021",
-                    location=f"CT {hostname}:{port}",
-                    evidence=f"Total SCTs found: {total_scts} (embedded: {cert_scts}, TLS extension: {tls_scts})",
-                    remediation="Obtain a certificate with embedded SCTs.",
-                    poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} < /dev/null 2>/dev/null | openssl x509 -noout -text | grep -A2 'CT Precertificate SCTs'",
-                    detection_method="CT Log Analysis"
-                ))
-                
-        # 7. HTTP/3 & Mixed Content
-        headers = shared_page.get("headers", {}) if shared_page else {}
-        alt_svc = _get_header(headers, "Alt-Svc") or ""
-        if "h3=" in alt_svc or "h3-29=" in alt_svc or "h3-q050=" in alt_svc or "h3-32=" in alt_svc:
-            details["http3"] = True
+            elif res[0] == "default_cipher":
+                negotiated = res[2]
+                if negotiated:
+                    weak_keywords = ["RC4", "DES", "3DES", "EXPORT", "NULL", "aNULL"]
+                    if any(w in negotiated.upper() for w in weak_keywords):
+                        findings.append(_make_finding(
+                            title=f"Weak Default Cipher Negotiated ({negotiated})",
+                            severity="high",
+                            confidence="verified-live",
+                            cwe="CWE-326",
+                            owasp="A02:2021-Cryptographic Failures",
+                            location=f"TLS Configuration {hostname}:{port}",
+                            evidence=f"The default connection negotiated a weak cipher: {negotiated}",
+                            poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname}",
+                            remediation="Prioritize strong cipher suites (e.g., AES-GCM, ChaCha20) in the TLS configuration.",
+                            detection_method="Default Handshake Probing"
+                        ))
+                        
+            elif res[0] == "fingerprints":
+                ja3s, ja4s, resumption = res[1], res[2], res[3]
+                details["ja3s"] = ja3s
+                details["ja4s"] = ja4s
+                details["session_resumption"] = resumption
+                if ja3s:
+                    findings.append(_make_finding(
+                        title="TLS Server Fingerprint (JA3S/JA4S)",
+                        severity="info",
+                        confidence="verified-live",
+                        cwe="",
+                        owasp="",
+                        location=f"TLS Handshake {hostname}:{port}",
+                        evidence=f"JA3S: {ja3s}\nJA4S: {ja4s}",
+                        poc=f"openssl s_client -connect {hostname}:{port} -msg -servername {hostname}",
+                        remediation="No remediation required; informational fingerprint.",
+                        detection_method="TLS Handshake Parsing"
+                    ))
+                    
+            elif res[0] == "alpn":
+                proto = res[1]
+                if proto:
+                    details["alpn"] = [proto]
+                    findings.append(_make_finding(
+                        title="ALPN Negotiated",
+                        severity="info",
+                        confidence="verified-live",
+                        cwe="",
+                        owasp="",
+                        location=f"TLS Handshake {hostname}:{port}",
+                        evidence=f"ALPN protocol negotiated: {proto}",
+                        poc=f"openssl s_client -connect {hostname}:{port} -alpn h2,http/1.1 -servername {hostname}",
+                        remediation="No remediation required.",
+                        detection_method="ALPN Extension Probing"
+                    ))
+
+        # Protocol findings logic
+        if tls_versions.get("SSLv2"):
             findings.append(_make_finding(
-                title="HTTP/3 (QUIC) advertised",
+                title="SSLv2 Protocol Supported (DROWN)",
+                severity="critical",
+                confidence="verified-live",
+                cwe="CWE-757",
+                owasp="A02:2021-Cryptographic Failures",
+                location=f"TLS Protocols {hostname}:{port}",
+                evidence=f"SSLv2 handshake completed successfully.",
+                poc=f"openssl s_client -connect {hostname}:{port} -ssl2",
+                remediation="Completely disable SSLv2 support on the server.",
+                detection_method="Protocol Probing"
+            ))
+        if tls_versions.get("SSLv3"):
+            findings.append(_make_finding(
+                title="SSLv3 Protocol Supported (POODLE)",
+                severity="critical",
+                confidence="verified-live",
+                cwe="CWE-757",
+                owasp="A02:2021-Cryptographic Failures",
+                location=f"TLS Protocols {hostname}:{port}",
+                evidence=f"SSLv3 handshake completed successfully.",
+                poc=f"openssl s_client -connect {hostname}:{port} -ssl3",
+                remediation="Completely disable SSLv3 support on the server.",
+                detection_method="Protocol Probing"
+            ))
+        if tls_versions.get("TLSv1.0"):
+            findings.append(_make_finding(
+                title="Legacy TLS 1.0 Protocol Supported",
+                severity="high",
+                confidence="verified-live",
+                cwe="CWE-757",
+                owasp="A02:2021-Cryptographic Failures",
+                location=f"TLS Protocols {hostname}:{port}",
+                evidence=f"TLSv1.0 handshake completed successfully.",
+                poc=f"openssl s_client -connect {hostname}:{port} -tls1",
+                remediation="Disable TLS 1.0 and enforce TLS 1.2+ minimum.",
+                detection_method="Protocol Probing"
+            ))
+        if tls_versions.get("TLSv1.1"):
+            findings.append(_make_finding(
+                title="Legacy TLS 1.1 Protocol Supported",
+                severity="high",
+                confidence="verified-live",
+                cwe="CWE-757",
+                owasp="A02:2021-Cryptographic Failures",
+                location=f"TLS Protocols {hostname}:{port}",
+                evidence=f"TLSv1.1 handshake completed successfully.",
+                poc=f"openssl s_client -connect {hostname}:{port} -tls1_1",
+                remediation="Disable TLS 1.1 and enforce TLS 1.2+ minimum.",
+                detection_method="Protocol Probing"
+            ))
+        if tls_versions.get("TLSv1.3") and not any(tls_versions.get(v) for v in ["TLSv1.2", "TLSv1.1", "TLSv1.0", "SSLv3", "SSLv2"]):
+            findings.append(_make_finding(
+                title="Modern TLS 1.3 Only Configuration",
                 severity="info",
-                confidence=100,
+                confidence="verified-live",
                 cwe="",
                 owasp="",
-                location=f"Alt-Svc Header {hostname}:{port}",
-                evidence=f"Alt-Svc: {alt_svc}",
-                remediation="No action needed. HTTP/3 improves performance and security.",
-                poc=f"curl -I --http3 https://{hostname}:{port}",
-                detection_method="HTTP Header"
+                location=f"TLS Protocols {hostname}:{port}",
+                evidence="Only TLS 1.3 is enabled.",
+                poc=f"openssl s_client -connect {hostname}:{port} -tls1_2 (fails)",
+                remediation="Excellent security posture. Ensure legacy clients aren't inadvertently broken.",
+                detection_method="Protocol Probing"
             ))
-            
-        mixed_content_findings = await _check_mixed_content(url, shared_page)
-        findings.extend(mixed_content_findings)
-        details["mixed_content_count"] = len(mixed_content_findings)
-        
-        # 8. DNS Checks (CAA, DANE)
+        elif not tls_versions.get("TLSv1.3") and not tls_versions.get("TLSv1.2"):
+            findings.append(_make_finding(
+                title="No Modern TLS Versions Supported",
+                severity="critical",
+                confidence="verified-live",
+                cwe="CWE-757",
+                owasp="A02:2021-Cryptographic Failures",
+                location=f"TLS Protocols {hostname}:{port}",
+                evidence=f"Modern TLS (1.2/1.3) failed to negotiate. Supported: {details.get('protocols')}",
+                poc=f"openssl s_client -connect {hostname}:{port} -tls1_2",
+                remediation="Upgrade TLS stack to support and prefer TLS 1.2 and TLS 1.3.",
+                detection_method="Protocol Probing"
+            ))
+
+    # Step 6: DNS Validation (CAA / DANE TLSA)
+    if dig_available:
         caa_records = await _check_dns_record(hostname, "CAA")
-        details["caa_records"] = caa_records.split("\n") if caa_records else []
         if caa_records:
             findings.append(_make_finding(
-                title="CAA record present",
+                title="DNS CAA Record Present",
                 severity="info",
-                confidence=100,
+                confidence="verified-live",
                 cwe="",
                 owasp="",
-                location=f"DNS CAA for {hostname}",
-                evidence=f"CAA records: {caa_records[:200]}",
-                remediation="No action needed. CAA restricts which CAs can issue certificates.",
+                location=f"DNS CAA: {hostname}",
+                evidence=f"CAA records found: {caa_records[:200]}",
                 poc=f"dig CAA {hostname} +short",
+                remediation="No remediation required. CAA adds excellent certificate issuance control.",
                 detection_method="DNS Query"
             ))
         else:
             findings.append(_make_finding(
-                title="Missing CAA record",
+                title="Missing DNS CAA Record",
                 severity="low",
-                confidence=80,
+                confidence="informational",
                 cwe="CWE-295",
-                owasp="A02:2021",
-                location=f"DNS CAA for {hostname}",
-                evidence="No CAA records returned by DNS",
-                remediation="Add a CAA record to restrict certificate issuance (e.g., '0 issue \"letsencrypt.org\"').",
+                owasp="A05:2021-Security Misconfiguration",
+                location=f"DNS CAA: {hostname}",
+                evidence="No CAA records were returned for the domain.",
                 poc=f"dig CAA {hostname} +short",
+                remediation="Add a CAA record to explicitly authorize specific Certificate Authorities for your domain.",
                 detection_method="DNS Query"
             ))
-            
+
         tlsa_name = f"_{port}._tcp.{hostname}"
         tlsa_records = await _check_dns_record(tlsa_name, "TLSA")
-        details["dane_records"] = tlsa_records.split("\n") if tlsa_records else []
         if tlsa_records:
             findings.append(_make_finding(
-                title="DANE (TLSA) record present",
+                title="DANE (TLSA) Record Present",
                 severity="info",
-                confidence=100,
+                confidence="verified-live",
                 cwe="",
                 owasp="",
-                location=f"DNS TLSA for {tlsa_name}",
-                evidence=f"TLSA records: {tlsa_records[:200]}",
-                remediation="No action needed. DANE provides additional certificate validation.",
+                location=f"DNS TLSA: {tlsa_name}",
+                evidence=f"TLSA records found: {tlsa_records[:200]}",
                 poc=f"dig TLSA {tlsa_name} +short",
+                remediation="No remediation required. DANE provides robust certificate validation.",
                 detection_method="DNS Query"
             ))
-        else:
+        # Missing DANE check intentionally omitted to reduce noise across targets where adoption is virtually zero.
+
+    # Step 7: HTTP/3 & Mixed Content (Only if we successfully fetched the main page previously)
+    if ctx.page_is_representative and ctx.main_page_cache:
+        headers = ctx.main_page_cache.get("headers", {})
+        alt_svc = _get_header(headers, "Alt-Svc") or ""
+        if any(h3_sig in alt_svc for h3_sig in ("h3=", "h3-29=", "h3-q050=", "h3-32=")):
             findings.append(_make_finding(
-                title="Missing DANE (TLSA) record",
+                title="HTTP/3 (QUIC) Advertised",
                 severity="info",
-                confidence=60,
-                cwe="CWE-295",
-                owasp="A02:2021",
-                location=f"DNS TLSA for {tlsa_name}",
-                evidence="No TLSA records returned by DNS",
-                remediation="Consider implementing DANE for additional certificate validation.",
-                poc=f"dig TLSA {tlsa_name} +short",
-                detection_method="DNS Query"
+                confidence="verified-static",
+                cwe="",
+                owasp="",
+                location=f"Header: Alt-Svc",
+                evidence=f"Alt-Svc: {alt_svc}",
+                poc=f"curl -I --http3 https://{hostname}:{port}",
+                remediation="No remediation required. Modern HTTP/3 enhances performance.",
+                detection_method="Header Inspection"
             ))
-            
-        # Filter findings
-        findings = [f for f in findings if f.get("confidence", 100) >= min_confidence]
-        
-        # Sort findings by severity
-        _SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-        findings.sort(key=lambda f: _SEV_ORDER.get(f.get("severity", "info"), 4))
-        
-        return {
-            "findings": findings,
-            "details": details
-        }
-        
-    except Exception as e:
-        return {
-            "findings": [],
-            "details": {"error": str(e), "error_type": type(e).__name__}
-        }
-    finally:
-        if temp_session:
-            await temp_session.close()
 
-async def _test_protocol_openssl(hostname: str, port: int, version_flag: str, openssl_state: dict) -> bool:
-    if not openssl_state["available"]:
-        return False
-    out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", version_flag])
-    if timed_out:
-        return False
-    if b"OPENSSL_MISSING" in err:
-        if not openssl_state["warned"]:
-            log.warning("OpenSSL binary not found – skipping all OpenSSL-based checks.")
-            openssl_state["warned"] = True
-            openssl_state["available"] = False
-        return False
-    return b"BEGIN CERTIFICATE" in out and b"CONNECTED" in out
+        if ctx.url.lower().startswith("https://"):
+            html = ctx.main_page_cache.get("html", "")
+            if html:
+                soup = BeautifulSoup(html, "html.parser")
+                mixed_detected = 0
+                
+                # Active Mixed Content (Scripts/CSS/IFrames)
+                for tag, attr, res_type in [("script", "src", "Script"), ("iframe", "src", "Iframe"), ("link", "href", "Stylesheet")]:
+                    for el in soup.find_all(tag):
+                        if tag == "link" and "stylesheet" not in (el.get("rel") or []):
+                            continue
+                        src = el.get(attr, "")
+                        if src and str(src).lower().startswith("http://"):
+                            mixed_detected += 1
+                            findings.append(_make_finding(
+                                title=f"Active Mixed Content: {res_type} loaded over HTTP",
+                                severity="high",
+                                confidence="verified-static",
+                                cwe="CWE-829",
+                                owasp="A02:2021-Cryptographic Failures",
+                                location=f"Tag: <{tag}>, Attribute: {attr}={src}",
+                                evidence=f"Found {tag} loading insecure resource from {src} on a secure page.",
+                                poc=f"curl -I '{src}'",
+                                remediation=f"Change the URL protocol from http:// to https:// or use protocol-relative URLs.",
+                                detection_method="HTML Parsing"
+                            ))
+                
+                # Forms submitting over HTTP
+                for form in soup.find_all("form"):
+                    action = form.get("action", "")
+                    if action and str(action).lower().startswith("http://"):
+                        mixed_detected += 1
+                        findings.append(_make_finding(
+                            title="Insecure Form Submission (Mixed Content)",
+                            severity="high",
+                            confidence="verified-static",
+                            cwe="CWE-319",
+                            owasp="A02:2021-Cryptographic Failures",
+                            location=f"Tag: <form>, Attribute: action={action}",
+                            evidence=f"Form submissions are configured to transmit over plain HTTP: {action}",
+                            poc=f"curl -I '{action}'",
+                            remediation="Update form actions to point to an HTTPS endpoint to protect data in transit.",
+                            detection_method="HTML Parsing"
+                        ))
 
-if __name__ == "__main__":
-    target_url = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
-    result = asyncio.run(run(target_url))
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+                # Passive Mixed Content (Images)
+                for img in soup.find_all("img"):
+                    src = img.get("src", "")
+                    if src and str(src).lower().startswith("http://"):
+                        mixed_detected += 1
+                        findings.append(_make_finding(
+                            title="Passive Mixed Content: Image loaded over HTTP",
+                            severity="medium",
+                            confidence="verified-static",
+                            cwe="CWE-319",
+                            owasp="A02:2021-Cryptographic Failures",
+                            location=f"Tag: <img>, Attribute: src={src}",
+                            evidence=f"Image requested insecurely from {src}",
+                            poc=f"curl -I '{src}'",
+                            remediation="Load all image assets securely over HTTPS.",
+                            detection_method="HTML Parsing"
+                        ))
+                
+                details["mixed_content_count"] = mixed_detected
+
+    return {
+        "findings": findings,
+        "details": details
+    }
