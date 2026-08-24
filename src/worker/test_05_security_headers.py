@@ -19,12 +19,12 @@ CDN_DOMAINS = (
 )
 
 SITE_CATEGORIES = {
-    "bank": ["bank", "online banking"],
-    "ecommerce": ["shop", "store", "buy", "cart", "checkout", "pay"],
-    "healthcare": ["hospital"],
-    "login": ["sign in", "login", "password"],
-    "blog": ["blog", "articles"],
-    "internal": ["intranet", "internal"],
+    "bank": ["bank", "online banking", "بنك", "بنوك", "مصرف", "حساب بنكي"],
+    "ecommerce": ["shop", "store", "buy", "cart", "checkout", "pay", "تسوق", "متجر", "عربة التسوق", "الدفع", "اشتري", "شراء"],
+    "healthcare": ["hospital", "مستشفى", "عيادة", "طبي", "صحة"],
+    "login": ["sign in", "login", "password", "تسجيل الدخول", "كلمة المرور", "دخول"],
+    "blog": ["blog", "articles", "مدونة", "مقالات"],
+    "internal": ["intranet", "internal", "داخلي", "إنترانت"],
 }
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ def _make_finding(title: str, severity: str, confidence: str, cwe: str, owasp: s
     }
 
 async def _categorize_site(html: str, headers: dict) -> Dict:
-    result = {"categories": [], "has_login_form": False, "title": "", "meta_keywords": ""}
+    result = {"categories": [], "has_login_form": False, "title": "", "meta_keywords": "", "meta_description": ""}
     
     title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
     if title_match: 
@@ -63,10 +63,14 @@ async def _categorize_site(html: str, headers: dict) -> Dict:
     if meta_match: 
         result["meta_keywords"] = meta_match.group(1)
         
+    desc_match = re.search(r'<meta\s+name="description"\s+content="(.*?)"', html, re.IGNORECASE)
+    if desc_match:
+        result["meta_description"] = desc_match.group(1)
+        
     if re.search(r'<input\s+[^>]*type=["\']?password["\']?', html, re.IGNORECASE):
         result["has_login_form"] = True
         
-    text_lower = (result["title"] + " " + result["meta_keywords"]).lower()
+    text_lower = (result["title"] + " " + result["meta_keywords"] + " " + result["meta_description"]).lower()
     for category, keywords in SITE_CATEGORIES.items():
         if any(k in text_lower for k in keywords):
             result["categories"].append(category)

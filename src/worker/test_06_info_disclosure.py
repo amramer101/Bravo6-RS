@@ -84,22 +84,59 @@ def content_verified_sensitive(path: str, body: str, expected_type: str) -> bool
     if not body:
         return False
     b_lower = body.lower()
+    
     if expected_type == "phpinfo":
-        return "phpinfo()" in b_lower or "php version" in b_lower
+        return (
+            "<title>phpinfo()</title>" in b_lower or 
+            "<h1 class=\"p\">php version" in b_lower or 
+            ("php version" in b_lower and "zend engine" in b_lower)
+        )
+        
     if expected_type == "git":
-        return body.strip().startswith("ref:") or bool(re.match(r'^[0-9a-f]{40}', body.strip()))
+        body_stripped = body.strip()
+        # .git/HEAD contains 'ref: refs/heads/...' or a 40-char commit hash (detached state)
+        return body_stripped.startswith("ref: refs/") or bool(re.match(r'^[0-9a-f]{40}$', body_stripped))
+        
     if expected_type == "git_config":
-        return "[core]" in body
+        return "[core]" in b_lower and ("repositoryformatversion" in b_lower or "bare" in b_lower)
+        
     if expected_type == "keyval":
-        return bool(re.search(r'^[A-Z_]{2,}\s*=', body, re.MULTILINE))
+        # Look for standard sensitive prefixes OR at least 3 generic key-value assignments
+        return (
+            bool(re.search(r'^(?:APP|DB|AWS|SECRET|MAIL|API|REDIS|MYSQL|MONGO|POSTGRES|JWT)_[A-Z0-9_]+\s*=', body, re.MULTILINE | re.IGNORECASE)) or
+            len(re.findall(r'^[A-Z0-9_]{3,}\s*=', body, re.MULTILINE)) >= 3
+        )
+        
     if expected_type == "php":
-        return ("DB_PASSWORD" in body or "define(" in body or bool(re.search(r'\$db|mysqli_connect|PDO\(', body, re.IGNORECASE)))
+        # Look for common database config definitions or connection instances
+        return (
+            "DB_PASSWORD" in body or 
+            "define('DB_" in body or 
+            'define("DB_' in body or 
+            bool(re.search(r'\$db(?:_name|_user|_pass|conn|connect)\b|mysqli_connect\s*\(|new\s+PDO\s*\(', body, re.IGNORECASE))
+        )
+        
     if expected_type == "htpasswd":
-        return bool(re.search(r'^[^:\s]+:\$?\w', body, re.MULTILINE))
+        # htpasswd typically contains username:hash (bcrypt, apr1, SHA, or crypt 13-chars)
+        return bool(re.search(r'^[\w\.\-]+:(?:\$apr1\$|\$2[aby]\$|\{SHA\}|[A-Za-z0-9./]{13})', body, re.MULTILINE))
+        
     if expected_type == "adminer":
-        return "adminer" in b_lower
+        # Ensure it is a genuine Adminer tool, not just a 404 page mentioning "adminer"
+        if "adminer" not in b_lower:
+            return False
+        return (
+            bool(re.search(r'name="auth\[(?:driver|server|username|password)\]"', b_lower)) or
+            "<title>login - adminer</title>" in b_lower or
+            "<title>adminer" in b_lower or
+            bool(re.search(r'adminer.{0,100}?(?:login|database|server)', b_lower, re.DOTALL)) or
+            bool(re.search(r'class="[^"]*login[^"]*".{0,150}?auth\[', b_lower, re.DOTALL))
+        )
+        
     if expected_type == "json":
-        return "{" in body and "}" in body and '"' in body
+        # Structurally valid JSON object rather than just a page with brackets and quotes
+        body_stripped = body.strip()
+        return body_stripped.startswith("{") and body_stripped.endswith("}") and '"' in body_stripped and ':' in body_stripped
+        
     return False
 
 

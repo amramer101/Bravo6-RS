@@ -550,7 +550,11 @@ async def run(ctx: ScannerContext) -> dict:
 
     stapled_ocsp = await asyncio.get_running_loop().run_in_executor(None, _get_stapled_ocsp_response, hostname, port)
     details["ocsp_stapling"] = stapled_ocsp is not None
-    if not stapled_ocsp and not ctx.waf_challenge_detected:
+    if not stapled_ocsp:
+        evidence_msg = "No OCSP response was provided during the TLS handshake."
+        if ctx.waf_challenge_detected:
+            evidence_msg += f" (Note: CDN/WAF detected ({ctx.waf_challenge_detected}); OCSP stapling may be managed at the edge layer.)"
+
         findings.append(_make_finding(
             title="OCSP Stapling Not Enabled",
             severity="low",
@@ -558,7 +562,7 @@ async def run(ctx: ScannerContext) -> dict:
             cwe="CWE-299",
             owasp="A02:2021-Cryptographic Failures",
             location=f"TLS Handshake {hostname}:{port}",
-            evidence="No OCSP response was provided during the TLS handshake.",
+            evidence=evidence_msg,
             poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -status < /dev/null 2>/dev/null | grep -A5 'OCSP Response'",
             remediation="Enable OCSP stapling on the web server to improve performance and privacy of revocation checks.",
             detection_method="TLS Handshake OCSP Extension Check"

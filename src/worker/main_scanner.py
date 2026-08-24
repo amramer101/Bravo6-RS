@@ -273,6 +273,11 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     remediation = raw.get("remediation") or "Consult security team for remediation."
     detection_method = raw.get("detection_method") or raw.get("source") or module_name
     
+    # Extract tier safely from raw or nested raw["raw_data"]
+    raw_tier = raw.get("tier")
+    if not raw_tier and isinstance(raw.get("raw_data"), dict):
+        raw_tier = raw.get("raw_data").get("tier")
+    
     return {
         "id": finding_id,
         "module": module_name,
@@ -286,6 +291,7 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
         "poc": str(poc)[:500],
         "remediation": str(remediation)[:500],
         "detection_method": str(detection_method)[:100],
+        "tier": str(raw_tier)[:50] if raw_tier else "",
         "raw_data": raw
     }
 
@@ -336,7 +342,10 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
         penalty = BASE_PENALTY.get(sev, 0)
         
         # FIX 1: Read proper tier assigned natively by the scout
-        raw_tier = f.get("raw_data", {}).get("tier", "")
+        raw_tier = f.get("tier", "")
+        if not raw_tier:
+            raw_tier = f.get("raw_data", {}).get("tier", "")
+            
         is_tier2 = (raw_tier == "hardening")
         
         if is_tier2:
@@ -560,6 +569,23 @@ if __name__ == "__main__":
                 f2 = {"module": "test", "title": "File Exposed", "cwe": "200", "owasp": "A5", "location": "/api/v2/admin", "confidence": "verified-live", "severity": "high"}
                 res = deduplicate_findings([f1, f2])
                 self.assertEqual(len(res), 2, "Deduplication incorrectly collapsed findings with different locations.")
+
+            def test_bug3_tier_flattening_and_scoring(self):
+                """Bug 3: Assert nested tier is flattened and Tier 2 deduction is capped at 10."""
+                raw_findings = [
+                    {"title": "Missing COOP", "severity": "medium", "raw_data": {"tier": "hardening"}},
+                    {"title": "Missing COEP", "severity": "medium", "raw_data": {"tier": "hardening"}},
+                    {"title": "Missing Permissions-Policy", "severity": "medium", "raw_data": {"tier": "hardening"}}
+                ]
+                
+                normalized = [normalize_finding(f, "test_05", idx) for idx, f in enumerate(raw_findings)]
+                
+                for n in normalized:
+                    self.assertEqual(n.get("tier"), "hardening", "Tier was not flattened correctly.")
+                    
+                score_info = compute_bravo6_score(normalized)
+                self.assertEqual(score_info["deductions"]["tier2"], 10.0, "Tier 2 deduction was not capped at 10.")
+                self.assertEqual(score_info["score"], 90, "Score calculation is incorrect.")
 
             async def test_bug4_cache_hits(self):
                 """Bug 4: Integration test running 3 simulated concurrent checks. Assert cache_hits >= 1."""

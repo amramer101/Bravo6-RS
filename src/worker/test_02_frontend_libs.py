@@ -9,6 +9,7 @@ Bravo6 Enterprise SCA Engine (v8.5 – Local Cache, Signature Aware, Context-Bou
 - Supports comprehensive deduplication and context-aware confidence scoring:
   (`verified-live`, `verified-static`, `plausible-unconfirmed`, `informational`).
 - Enforces strict 12-field finding schemas.
+- Enhanced detection with CDN URL parsing and Fingerprint-based fallbacks for bundlers (Webpack/Vite).
 """
 
 import asyncio
@@ -82,6 +83,17 @@ LIB_URL_FILENAME = {
     "react": re.compile(r"react[.\-@](\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)(?:\.min)?(?:\.[a-f0-9]+)?\.js", re.I),
 }
 
+# New CDN patterns that may optionally include the version string
+LIB_URL_CDN = {
+    "jquery": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)jquery(?:[/@])(?:v?" + _VERSION + r")?", re.I),
+    "bootstrap": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)bootstrap(?:[/@])(?:v?" + _VERSION + r")?", re.I),
+    "vue": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)vue(?:[/@])(?:v?" + _VERSION + r")?", re.I),
+    "react": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)react(?:-dom)?[/@](?:v?" + _VERSION + r")?", re.I),
+    "lodash": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)lodash(?:[/@])(?:v?" + _VERSION + r")?", re.I),
+    "axios": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)axios(?:[/@])(?:v?" + _VERSION + r")?", re.I),
+    "moment": re.compile(r"(?:cdn\.jsdelivr\.net/npm/|unpkg\.com/|cdnjs\.cloudflare\.com/ajax/libs/)moment(?:[/@])(?:v?" + _VERSION + r")?", re.I),
+}
+
 # Strong evidence: explicit assignments (No bare \s across lines!)
 LIB_CONTENT_SIGNATURE = {
     "jquery": re.compile(r"jQuery\.fn\.jquery[ \t]*=[ \t]*[\"']" + _VERSION + r"[\"']", re.I),
@@ -104,6 +116,17 @@ LIB_CONTENT_GENERAL = {
     "axios": re.compile(r"axios[ \t]{1,20}v?" + _VERSION, re.I),
 }
 
+# Fingerprints for when version is stripped out entirely by modern bundlers (Webpack/Vite/Rollup)
+LIB_CONTENT_FINGERPRINT = {
+    "react": re.compile(r"__REACT_DEVTOOLS_GLOBAL_HOOK__|react_devtools_backend|Warning: React|React current owner", re.I),
+    "vue": re.compile(r"__VUE_DEVTOOLS_GLOBAL_HOOK__|__VUE__|_isVue", re.I),
+    "jquery": re.compile(r"jQuery\.fn\.init|jQuery\.extend", re.I),
+    "bootstrap": re.compile(r"bootstrap\.Dropdown|bootstrap\.Modal|bootstrap\.Tooltip", re.I),
+    "lodash": re.compile(r"__lodash_hash_undefined__|lodash\.isEqual", re.I),
+    "moment": re.compile(r"moment\.isMoment|moment\.duration", re.I),
+    "axios": re.compile(r"axios\.interceptors\.request|axios\.create", re.I),
+}
+
 # ------------------------------------------------------------------------------
 # Known Real Version Bounds Check
 # ------------------------------------------------------------------------------
@@ -123,8 +146,11 @@ LIBRARY_VERSION_RANGES = {
 }
 
 
-def is_version_valid(lib: str, v_str: str) -> bool:
+def is_version_valid(lib: str, v_str: Optional[str]) -> bool:
     """Verifies if the extracted version is within the known real release bounds."""
+    if not v_str:
+        return True # If no version is found, we consider range check "valid" (skip bounding)
+        
     ranges = LIBRARY_VERSION_RANGES.get(lib.lower())
     if not ranges:
         return True  # If library not tracked with strict ranges, assume valid
@@ -157,17 +183,36 @@ def _unified_version_extraction(text: str, patterns_sig: Dict, patterns_gen: Dic
             result[lib] = (m.group(1), False)
     return result
 
+def _extract_from_cdn_url(url: str, patterns: Dict) -> Dict[str, Optional[str]]:
+    result = {}
+    for lib, pat in patterns.items():
+        m = pat.search(url)
+        if m:
+            try:
+                ver = m.group(1)
+            except IndexError:
+                ver = None
+            result[lib] = ver
+    return result
+
+def _extract_fingerprints(text: str, patterns: Dict) -> List[str]:
+    result = []
+    for lib, pat in patterns.items():
+        if pat.search(text):
+            result.append(lib)
+    return result
 
 def _build_poc(location: str, lib: str, version: Optional[str], is_signature: bool) -> str:
     if location.startswith("inline_script"):
-        return f"Inspect HTML source at inline script block for {lib} declaration."
+        return f"Inspect HTML source at inline script block for {lib} declaration or fingerprint."
     if location == "Header: Context":
         return "Manual verification required."
     
-    # Generic PoC string
     v_str = version if version else ""
-    if is_signature:
+    if is_signature and v_str:
         return f"curl -s '{location}' | grep -ioE '{lib}.{{0,20}}{v_str}' | head -n 1"
+    if not v_str:
+        return f"curl -s '{location}' | grep -i '{lib}' # (Version unknown, look for fingerprint)"
     return f"curl -s '{location}' | grep -ioE '{lib}'"
 
 
@@ -229,12 +274,14 @@ async def run(ctx: ScannerContext) -> dict:
                 raw_findings.append({"library": lib, "version": ver, "source": "script_src_url", "url": abs_url})
             for lib, (ver, _) in _unified_version_extraction(abs_url, {}, LIB_URL_FILENAME).items():
                 raw_findings.append({"library": lib, "version": ver, "source": "script_src_filename", "url": abs_url})
+            # CDN checks (Can extract libraries with or without version strings)
+            for lib, ver in _extract_from_cdn_url(abs_url, LIB_URL_CDN).items():
+                raw_findings.append({"library": lib, "version": ver, "source": "cdn_url", "url": abs_url})
 
     # 3. Fetch remote JS content & scan via tightly-scoped regex
     for u in script_urls[:40]:  # Cap to prevent scanner saturation
         if getattr(ctx, "fetch_js", None):
             js_text = await ctx.fetch_js(u)
-            # requests_made += 1  <- REMOVED: ctx.fetch_js already increments ctx.metrics internally.
         else:
             js_text = ""
             
@@ -242,7 +289,8 @@ async def run(ctx: ScannerContext) -> dict:
             continue
             
         script_contents[u] = js_text
-        content_versions = _unified_version_extraction(js_text[:MAX_FILE_BYTES], LIB_CONTENT_SIGNATURE, LIB_CONTENT_GENERAL)
+        scan_text = js_text[:MAX_FILE_BYTES]
+        content_versions = _unified_version_extraction(scan_text, LIB_CONTENT_SIGNATURE, LIB_CONTENT_GENERAL)
         
         for lib, (ver, is_sig) in content_versions.items():
             raw_findings.append({
@@ -250,6 +298,15 @@ async def run(ctx: ScannerContext) -> dict:
                 "url": u, "is_signature": is_sig,
                 "evidence": f"Matched {'signature' if is_sig else 'general pattern'} in {u}"
             })
+            
+        # Fingerprint fallback
+        for lib in _extract_fingerprints(scan_text, LIB_CONTENT_FINGERPRINT):
+            if lib not in content_versions:
+                raw_findings.append({
+                    "library": lib, "version": None, "source": "script_content_fingerprint", 
+                    "url": u, "is_signature": False,
+                    "evidence": f"Matched library fingerprint in {u}"
+                })
 
     # 4. Inline Script scanning
     inline_idx = 0
@@ -267,6 +324,14 @@ async def run(ctx: ScannerContext) -> dict:
                     "url": loc_name, "is_signature": is_sig,
                     "evidence": "Matched signature in inline script block."
                 })
+                
+            for lib in _extract_fingerprints(inline_text, LIB_CONTENT_FINGERPRINT):
+                if lib not in inline_versions:
+                    raw_findings.append({
+                        "library": lib, "version": None, "source": "inline_fingerprint",
+                        "url": loc_name, "is_signature": False,
+                        "evidence": "Matched library fingerprint in inline script block."
+                    })
 
     # 5. Group and Deduplicate Findings by Library
     lib_groups = {}
@@ -276,7 +341,8 @@ async def run(ctx: ScannerContext) -> dict:
         
     # Highest priority is script content signatures
     SOURCE_PRIORITY = {
-        "script_content": 10, "inline": 9, "script_src_filename": 5, "script_src_url": 4, "fallback": 0
+        "script_content": 10, "inline": 9, "cdn_url": 8, "script_src_filename": 5, "script_src_url": 4, 
+        "script_content_fingerprint": 3, "inline_fingerprint": 2, "fallback": 0
     }
 
     # 6. Load CVE Dataset
@@ -377,25 +443,39 @@ async def run(ctx: ScannerContext) -> dict:
                     "detection_method": "Library Fingerprinting (Suppressed)"
                 })
             else:
-                # Normal valid version, but no CVE
+                # Normal valid version, or no version, but no CVE
                 if is_sig:
                     confidence = "verified-static"
-                elif best["source"] in ["script_src_filename", "script_src_url"]:
+                elif best["source"] in ["script_src_filename", "script_src_url", "cdn_url"]:
                     confidence = "plausible-unconfirmed"
+                elif best["source"] in ["script_content_fingerprint", "inline_fingerprint"]:
+                    confidence = "informational"
                 else:
                     confidence = "informational"
                     
                 v_disp = ver_str if ver_str else "unknown"
+                
+                if not ver_str:
+                    title_text = f"Detected {lib.title()} Component (Version Unknown)"
+                    severity_text = "info"
+                    evidence_text = f"Detected {lib} via {best['source']} but could not determine its version."
+                    remediation_text = "Ensure the library is kept up-to-date."
+                else:
+                    title_text = f"Detected {lib.title()} Component v{v_disp}"
+                    severity_text = "info"
+                    evidence_text = f"Detected {lib}@{v_disp} via {best['source']}."
+                    remediation_text = "Monitor for updates and ensure libraries are patched regularly."
+
                 findings.append({
-                    "title": f"Detected {lib.title()} Component v{v_disp}",
-                    "severity": "info",
+                    "title": title_text,
+                    "severity": severity_text,
                     "confidence": confidence,
                     "cwe": "CWE-1035",
                     "owasp": "A06:2021-Vulnerable and Outdated Components",
                     "location": location,
-                    "evidence": f"Detected {lib}@{v_disp} via {best['source']}.",
+                    "evidence": evidence_text,
                     "poc": _build_poc(location, lib, ver_str, is_sig),
-                    "remediation": "Monitor for updates and ensure libraries are patched regularly.",
+                    "remediation": remediation_text,
                     "detection_method": "Library Fingerprinting"
                 })
 
