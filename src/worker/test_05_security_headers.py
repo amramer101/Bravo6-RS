@@ -231,7 +231,11 @@ def _check_clickjacking(headers: dict, url: str, is_api: bool) -> List[Dict[str,
     
     if "frame-ancestors" in directives:
         val = directives["frame-ancestors"]
-        if "'none'" in val or "'self'" in val:
+        # An empty value (e.g. "frame-ancestors;") lists zero allowed sources,
+        # which blocks all embedding per spec — same effect as 'none'. Without
+        # this check the title below would claim framing is allowed from
+        # external origins while the evidence shows no origins were listed.
+        if not val.strip() or "'none'" in val or "'self'" in val:
             return []
         else:
             return [_make_finding(
@@ -275,11 +279,20 @@ def _check_clickjacking(headers: dict, url: str, is_api: bool) -> List[Dict[str,
     )]
 
 def _check_cache_control(headers: dict, set_cookie: Optional[str], url: str) -> List[Dict[str, Any]]:
+    # NOTE: `set_cookie` only tells us the response carries a Set-Cookie header
+    # (a passively observed, real signal). It does NOT tell us the client is
+    # "authenticated" — this scanner is strictly passive (a single anonymous
+    # GET/HEAD/OPTIONS, no login, no credentials), so it never establishes an
+    # authenticated session and cannot claim one exists. Anonymous responses
+    # routinely carry cookies too (cart/session IDs, CSRF tokens, consent,
+    # WAF/CDN affinity cookies), so findings here must describe what was
+    # actually observed — a cookie-bearing response — not an unverifiable
+    # authentication state.
     cc = _get_header(headers, "Cache-Control")
     if not cc:
         if set_cookie:
             return [_make_finding(
-                title="Cache-Control header missing on authenticated response",
+                title="Cache-Control header missing on cookie-bearing response",
                 severity="high",
                 confidence="verified-live",
                 cwe="CWE-525", owasp="A05:2021",
@@ -301,34 +314,34 @@ def _check_cache_control(headers: dict, set_cookie: Optional[str], url: str) -> 
                 remediation="Define caching behavior with Cache-Control.",
                 detection_method="Header Check", tier="baseline"
             )]
-            
+
     cc_lower = cc.lower()
     if set_cookie:
         if "public" in cc_lower:
             return [_make_finding(
-                title="Cache-Control insecure (public on authenticated response)",
+                title="Cache-Control insecure ('public' on cookie-bearing response)",
                 severity="high",
                 confidence="verified-live",
                 cwe="CWE-525", owasp="A05:2021",
                 location="Cache-Control",
-                evidence=f"Cache-Control: {cc}",
-                poc=f"curl -Is {url} | grep -i 'cache-control'",
+                evidence=f"Cache-Control: {cc} (response also sets a cookie via Set-Cookie)",
+                poc=f"curl -Is {url} | grep -i 'cache-control\\|set-cookie'",
                 remediation="Remove 'public', use 'no-store, no-cache'.",
                 detection_method="Header Check", tier="baseline"
             )]
         elif "no-store" not in cc_lower:
             return [_make_finding(
-                title="Cache-Control present but missing 'no-store' on authenticated response",
+                title="Cache-Control present but missing 'no-store' on cookie-bearing response",
                 severity="medium",
                 confidence="verified-live",
                 cwe="CWE-525", owasp="A05:2021",
                 location="Cache-Control",
-                evidence=f"Cache-Control: {cc}",
-                poc=f"curl -Is {url} | grep -i 'cache-control'",
+                evidence=f"Cache-Control: {cc} (response also sets a cookie via Set-Cookie)",
+                poc=f"curl -Is {url} | grep -i 'cache-control\\|set-cookie'",
                 remediation="Add 'no-store' directive.",
                 detection_method="Header Check", tier="baseline"
             )]
-            
+
     return []
 
 def _check_xcto(headers: dict, url: str) -> List[Dict[str, Any]]:
@@ -624,3 +637,117 @@ async def run(ctx: Any) -> dict:
             "is_cdn": is_cdn
         }
     }
+
+# ────────────────────────────────────────────── Standalone Testing ──────────────────────────────────────────────
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(description="Bravo6 HTTP Security Policy Analyzer")
+    parser.add_argument("url", nargs="?", default="https://example.com", help="Target URL")
+    parser.add_argument("--test", action="store_true", help="Run Scout Regression Tests")
+    args = parser.parse_args()
+
+    if args.test:
+        import unittest
+
+        class TestCacheControlAuthenticationClaim(unittest.TestCase):
+            """
+            Regression tests for the 'Cache-Control ... on authenticated response'
+            bug: this scanner is strictly passive (a single anonymous GET/HEAD/
+            OPTIONS, no login, no credentials) and never observes an authenticated
+            session, so no finding may claim the response was "authenticated".
+            Set-Cookie presence is a real passive signal but only proves the
+            response is cookie-bearing, not that the client is authenticated.
+            """
+
+            def _titles(self, headers, set_cookie):
+                findings = _check_cache_control(headers, set_cookie, "https://shop.example.com")
+                return [f["title"] for f in findings]
+
+            def test_anonymous_response_no_cookie_no_finding(self):
+                # Plain anonymous homepage GET, no session cookie at all —
+                # nothing to flag (matches the real-world bug report scenario
+                # minus the cookie).
+                headers = {"Cache-Control": "no-cache"}
+                self.assertEqual(self._titles(headers, set_cookie=None), [])
+
+            def test_cookie_bearing_response_missing_no_store_worded_correctly(self):
+                # Matches the real e-commerce bug report: Cache-Control: no-cache
+                # with a cookie present. Must still be flagged, but must not
+                # claim an "authenticated" state the scanner cannot verify.
+                headers = {"Cache-Control": "no-cache"}
+                titles = self._titles(headers, set_cookie="cart_id=abc123; Path=/")
+                self.assertEqual(len(titles), 1)
+                self.assertNotIn("authenticated", titles[0].lower(),
+                                  "Title must not claim an authentication state the scanner never verified.")
+                self.assertIn("cookie-bearing response", titles[0])
+
+            def test_cookie_bearing_response_public_worded_correctly(self):
+                headers = {"Cache-Control": "public, max-age=3600"}
+                titles = self._titles(headers, set_cookie="sessionid=deadbeef; Path=/")
+                self.assertEqual(len(titles), 1)
+                self.assertNotIn("authenticated", titles[0].lower())
+                self.assertIn("cookie-bearing response", titles[0])
+
+            def test_cookie_bearing_response_missing_cache_control_worded_correctly(self):
+                titles = self._titles({}, set_cookie="sessionid=deadbeef; Path=/")
+                self.assertEqual(len(titles), 1)
+                self.assertNotIn("authenticated", titles[0].lower())
+                self.assertIn("cookie-bearing response", titles[0])
+
+        class TestClickjackingEmptyFrameAncestors(unittest.TestCase):
+            """
+            Regression test: an empty frame-ancestors value (e.g.
+            "frame-ancestors;") lists zero allowed origins, which blocks all
+            framing per spec — the same effect as 'none'. It must not be
+            reported as "framing allowed from external origins" since no
+            origin is actually listed in the evidence.
+            """
+
+            def test_empty_frame_ancestors_is_not_flagged_as_allowing_framing(self):
+                headers = {"Content-Security-Policy": "frame-ancestors;"}
+                findings = _check_clickjacking(headers, "https://example.com", is_api=False)
+                self.assertEqual(findings, [])
+
+        sys.argv = [sys.argv[0]]
+        unittest.main()
+    else:
+        import asyncio
+        import aiohttp
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class DummyContext:
+            url: str
+            session: Any = None
+            config: dict = field(default_factory=dict)
+            page_is_representative: bool = True
+            waf_challenge_detected: Optional[str] = None
+            sensitive_paths: list = field(default_factory=list)
+            main_page_cache: dict = field(default_factory=dict)
+
+        async def _live_scan():
+            connector = aiohttp.TCPConnector(ssl=True)
+            async with aiohttp.ClientSession(connector=connector, headers={"User-Agent": "Bravo6-Scanner/8.5"}) as session:
+                try:
+                    async with session.get(args.url) as resp:
+                        html = await resp.text()
+                        main_page_cache = {
+                            "status": resp.status,
+                            "html": html,
+                            "headers": dict(resp.headers)
+                        }
+                except Exception as e:
+                    main_page_cache = {"error": str(e), "status": 0, "html": "", "headers": {}}
+
+                ctx = DummyContext(
+                    url=args.url,
+                    session=session,
+                    main_page_cache=main_page_cache
+                )
+                result = await run(ctx)
+                print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+
+        asyncio.run(_live_scan())

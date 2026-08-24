@@ -45,6 +45,13 @@ class ScannerContext:
         return ""
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+# JA4S (FoxIO JA4+ spec) requires ALPN extraction from the ServerHello plus a
+# SHA256-truncated construction over the extension list — a materially
+# different algorithm from JA3S, not implementable by extending the JA3S
+# text-parsing probe below without a larger, spec-verified rewrite. Reported
+# honestly as unsupported rather than a fabricated/mislabeled hash.
+JA4S_NOT_IMPLEMENTED = "not_implemented"
+
 def _normalize_url(url: str) -> Tuple[str, int]:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -78,6 +85,41 @@ def _make_finding(
         "remediation": remediation,
         "detection_method": detection_method
     }
+
+def _build_expiry_finding(cert_info: Dict[str, Any], hostname: str, port: int, cert_poc: str) -> Optional[Dict[str, Any]]:
+    """
+    Build a near-expiry finding for a still-valid certificate, or None if not
+    yet in the warning window (or certificate data is missing/incomplete).
+    Already-expired certificates are handled separately by their own finding.
+    """
+    if not cert_info or "days_until_expiry" not in cert_info:
+        return None
+
+    days = cert_info["days_until_expiry"]
+    if days < 0:
+        return None
+
+    if days <= 7:
+        severity = "critical"
+    elif days <= 14:
+        severity = "high"
+    elif days <= 30:
+        severity = "medium"
+    else:
+        return None
+
+    return _make_finding(
+        title=f"TLS Certificate Expires Soon ({days} day{'s' if days != 1 else ''} remaining)",
+        severity=severity,
+        confidence="verified-live",
+        cwe="CWE-298",
+        owasp="A02:2021-Cryptographic Failures",
+        location=f"Certificate {hostname}:{port}",
+        evidence=f"Certificate for {hostname} expires on {cert_info.get('not_after')} — {days} day(s) remaining.",
+        poc=cert_poc,
+        remediation="Renew the SSL/TLS certificate before it expires to avoid an unplanned outage or browser trust warnings.",
+        detection_method="Certificate Analysis"
+    )
 
 def _check_internal(hostname: str) -> bool:
     try:
@@ -284,67 +326,83 @@ async def _probe_default_cipher(hostname: str, port: int, sem: asyncio.Semaphore
                 return ("default_cipher", "default", match.group(1).strip())
         return ("default_cipher", "default", None)
 
-async def _probe_tls_fingerprints(hostname: str, port: int, sem: asyncio.Semaphore) -> Tuple[str, Optional[str], Optional[str], bool]:
+_HEX_DUMP_LINE_RE = re.compile(r"^[0-9a-fA-F]{2}(\s+[0-9a-fA-F]{2})*$")
+
+def _extract_server_hello_hex(openssl_msg_output: str) -> str:
+    """
+    Extract the raw hex bytes of the ServerHello Handshake message (including
+    its 4-byte header: 1-byte msg_type + 3-byte length) from `openssl s_client
+    -msg` output.
+
+    `-msg` prints each handshake record as a header line (">>>"/"<<<" plus the
+    message name) followed by plain space-separated hex byte lines with no
+    offset or " - " delimiter. (The "XXXX - hex-hex...  ascii" dump format
+    belongs to `-trace`'s opaque-extension dumps, not `-msg`.)
+    """
+    lines = openssl_msg_output.split('\n')
+    in_server_hello = False
+    hex_data = ""
+    for line in lines:
+        if "ServerHello" in line and "<<<" in line:
+            in_server_hello = True
+            continue
+        if in_server_hello:
+            stripped = line.strip()
+            if stripped == "" or ">>>" in line or ("<<<" in line and "ServerHello" not in line):
+                if hex_data:
+                    break
+                continue
+            if _HEX_DUMP_LINE_RE.match(stripped):
+                hex_data += stripped.replace(" ", "")
+    return hex_data
+
+def _compute_ja3s(hex_data: str) -> Optional[str]:
+    """
+    Compute a canonical JA3S fingerprint (md5 of "TLSVersion,Cipher,Extensions",
+    all decimal, extensions dash-joined in wire order) from the raw ServerHello
+    Handshake message bytes produced by `_extract_server_hello_hex`. Returns
+    None if the bytes are too short or don't parse as a well-formed ServerHello.
+    """
+    if not hex_data or len(hex_data) < 100:
+        return None
+    try:
+        idx = 8  # skip Handshake header (1-byte msg_type + 3-byte length)
+        version = int(hex_data[idx:idx + 4], 16)
+        idx += 4
+        idx += 64  # skip 32-byte random
+        sid_len = int(hex_data[idx:idx + 2], 16)
+        idx += 2 + (sid_len * 2)
+        cipher = int(hex_data[idx:idx + 4], 16)
+        idx += 4
+        idx += 2  # skip 1-byte compression_method
+        ext_types: List[str] = []
+        if idx + 4 <= len(hex_data):
+            ext_len = int(hex_data[idx:idx + 4], 16)
+            idx += 4
+            ext_data = hex_data[idx:idx + (ext_len * 2)]
+            e_idx = 0
+            while e_idx + 8 <= len(ext_data):
+                ext_type = int(ext_data[e_idx:e_idx + 4], 16)
+                ext_len_val = int(ext_data[e_idx + 4:e_idx + 8], 16)
+                ext_types.append(str(ext_type))
+                e_idx += 8 + (ext_len_val * 2)
+        ja3s_str = f"{version},{cipher}," + "-".join(ext_types)
+        return hashlib.md5(ja3s_str.encode()).hexdigest()
+    except Exception:
+        return None
+
+async def _probe_tls_fingerprints(hostname: str, port: int, sem: asyncio.Semaphore) -> Tuple[str, Optional[str], str, bool]:
     async with sem:
         out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", "-msg", "-servername", hostname, "-reconnect"], timeout=6)
         if timed_out or b"OPENSSL_MISSING" in err:
-            return ("fingerprints", None, None, False)
+            return ("fingerprints", None, JA4S_NOT_IMPLEMENTED, False)
         combined = (out + err).decode('utf-8', errors='ignore')
-        
-        # Simple extraction logic for JA3S/JA4S mimicking original implementation
-        lines = combined.split('\n')
-        in_server_hello = False
-        hex_data = ""
-        for line in lines:
-            if "ServerHello" in line and "<<<" in line:
-                in_server_hello = True
-                continue
-            if in_server_hello:
-                if line.strip() == "" or ">>>" in line or ("<<<" in line and "ServerHello" not in line):
-                    if hex_data: break
-                if " - " in line:
-                    parts = line.split(" - ", 1)
-                    if len(parts) == 2:
-                        hex_data += parts[1].replace(" ", "")
-        
-        ja3s, ja4s = None, None
-        if hex_data and len(hex_data) >= 100:
-            try:
-                idx = 0
-                version = int(hex_data[idx:idx+4], 16)
-                idx += 4 + 64 # skip random
-                sid_len = int(hex_data[idx:idx+2], 16)
-                idx += 2 + (sid_len * 2)
-                cipher = hex_data[idx:idx+4]
-                idx += 4
-                comp = hex_data[idx:idx+2]
-                idx += 2
-                if idx + 4 <= len(hex_data):
-                    ext_len = int(hex_data[idx:idx+4], 16)
-                    idx += 4
-                    ext_data = hex_data[idx:]
-                    ext_types, curves = [], []
-                    e_idx = 0
-                    while e_idx + 8 <= len(ext_data):
-                        ext_type = ext_data[e_idx:e_idx+4]
-                        ext_len_val = int(ext_data[e_idx+4:e_idx+8], 16)
-                        ext_types.append(ext_type)
-                        if ext_type == "000a" and e_idx + 12 <= len(ext_data):
-                            groups_len = int(ext_data[e_idx+8:e_idx+12], 16)
-                            for g in range(0, groups_len * 2, 4):
-                                if e_idx + 12 + g + 4 <= len(ext_data):
-                                    curves.append(ext_data[e_idx+12+g:e_idx+16+g])
-                        e_idx += 8 + (ext_len_val * 2)
-                    ext_str = "-".join(ext_types)
-                    curve_str = "-".join(curves)
-                    
-                    ja3s = hashlib.md5(f"{version:04x},{cipher},{ext_str},{curve_str}".encode()).hexdigest()
-                    ja4s = hashlib.md5(f"{version:04x},{cipher},{ext_str},".encode()).hexdigest()
-            except Exception:
-                pass
-        
+
+        hex_data = _extract_server_hello_hex(combined)
+        ja3s = _compute_ja3s(hex_data)
+
         resumption = "Reused, " in combined or "TLS session ticket" in combined.lower() or "Session-ID" in combined
-        return ("fingerprints", ja3s, ja4s, resumption)
+        return ("fingerprints", ja3s, JA4S_NOT_IMPLEMENTED, resumption)
 
 async def _probe_alpn(hostname: str, port: int, sem: asyncio.Semaphore) -> Tuple[str, Optional[str]]:
     async with sem:
@@ -442,19 +500,10 @@ async def run(ctx: ScannerContext) -> dict:
                     remediation="Renew the SSL/TLS certificate immediately.",
                     detection_method="Certificate Analysis"
                 ))
-            elif days < 7:
-                findings.append(_make_finding(
-                    title=f"TLS Certificate Expires Soon ({days} days)",
-                    severity="high",
-                    confidence="verified-live",
-                    cwe="CWE-298",
-                    owasp="A02:2021-Cryptographic Failures",
-                    location=f"Certificate {hostname}:{port}",
-                    evidence=f"Certificate expires on {cert_info.get('not_after')}",
-                    poc=cert_poc,
-                    remediation="Renew the SSL/TLS certificate to prevent service outage.",
-                    detection_method="Certificate Analysis"
-                ))
+            else:
+                expiry_finding = _build_expiry_finding(cert_info, hostname, port, cert_poc)
+                if expiry_finding:
+                    findings.append(expiry_finding)
                 
             if not cert_info.get("hostname_match"):
                 sev = "high" if details["context"] != "internal" else "low"
@@ -657,13 +706,13 @@ async def run(ctx: ScannerContext) -> dict:
                 details["session_resumption"] = resumption
                 if ja3s:
                     findings.append(_make_finding(
-                        title="TLS Server Fingerprint (JA3S/JA4S)",
+                        title="TLS Server Fingerprint (JA3S)",
                         severity="info",
                         confidence="verified-live",
                         cwe="",
                         owasp="",
                         location=f"TLS Handshake {hostname}:{port}",
-                        evidence=f"JA3S: {ja3s}\nJA4S: {ja4s}",
+                        evidence=f"JA3S: {ja3s}\nJA4S: not implemented by this scout (see 'ja4s' in scan details).",
                         poc=f"openssl s_client -connect {hostname}:{port} -msg -servername {hostname}",
                         remediation="No remediation required; informational fingerprint.",
                         detection_method="TLS Handshake Parsing"
@@ -900,3 +949,152 @@ async def run(ctx: ScannerContext) -> dict:
         "findings": findings,
         "details": details
     }
+
+# ────────────────────────────────────────────── Standalone Testing ──────────────────────────────────────────────
+if __name__ == "__main__":
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(description="Bravo6 TLS/SSL Assessment Scout")
+    parser.add_argument("url", nargs="?", default="https://example.com", help="Target URL")
+    parser.add_argument("--test", action="store_true", help="Run Scout Regression Tests")
+    args = parser.parse_args()
+
+    if args.test:
+        import unittest
+
+        class TestCertExpiryFinding(unittest.TestCase):
+            """Regression tests for the certificate near-expiry finding (days_until_expiry)."""
+
+            def _cert_info(self, days: int) -> Dict[str, Any]:
+                return {"days_until_expiry": days, "not_after": "2026-09-17T00:00:00+00:00"}
+
+            def test_expires_in_3_days_is_critical(self):
+                finding = _build_expiry_finding(self._cert_info(3), "example.com", 443, "openssl s_client ...")
+                self.assertIsNotNone(finding, "Expected a finding for a certificate expiring in 3 days.")
+                self.assertEqual(finding["severity"], "critical")
+                self.assertEqual(finding["confidence"], "verified-live")
+                self.assertEqual(finding["cwe"], "CWE-298")
+                self.assertIn("3 day", finding["evidence"])
+
+            def test_expires_in_20_days_is_medium(self):
+                finding = _build_expiry_finding(self._cert_info(20), "example.com", 443, "openssl s_client ...")
+                self.assertIsNotNone(finding, "Expected a finding for a certificate expiring in 20 days.")
+                self.assertEqual(finding["severity"], "medium")
+
+            def test_expires_in_200_days_no_finding(self):
+                finding = _build_expiry_finding(self._cert_info(200), "example.com", 443, "openssl s_client ...")
+                self.assertIsNone(finding, "A certificate valid for 200 more days should not raise a finding.")
+
+            def test_missing_certificate_data_skips_cleanly(self):
+                self.assertIsNone(_build_expiry_finding({}, "example.com", 443, "openssl s_client ..."))
+                self.assertIsNone(_build_expiry_finding(None, "example.com", 443, "openssl s_client ..."))
+
+            def test_already_expired_is_not_double_reported(self):
+                # Negative days are owned by the separate "TLS Certificate Expired" finding.
+                self.assertIsNone(_build_expiry_finding(self._cert_info(-5), "example.com", 443, "openssl s_client ..."))
+
+        class TestJa3sFingerprint(unittest.TestCase):
+            """
+            Regression tests for JA3S extraction/computation. Previously ja3s/ja4s
+            were always None: the parser looked for `-trace`'s "XXXX - hex...ascii"
+            dump format, but the code actually shells out to `openssl s_client -msg`,
+            which prints plain space-separated hex with no such delimiter, so
+            hex_data was always empty. It also parsed fields starting at byte offset
+            0 instead of skipping the 4-byte Handshake header, which would have
+            produced a wrong (not merely missing) fingerprint even if hex_data had
+            been non-empty.
+            """
+
+            def _build_synthetic_msg_output(self):
+                # Minimal well-formed ServerHello: legacy_version=0x0303, empty
+                # session_id, cipher=TLS_AES_128_GCM_SHA256 (0x1301), compression=0,
+                # one extension: supported_versions (0x002b) -> TLS1.3 (0x0304).
+                body = (
+                    bytes.fromhex("0303")
+                    + bytes(32)
+                    + bytes.fromhex("00")
+                    + bytes.fromhex("1301")
+                    + bytes.fromhex("00")
+                    + bytes.fromhex("0006")
+                    + bytes.fromhex("002b00020304")
+                )
+                handshake = bytes([0x02]) + len(body).to_bytes(3, "big") + body
+                hexstr = handshake.hex()
+                pairs = [hexstr[i:i + 2] for i in range(0, len(hexstr), 2)]
+                dump_lines = ["    " + " ".join(pairs[i:i + 16]) for i in range(0, len(pairs), 16)]
+                openssl_output = (
+                    f"<<< TLS 1.3, Handshake [length {len(handshake):04x}], ServerHello\n"
+                    + "\n".join(dump_lines)
+                    + "\n<<< TLS 1.2, RecordHeader [length 0005]\n"
+                )
+                return openssl_output, hexstr
+
+            def test_extracts_hex_from_real_msg_format(self):
+                openssl_output, expected_hex = self._build_synthetic_msg_output()
+                self.assertEqual(_extract_server_hello_hex(openssl_output), expected_hex)
+
+            def test_extraction_rejects_trace_dash_format(self):
+                # The old bug assumed `-trace`'s dash/offset dump style; confirm the
+                # `-msg` extractor correctly does NOT match that format (and thus
+                # doesn't silently misparse text that isn't actually a hex dump).
+                trace_style = (
+                    "<<< TLS 1.3, Handshake [length 0031], ServerHello\n"
+                    "    0000 - 02 00 00 2e 03 03-00 00   ....\n"
+                    "<<< TLS 1.2, RecordHeader [length 0005]\n"
+                )
+                self.assertEqual(_extract_server_hello_hex(trace_style), "")
+
+            def test_ja3s_computed_correctly_from_real_format(self):
+                openssl_output, _ = self._build_synthetic_msg_output()
+                hex_data = _extract_server_hello_hex(openssl_output)
+                ja3s = _compute_ja3s(hex_data)
+                self.assertIsNotNone(ja3s, "Expected a real JA3S hash from a well-formed ServerHello.")
+                # version=771 (0x0303), cipher=4865 (0x1301), extensions=[43] (0x002b)
+                expected = hashlib.md5("771,4865,43".encode()).hexdigest()
+                self.assertEqual(ja3s, expected, "Parsed version/cipher/extensions do not match the raw bytes.")
+
+            def test_ja3s_none_on_short_data(self):
+                self.assertIsNone(_compute_ja3s("aabbcc"))
+
+            def test_ja3s_none_on_empty_data(self):
+                self.assertIsNone(_compute_ja3s(""))
+
+            def test_ja4s_reported_as_honest_not_implemented_marker(self):
+                # ja4s must never masquerade as a real hash; it should always be the
+                # explicit sentinel, distinct from both a real hash and None.
+                self.assertEqual(JA4S_NOT_IMPLEMENTED, "not_implemented")
+
+        sys.argv = [sys.argv[0]]
+        unittest.main()
+    else:
+        import aiohttp
+
+        async def _live_scan():
+            connector = aiohttp.TCPConnector(ssl=True)
+            async with aiohttp.ClientSession(connector=connector, headers={"User-Agent": "Bravo6-Scanner/8.5"}) as session:
+                try:
+                    async with session.get(args.url) as resp:
+                        html = await resp.text()
+                        main_page_cache = {
+                            "status": resp.status,
+                            "html": html,
+                            "headers": dict(resp.headers)
+                        }
+                except Exception as e:
+                    main_page_cache = {"error": str(e)}
+
+                ctx = ScannerContext(
+                    url=args.url,
+                    session=session,
+                    config={},
+                    page_is_representative=True,
+                    waf_challenge_detected=None,
+                    sensitive_paths=[],
+                    main_page_cache=main_page_cache
+                )
+                result = await run(ctx)
+                print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+
+        asyncio.run(_live_scan())
