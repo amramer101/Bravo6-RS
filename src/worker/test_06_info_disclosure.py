@@ -33,10 +33,28 @@ EXCLUDE_DOMAINS = [
     "google.com/recaptcha",
     "google-analytics.com",
     "googletagmanager.com",
-    "cdn.",
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "unpkg.com",
     "facebook.net",
     "twitter.com"
 ]
+
+# Matches URL/hostname-shaped tokens within free-form comment text (an
+# optional scheme followed by a dotted hostname, optionally followed by a
+# path). EXCLUDE_DOMAINS is only ever tested against tokens extracted with
+# this pattern -- never against the raw comment text -- so a domain fragment
+# that merely appears as a substring of unrelated prose (e.g. "cdn." inside
+# "cdn.internal-staging.example") can't cause a wholesale exclusion.
+URL_TOKEN_RE = re.compile(
+    r'(?:https?://)?(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(?:/[^\s"\'<>]*)?',
+    re.IGNORECASE
+)
+
+
+def _extract_url_tokens(text: str) -> List[str]:
+    """Extract lowercased URL/hostname-shaped tokens from free-form text."""
+    return [t.lower() for t in URL_TOKEN_RE.findall(text)]
 
 # Well-known, default, auto-generated robots.txt boilerplate that a CMS seeds
 # into every fresh installation. These paths disclose nothing an attacker
@@ -341,12 +359,12 @@ def phase_comment_analysis(ctx: Any) -> List[dict]:
     
     for c in comments:
         is_excluded = False
-        lower_c = c.lower()
+        url_tokens = _extract_url_tokens(c)
         for ex in EXCLUDE_DOMAINS:
-            if ex in lower_c:
+            if any(ex in tok for tok in url_tokens):
                 is_excluded = True
                 break
-        
+
         if is_excluded:
             continue
             
@@ -646,6 +664,46 @@ if __name__ == "__main__":
                 body = "User-agent: *\nDisallow: /private-media/\n"
                 findings = _analyze_robots_txt(self.URL, body, {"WordPress"})
                 self.assertEqual(findings[0]["title"], "robots.txt present with only standard paths")
+
+        class _CommentCtx:
+            """Minimal stand-in for ScannerContext, just enough for phase_comment_analysis."""
+            def __init__(self, html: str):
+                self.main_page_cache = {"html": html}
+                self.url = "https://example.com"
+
+        class TestCommentExcludeDomainsScoping(unittest.TestCase):
+            """Regression tests: EXCLUDE_DOMAINS must only match URL-shaped tokens,
+            never the raw comment text as a bare substring."""
+
+            def test_legitimate_cdn_reference_still_excluded(self):
+                html = (
+                    "<html><body>"
+                    "<!-- loaded via https://cdn.jsdelivr.net/npm/some-lib@1.0/dist/lib.min.js "
+                    "api_key: not_a_real_secret_but_shaped_like_one -->"
+                    "</body></html>"
+                )
+                findings = phase_comment_analysis(_CommentCtx(html))
+                self.assertEqual(findings, [], "A genuine cdn.jsdelivr.net reference must still be excluded.")
+
+            def test_unrelated_host_starting_with_cdn_is_not_wholesale_excluded(self):
+                html = (
+                    "<html><body>"
+                    "<!-- see cdn.internal-staging.example for the admin secret: sk_live_xxx -->"
+                    "</body></html>"
+                )
+                findings = phase_comment_analysis(_CommentCtx(html))
+                self.assertEqual(len(findings), 1, "Comment must be scanned, not wholesale excluded.")
+                self.assertIn("sk_live_xxx", findings[0]["evidence"])
+
+            def test_comment_with_no_domain_tokens_behaves_unchanged(self):
+                html = (
+                    "<html><body>"
+                    "<!-- TODO: remove password: hunter2 before prod deploy -->"
+                    "</body></html>"
+                )
+                findings = phase_comment_analysis(_CommentCtx(html))
+                self.assertEqual(len(findings), 1)
+                self.assertIn("password: hunter2", findings[0]["evidence"])
 
         sys.argv = [sys.argv[0]]
         unittest.main()

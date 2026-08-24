@@ -305,7 +305,7 @@ async def _scan_content(
                     severity = "critical"
                 elif verified_result.get("status") in (400, 401, 403):
                     confidence_tier = "informational"
-                    severity = "informational"
+                    severity = "info"
                     title = f"Revoked/Invalid {label} found in {source_name}"
             elif not is_high_conf:
                 confidence_tier = "plausible-unconfirmed"
@@ -485,6 +485,7 @@ async def run(ctx: Any) -> Dict[str, Any]:
 
 # ────────────────────────────────────────────── Standalone Testing ──────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
     from dataclasses import dataclass, field
 
     @dataclass
@@ -514,31 +515,66 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Bravo6 Secrets Hunter Plugin')
     parser.add_argument('url', nargs='?', default='https://example.com', help='Target URL')
     parser.add_argument('--verify-live', action='store_true', help='Opt-in to verify discovered secrets against live APIs')
+    parser.add_argument('--test', action='store_true', help='Run Scout Regression Tests')
     args = parser.parse_args()
-    
-    async def main():
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            # Fetch the main page to populate the dummy cache
-            try:
-                async with session.get(args.url) as resp:
-                    html = (await resp.content.read()).decode("utf-8", errors="replace")
-                    main_page_cache = {
-                        "status": resp.status,
-                        "html": html,
-                        "soup": BeautifulSoup(html, "html.parser"),
-                        "headers": dict(resp.headers)
-                    }
-            except Exception as e:
-                main_page_cache = {"error": str(e)}
 
-            ctx = DummyContext(
-                url=args.url,
-                session=session,
-                config={"verify_live": args.verify_live},
-                main_page_cache=main_page_cache
-            )
-            result = await run(ctx)
-            print(json.dumps(result, indent=2, ensure_ascii=False))
-            
-    asyncio.run(main())
+    if args.test:
+        import unittest
+
+        class TestSeveritySchema(unittest.IsolatedAsyncioTestCase):
+            """Regression test: severity must use the shared {critical, high, medium,
+            low, info} vocabulary. The 'informational' string belongs to the separate
+            `confidence` tier field only, never to `severity`."""
+
+            async def test_revoked_secret_severity_is_info_not_informational(self):
+                content = 'const token = "ghp_' + 'A' * 40 + '";'
+
+                async def fake_verify_github(key, session):
+                    return {"verified": False, "status": 403}
+
+                original = VERIFIERS["GitHub Token"]
+                VERIFIERS["GitHub Token"] = fake_verify_github
+                try:
+                    findings = await _scan_content(
+                        content, "test.js", "https://example.com/test.js",
+                        session=None, is_script=True,
+                        semaphore=asyncio.Semaphore(1), verify_live=True
+                    )
+                finally:
+                    VERIFIERS["GitHub Token"] = original
+
+                self.assertEqual(len(findings), 1, "Expected exactly one finding for the revoked GitHub token.")
+                finding = findings[0]
+                self.assertEqual(finding["severity"], "info", "severity must be 'info', not 'informational'.")
+                self.assertEqual(finding["confidence"], "informational", "confidence tier must remain 'informational'.")
+                self.assertNotEqual(finding["severity"], "informational")
+
+        sys.argv = [sys.argv[0]]
+        unittest.main()
+    else:
+        async def main():
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # Fetch the main page to populate the dummy cache
+                try:
+                    async with session.get(args.url) as resp:
+                        html = (await resp.content.read()).decode("utf-8", errors="replace")
+                        main_page_cache = {
+                            "status": resp.status,
+                            "html": html,
+                            "soup": BeautifulSoup(html, "html.parser"),
+                            "headers": dict(resp.headers)
+                        }
+                except Exception as e:
+                    main_page_cache = {"error": str(e)}
+
+                ctx = DummyContext(
+                    url=args.url,
+                    session=session,
+                    config={"verify_live": args.verify_live},
+                    main_page_cache=main_page_cache
+                )
+                result = await run(ctx)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+
+        asyncio.run(main())

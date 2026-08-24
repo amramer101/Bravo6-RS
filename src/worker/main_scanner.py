@@ -543,15 +543,35 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
         return final_result
 
 # ------------------------------------------------------------------------------
-# Test Execution blocks mandated by Spec
+# CLI argument parsing (module-level so regression tests can exercise it
+# without spawning a subprocess)
 # ------------------------------------------------------------------------------
-if __name__ == "__main__":
+def build_arg_parser():
     import argparse
     parser = argparse.ArgumentParser(description="Bravo6 Enterprise Security Scanner")
     parser.add_argument("url", nargs="?", default="https://example.com", help="Target URL")
     parser.add_argument("--test", action="store_true", help="Run Orchestrator Integration Tests")
-    args = parser.parse_args()
-    
+    parser.add_argument(
+        "--cve-csv-url", dest="cve_csv_url", default=None,
+        help="HTTP(S) URL or local filesystem path to a CVE dataset CSV, forwarded to "
+             "test_02_frontend_libs.py's fetch_cve_dataset() for CVE correlation."
+    )
+    return parser
+
+
+def build_run_config(args) -> Optional[Dict[str, Any]]:
+    """Build the config dict passed to run_scout() from parsed CLI args."""
+    if args.cve_csv_url:
+        return {"cve_csv_url": args.cve_csv_url}
+    return None
+
+
+# ------------------------------------------------------------------------------
+# Test Execution blocks mandated by Spec
+# ------------------------------------------------------------------------------
+if __name__ == "__main__":
+    args = build_arg_parser().parse_args()
+
     if args.test:
         import unittest
         class TestOrchestrator(unittest.IsolatedAsyncioTestCase):
@@ -609,7 +629,34 @@ if __name__ == "__main__":
                 self.assertEqual(ctx.metrics["http_requests"], 1, "Should only make one HTTP request due to Event locking.")
                 self.assertGreaterEqual(ctx.metrics["cache_hits"], 1, "Cache hits should be >= 1 for shared fetching.")
 
+            def test_bug5_cve_csv_url_cli_flag_reaches_config(self):
+                """Issue 3: --cve-csv-url must be parsed and forwarded into the config
+                dict that run_scout() passes into ScannerContext, so
+                test_02_frontend_libs.py's ctx.config.get('cve_csv_url') sees it."""
+                parser = build_arg_parser()
+                args = parser.parse_args(["https://example.com", "--cve-csv-url", "path/to/some.csv"])
+                self.assertEqual(args.cve_csv_url, "path/to/some.csv")
+
+                config = build_run_config(args)
+                self.assertEqual(config, {"cve_csv_url": "path/to/some.csv"})
+
+                ctx = ScannerContext(url="https://example.com", session=None, config=config)
+                self.assertEqual(ctx.config.get("cve_csv_url"), "path/to/some.csv")
+
+            def test_bug5_no_cve_csv_url_flag_preserves_default_behavior(self):
+                """Without --cve-csv-url, config must stay empty/None just like before this fix."""
+                parser = build_arg_parser()
+                args = parser.parse_args(["https://example.com"])
+                self.assertIsNone(args.cve_csv_url)
+
+                config = build_run_config(args)
+                self.assertIsNone(config)
+
+                ctx = ScannerContext(url="https://example.com", session=None, config=config or {})
+                self.assertIsNone(ctx.config.get("cve_csv_url"))
+
         sys.argv = [sys.argv[0]]
         unittest.main()
     else:
-        result = asyncio.run(run_scout(args.url))
+        config = build_run_config(args)
+        result = asyncio.run(run_scout(args.url, config=config))
