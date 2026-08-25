@@ -166,6 +166,42 @@ def is_version_valid(lib: str, v_str: Optional[str]) -> bool:
         return False
 
 
+def _version_in_cve_range(detected_version: str, min_affected: str, fixed_in: str) -> bool:
+    """True if `detected_version` falls within a CVE's vulnerable range
+    [min_affected, fixed_in) from cve_database_v2.csv, using real semantic-
+    version comparison instead of exact string equality against one pinned
+    version. An empty/blank min_affected means the range has no lower bound
+    (vulnerable from the earliest release); an empty/blank fixed_in means
+    the CVE is still unfixed (no upper bound) -- every version from
+    min_affected onward matches. `fixed_in` itself is NOT included in the
+    vulnerable range (fixed means fixed, not vulnerable at the boundary).
+    Any value that fails to parse as a version causes this to return False
+    rather than raise, so a garbage/partial string from a noisy signature
+    match is skipped for CVE correlation instead of crashing the scout or
+    producing a false match.
+    """
+    try:
+        detected = Version(re.sub(r'^[\^~>=<]', '', detected_version.strip()))
+    except InvalidVersion:
+        return False
+
+    if min_affected and str(min_affected).strip():
+        try:
+            if detected < Version(str(min_affected).strip()):
+                return False
+        except InvalidVersion:
+            return False
+
+    if fixed_in and str(fixed_in).strip():
+        try:
+            if detected >= Version(str(fixed_in).strip()):
+                return False
+        except InvalidVersion:
+            return False
+
+    return True
+
+
 # ------------------------------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------------------------------
@@ -376,15 +412,18 @@ async def run(ctx: ScannerContext) -> dict:
             is_valid_range = False
             
         if ver_str and is_valid_range:
-            # 7b. CVE Correlation
+            # 7b. CVE Correlation (range-based: cve_database_v2.csv's min_affected/
+            # fixed_in columns describe a vulnerable RANGE per CVE, not one pinned
+            # version -- exact string equality would only ever catch a detected
+            # version that happens to match a CSV row character-for-character.
             cve_matches = [
-                row for row in cve_cache 
-                if str(row.get("library", "")).lower() == lib.lower() 
-                and str(row.get("version", "")) == str(ver_str)
+                row for row in cve_cache
+                if str(row.get("library", "")).lower() == lib.lower()
+                and _version_in_cve_range(str(ver_str), row.get("min_affected", ""), row.get("fixed_in", ""))
             ]
             
             js_content = script_contents.get(location, "")[:REGEX_TIMEOUT_PROXY]
-            
+
             for cve_row in cve_matches:
                 signature = str(cve_row.get("signature", "")).strip()
                 signature_found = False
@@ -398,7 +437,7 @@ async def run(ctx: ScannerContext) -> dict:
                         signature_found = False
                 elif not signature:
                     signature_found = True  # Blind version trust if dataset lacks signature
-                    
+
                 if signature_found:
                     cve_reported = True
                     cve_id = cve_row.get("cve", "Unknown CVE")
@@ -492,6 +531,102 @@ async def run(ctx: ScannerContext) -> dict:
 # Calibration & Integration Test (Fix Validation)
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
+    import argparse
+    import sys
+
+    _parser = argparse.ArgumentParser(description="Bravo6 SCA Engine (frontend libs)")
+    _parser.add_argument("--test", action="store_true", help="Run Scout Regression Tests")
+    _args, _ = _parser.parse_known_args()
+
+    if _args.test:
+        import unittest
+
+        class TestCveRangeMatching(unittest.TestCase):
+            """Regression tests for range-based CVE correlation. cve_database_v2.csv's
+            min_affected/fixed_in columns describe a vulnerable RANGE per CVE (from
+            OSV.dev), not a single pinned version string -- _version_in_cve_range()
+            replaces the old exact-string-equality match with real semantic-version
+            comparison via packaging.version."""
+
+            def test_version_strictly_inside_range_matches(self):
+                self.assertTrue(_version_in_cve_range("3.3.1", "1.1.4", "3.4.0"))
+
+            def test_version_equal_to_fixed_in_does_not_match(self):
+                # Fixed means fixed -- not vulnerable at the boundary.
+                self.assertFalse(_version_in_cve_range("3.4.0", "1.1.4", "3.4.0"))
+
+            def test_version_below_min_affected_does_not_match(self):
+                self.assertFalse(_version_in_cve_range("1.0.0", "1.1.4", "3.4.0"))
+
+            def test_open_ended_range_matches_any_version_at_or_above_floor(self):
+                # fixed_in == "" means the CVE is still unfixed -- no upper bound,
+                # so even a version far newer than anything in the dataset matches.
+                self.assertTrue(_version_in_cve_range("1.4.0", "1.4.0", ""))
+                self.assertTrue(_version_in_cve_range("99.0.0", "1.4.0", ""))
+                self.assertFalse(_version_in_cve_range("1.3.9", "1.4.0", ""))
+
+            def test_unparseable_detected_version_is_skipped_not_crashed(self):
+                self.assertFalse(_version_in_cve_range("not-a-version", "1.0.0", "2.0.0"))
+                self.assertFalse(_version_in_cve_range("", "1.0.0", "2.0.0"))
+
+            def test_real_world_gap_jquery_331_and_bootstrap_413(self):
+                # Concrete real-world case from the audit: jQuery 3.3.1 and
+                # Bootstrap 4.1.3 were both correctly detected on a live target but
+                # produced zero CVE matches under exact-string matching, even
+                # though real OSV.dev ranges cover them. Values below are taken
+                # directly from the regenerated cve_database_v2.csv.
+                self.assertTrue(_version_in_cve_range("3.3.1", "1.1.4", "3.4.0"))   # CVE-2019-11358
+                self.assertTrue(_version_in_cve_range("4.1.3", "4.0.0", "4.3.0"))   # CVE-2019-8331
+                # ...and must still correctly EXCLUDE Bootstrap 4.1.3 from CVEs it
+                # had already fixed (4.1.3 shipped after the 4.1.2 fix).
+                self.assertFalse(_version_in_cve_range("4.1.3", "4.0.0", "4.1.2"))  # CVE-2018-14040/14041
+
+            def test_lodash_cross_contamination_fix_still_holds_with_range_matching(self):
+                # The historical Lodash/Moment cross-contamination fix (tight
+                # horizontal-only regex scoping) is orthogonal to CVE range
+                # matching -- confirm range matching doesn't reintroduce it by
+                # running the same bundled-JS scenario as the file's own
+                # integration self-test, with a range-shaped CVE row.
+                mock_bundled_js = (
+                    "/* Lodash source */\nvar lodash = {};\nlodash.VERSION = '4.17.15';\n"
+                    "/* Moment source */\nvar moment = {};\nmoment.version = '2.30.1';\n"
+                )
+                mock_html = '<html><head><script src="/js/bundle.js"></script></head><body></body></html>'
+                ctx = ScannerContext(
+                    url="https://example.com", session=None, config={"cve_csv_url": "mock"},
+                    page_is_representative=True, waf_challenge_detected=None, sensitive_paths=[],
+                    main_page_cache={"html": mock_html, "soup": BeautifulSoup(mock_html, "html.parser"), "status": 200},
+                )
+
+                async def mock_fetch_js(js_url: str) -> str:
+                    return mock_bundled_js if "bundle.js" in js_url else ""
+                ctx.fetch_js = mock_fetch_js
+
+                async def mock_fetch_cve_dataset(c_ctx, url):
+                    return [{
+                        "library": "lodash", "min_affected": "4.0.0", "fixed_in": "4.17.21",
+                        "cve": "CVE-2019-10744", "cvss": "7.3", "cwe": "CWE-400",
+                        "signature": r"lodash\.VERSION\s*=\s*['\"]4\.17\.15['\"]",
+                        "summary": "Prototype Pollution in lodash", "upgrade_rec": "4.17.21",
+                    }], 0
+
+                global fetch_cve_dataset
+                original_fetch = fetch_cve_dataset
+                globals()['fetch_cve_dataset'] = mock_fetch_cve_dataset
+                try:
+                    result = asyncio.run(run(ctx))
+                finally:
+                    globals()['fetch_cve_dataset'] = original_fetch
+
+                lodash_finding = next((f for f in result["findings"] if "lodash" in f["title"].lower()), None)
+                self.assertIsNotNone(lodash_finding)
+                self.assertEqual(lodash_finding["confidence"], "verified-live")
+                self.assertNotIn("2.30.1", lodash_finding["evidence"],
+                                  "Lodash must not steal Moment's 2.30.1 version string.")
+
+        sys.argv = [sys.argv[0]]
+        unittest.main()  # exits the process on completion (default behavior)
+
     # Provides proof of the CVE dataset capability and the cross-contamination fix.
     async def run_test():
         print("[*] Running Integration Test for SCA Scout...")

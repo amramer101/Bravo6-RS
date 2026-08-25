@@ -41,9 +41,19 @@ USAGE:
     python3 osv_fetch_etl.py
 
 OUTPUT:
-    cve_database_v2.csv  — same 8 columns as the existing cve_database.csv
-                            (library, version, cve, cvss, cwe, summary,
-                            signature, upgrade_rec), sourced from OSV.
+    cve_database_v2.csv  — 9 columns (library, min_affected, fixed_in, cve,
+                            cvss, cwe, summary, signature, upgrade_rec),
+                            sourced from OSV. Each row represents one
+                            vulnerable RANGE ([min_affected, fixed_in)), not
+                            a single pinned version string -- min_affected
+                            is "0" when the range is open at the bottom
+                            (vulnerable from the earliest release), and
+                            fixed_in is "" when no fix has shipped yet
+                            (still open at the top). test_02_frontend_libs.py
+                            matches a detected version against this range
+                            with packaging.version, not exact string equality
+                            -- see its CVE-correlation logic for the actual
+                            comparison.
     osv_raw_cache/<pkg>.json — raw API responses, cached so re-runs don't
                             re-hit the network unnecessarily. Delete a file
                             in here (or the whole folder) to force a refresh
@@ -233,8 +243,20 @@ def dedupe_rows(rows: list) -> list:
             existing["cwe"] = row["cwe"]
         if len(row["summary"]) > len(existing["summary"]):
             existing["summary"] = row["summary"]
-        if _parse_version_tuple(row["version"]) < _parse_version_tuple(existing["version"]):
-            existing["version"] = row["version"]
+        # Widen the floor to whichever source claims an older introduced
+        # version -- "0" (open at the bottom) already parses as the
+        # smallest possible tuple, so it naturally wins without special-casing.
+        if _parse_version_tuple(row["min_affected"]) < _parse_version_tuple(existing["min_affected"]):
+            existing["min_affected"] = row["min_affected"]
+        # Widen the ceiling to whichever source claims a later fix -- but an
+        # empty fixed_in ("still unfixed") is the MOST conservative value of
+        # all (an unbounded-above range) and must win over any specific
+        # fixed version from the other source, not lose to it by sorting as
+        # the smallest tuple.
+        if not row["fixed_in"] or not existing["fixed_in"]:
+            existing["fixed_in"] = ""
+        elif _parse_version_tuple(row["fixed_in"]) > _parse_version_tuple(existing["fixed_in"]):
+            existing["fixed_in"] = row["fixed_in"]
         if _parse_version_tuple(row["upgrade_rec"]) > _parse_version_tuple(existing["upgrade_rec"]):
             existing["upgrade_rec"] = row["upgrade_rec"]
 
@@ -253,7 +275,13 @@ def main():
             rows.append(
                 {
                     "library": pkg_name,
-                    "version": introduced or "unknown",
+                    # extract_affected_range() already normalizes an
+                    # open-at-bottom range to "0" and an unfixed
+                    # (open-at-top) range to "" -- pass both straight
+                    # through as the range's actual floor/ceiling instead
+                    # of collapsing them into a single pinned "version".
+                    "min_affected": introduced,
+                    "fixed_in": fixed,
                     "cve": extract_cve_id(vuln),
                     "cvss": extract_cvss(vuln),
                     "cwe": extract_cwe(vuln),
@@ -273,7 +301,8 @@ def main():
             f,
             fieldnames=[
                 "library",
-                "version",
+                "min_affected",
+                "fixed_in",
                 "cve",
                 "cvss",
                 "cwe",

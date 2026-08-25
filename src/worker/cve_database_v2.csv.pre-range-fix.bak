@@ -1,0 +1,74 @@
+library,version,cve,cvss,cwe,summary,signature,upgrade_rec
+jquery,0,CVE-2012-6708,6.1,CWE-64,Cross-Site Scripting in jquery,jQuery\.fn\.jquery,1.9.0
+jquery,0,CVE-2011-4969,5.4,CWE-79,jQuery vulnerable to Cross-Site Scripting (XSS),jQuery\.fn\.jquery,1.6.3
+jquery,1.1.4,CVE-2019-11358,6.1,CWE-1321,"XSS in jQuery as used in Drupal, Backdrop CMS, and other products",jQuery\.fn\.jquery,3.4.0
+jquery,1.12.0,CVE-2020-11022,6.9,CWE-79,Potential XSS vulnerability in jQuery,jQuery\.fn\.jquery,3.5.0
+jquery,1.0.3,CVE-2020-11023,6.9,CWE-79,Potential XSS vulnerability in jQuery,jQuery\.fn\.jquery,3.5.0
+jquery,3.0.0-rc.1,CVE-2016-10707,7.5,CWE-400,Denial of Service in jquery,jQuery\.fn\.jquery,3.0.0
+jquery,1.2.1,CVE-2020-7656,6.1,CWE-79,Cross-Site Scripting in jquery,jQuery\.fn\.jquery,1.9.0
+jquery,0,CVE-2015-9251,6.1,CWE-79,Cross-Site Scripting (XSS) in jquery,jQuery\.fn\.jquery,1.12.2
+lodash,4.0.0,CVE-2020-28500,5.3,CWE-1333,Regular Expression Denial of Service (ReDoS) in lodash,_\.VERSION,4.17.21
+lodash,0,CVE-2021-23337,8.1,CWE-77,lodash vulnerable to Code Injection via `_.template` imports key names,_\.VERSION,4.18.0
+lodash,0,CVE-2018-16487,8.0,CWE-400,Prototype Pollution in lodash,_\.VERSION,4.17.11
+lodash,0,CVE-2025-13465,6.5,CWE-1321,lodash vulnerable to Prototype Pollution via array path bypass in `_.unset` and `_.omit`,_\.VERSION,4.18.0
+lodash,0,CVE-2018-3721,6.5,CWE-1321,Prototype Pollution in lodash,_\.VERSION,4.17.5
+lodash,0,CVE-2019-10744,9.1,CWE-1321,Prototype Pollution in lodash,_\.VERSION,4.17.12
+lodash,3.7.0,CVE-2020-8203,7.4,CWE-1321,Prototype Pollution in lodash,_\.VERSION,4.17.19
+lodash,4.7.0,CVE-2019-1010266,6.5,CWE-400,Regular Expression Denial of Service (ReDoS) in lodash,_\.VERSION,4.17.11
+moment,0,CVE-2017-18214,7.5,CWE-400,Regular Expression Denial of Service in moment,moment\.version,2.19.3
+moment,0,CVE-2016-4055,6.5,CWE-400,Regular Expression Denial of Service in moment,moment\.version,2.11.2
+moment,0,CVE-2022-24785,7.5,CWE-22,Path Traversal: 'dir/../../filename' in moment.locale,moment\.version,2.29.2
+moment,2.18.0,CVE-2022-31129,7.5,CWE-1333,Moment.js vulnerable to Inefficient Regular Expression Complexity,moment\.version,2.29.4
+bootstrap,0,CVE-2018-20676,6.1,CWE-79,XSS vulnerability that affects bootstrap,Bootstrap\.VERSION,3.4.0
+bootstrap,4.0.0,CVE-2018-14040,6.1,CWE-79,Bootstrap vulnerable to Cross-Site Scripting (XSS),Bootstrap\.VERSION,4.1.2
+bootstrap,2.0.4,CVE-2016-10735,6.1,CWE-79,Bootstrap Cross-site Scripting vulnerability,Bootstrap\.VERSION,3.4.0
+bootstrap,4.0.0,CVE-2018-14042,6.1,CWE-79,Bootstrap Cross-site Scripting vulnerability,Bootstrap\.VERSION,4.1.1
+bootstrap,4.0.0,CVE-2019-8331,6.1,CWE-79,Bootstrap Vulnerable to Cross-Site Scripting,Bootstrap\.VERSION,4.3.0
+bootstrap,0,CVE-2018-20677,6.1,CWE-79,bootstrap Cross-site Scripting vulnerability,Bootstrap\.VERSION,3.4.0
+bootstrap,4.0.0,CVE-2018-14041,6.1,CWE-79,Bootstrap Cross-site Scripting vulnerability,Bootstrap\.VERSION,4.1.2
+bootstrap,3.4.1,CVE-2025-1647,5.6,CWE-79,Bootstrap Vulnerable to Cross-Site Scripting in its Popover and Tooltip Components,Bootstrap\.VERSION,3.4.1
+bootstrap,1.4.0,CVE-2024-6485,6.4,CWE-79,Bootstrap Cross-Site Scripting (XSS) vulnerability for data-* attributes,Bootstrap\.VERSION,see advisory
+axios,1.0.0,CVE-2026-44494,8.7,CWE-1321,axios Vulnerable to Full Man-in-the-Middle via Prototype Pollution Gadget in `config.proxy`,axios\.VERSION,1.16.0
+axios,1.0.0,CVE-2026-44495,7.0,CWE-1321,axios Vulnerable to Credential Theft and Response Hijacking via Prototype Pollution Gadget in Config Merge,axios\.VERSION,1.15.2
+axios,1.0.0,CVE-2025-62718,4.8,CWE-441,Axios has a NO_PROXY Hostname Normalization Bypass that Leads to SSRF,axios\.VERSION,1.15.0
+axios,1.0.0,CVE-2026-42044,6.5,CWE-1321,Axios: Invisible JSON Response Tampering via Prototype Pollution Gadget in `parseReviver`,axios\.VERSION,1.15.2
+axios,0.28.0,CVE-2026-67313,5.4,CWE-400,Axios: Excessive recursion in formDataToJSON can cause denial of service,axios\.VERSION,0.33.0
+axios,0,CVE-2019-10742,7.5,CWE-20,Denial of Service in axios,axios\.VERSION,0.18.1
+axios,1.0.0,CVE-2026-25639,7.5,CWE-1321,Axios is Vulnerable to Denial of Service via __proto__ Key in mergeConfig,axios\.VERSION,1.13.5
+axios,1.0.0,CVE-2026-42037,5.3,CWE-93,Axios: CRLF Injection in multipart/form-data body via unsanitized blob.type in formDataToStream,axios\.VERSION,1.15.1
+axios,1.0.0,CVE-2025-58754,7.5,CWE-770,Axios is vulnerable to DoS attack through lack of data size check,axios\.VERSION,1.12.0
+axios,0,CVE-2020-28168,5.9,CWE-918,Axios vulnerable to Server-Side Request Forgery,axios\.VERSION,0.21.1
+axios,1.0.0,CVE-2026-42034,5.3,CWE-770,Axios' HTTP adapter-streamed uploads bypass maxBodyLength when maxRedirects: 0,axios\.VERSION,1.15.1
+axios,1.0.0,CVE-2026-42039,7.5,CWE-674,Axios: unbounded recursion in toFormData causes DoS via deeply nested request data,axios\.VERSION,1.15.1
+axios,1.15.2,CVE-2026-44489,3.7,CWE-113,Axios has a Patch Bypass: Proxy-Authorization Header Injection via Prototype Pollution — Incomplete Null-Prototype Fix,axios\.VERSION,1.16.0
+axios,1.0.0,CVE-2026-42035,7.4,CWE-113,Axios: Header Injection via Prototype Pollution,axios\.VERSION,1.15.1
+axios,1.7.0,CVE-2026-44488,7.5,CWE-770,Allocation of Resources Without Limits or Throttling in Axios,axios\.VERSION,1.16.0
+axios,0.8.0,CVE-2026-67319,5.4,CWE-1321,Axios: Nested axios option objects can consume polluted prototype values,axios\.VERSION,0.33.0
+axios,1.0.0,CVE-2026-44490,4.8,CWE-1321,axios has DoS & Header Injection via Prototype Pollution Read-Side Gadgets in axios merge functions,axios\.VERSION,1.16.0
+axios,1.3.2,CVE-2024-39338,8.0,CWE-918,Server-Side Request Forgery in axios,axios\.VERSION,1.7.4
+axios,0,CVE-2021-3749,7.5,CWE-1333,axios Inefficient Regular Expression Complexity vulnerability,axios\.VERSION,0.21.2
+axios,1.15.0,CVE-2026-67315,5.4,CWE-183,Axios: NO_PROXY bypass for 0.0.0.0 local addresses in axios,axios\.VERSION,1.18.0
+axios,1.0.0,CVE-2026-40175,4.8,CWE-113,Axios has Unrestricted Cloud Metadata Exfiltration via Header Injection Chain,axios\.VERSION,1.15.0
+axios,0.31.1,CVE-2026-67320,8.0,CWE-1321,Axios Node HTTP adapter can use an inherited proxy after interceptor config cloning,axios\.VERSION,0.33.0
+axios,0.31.1,CVE-2026-67321,5.4,CWE-674,Axios form serializer maxDepth bypass via {} metatoken,axios\.VERSION,0.33.0
+axios,1.0.0,CVE-2026-44496,7.5,CWE-1333,Axios: Regular Expression Denial of Service (ReDoS) via Cookie Name Injection,axios\.VERSION,1.16.0
+axios,1.0.0,CVE-2026-44486,7.5,CWE-200,Axios: Proxy-Authorization header leaks to redirect target when proxy is re-evaluated to direct connection,axios\.VERSION,1.16.0
+axios,1.7.0,CVE-2026-67317,5.4,CWE-770,Axios: Fetch adapter `ReadableStream` uploads bypass `maxBodyLength`,axios\.VERSION,1.18.0
+axios,1.0.0,CVE-2025-27152,8.0,CWE-918,axios Requests Vulnerable To Possible SSRF and Credential Leakage via Absolute URL,axios\.VERSION,1.8.2
+axios,1.0.0,CVE-2026-42038,6.8,CWE-918,Axios: no_proxy bypass via IP alias allows SSRF,axios\.VERSION,1.15.1
+axios,1.0.0,CVE-2026-67316,5.4,CWE-1321,Axios: Prototype pollution gadgets can alter axios request construction,axios\.VERSION,1.18.0
+axios,1.13.0,CVE-2026-67318,5.4,CWE-400,Axios: HTTP/2 streamed uploads bypass `maxBodyLength`,axios\.VERSION,1.18.0
+axios,1.0.0,CVE-2026-44487,8.0,CWE-201,Axios: Proxy-Authorization Credential Leak to Origin Server Across HTTP-to-HTTPS Redirect in Axios Node.js HTTP Adapter,axios\.VERSION,1.16.0
+axios,1.0.0,CVE-2026-42033,7.4,CWE-1321,"Axios: Prototype Pollution Gadgets - Response Tampering, Data Exfiltration, and Request Hijacking",axios\.VERSION,1.15.1
+axios,1.15.0,CVE-2026-44492,8.6,CWE-289,"axios's shouldBypassProxy does not recognize IPv4-mapped IPv6 addresses, allowing NO_PROXY bypass (incomplete fix for CVE-2025-62718)",axios\.VERSION,1.16.0
+axios,0.28.0,CVE-2026-67312,5.4,CWE-400,Axios: Deep formToJSON Key Recursion Can Cause Denial of Service,axios\.VERSION,0.33.0
+axios,1.0.0,CVE-2026-42043,7.2,CWE-183,Axios: Incomplete Fix for CVE-2025-62718 — NO_PROXY Protection Bypassed via RFC 1122 Loopback Subnet (127.0.0.0/8) in Axios 1.15.0,axios\.VERSION,1.15.1
+axios,1.0.0,CVE-2026-42264,7.4,CWE-1321,Axios has prototype pollution read-side gadgets in HTTP adapter that allow credential injection and request hijacking,axios\.VERSION,1.15.2
+axios,1.13.0,CVE-2026-39865,5.9,CWE-400,Axios HTTP/2 Session Cleanup State Corruption Vulnerability,axios\.VERSION,1.13.2
+axios,1.0.0,CVE-2026-42036,5.3,CWE-770,Axios: HTTP adapter streamed responses bypass maxContentLength,axios\.VERSION,1.15.1
+axios,1.0.0,CVE-2026-42041,4.8,CWE-1321,Axios: Authentication Bypass via Prototype Pollution Gadget in `validateStatus` Merge Strategy,axios\.VERSION,1.15.1
+axios,1.0.0,CVE-2023-45857,6.5,CWE-352,Axios Cross-Site Request Forgery Vulnerability,axios\.VERSION,1.6.0
+axios,1.0.0,CVE-2026-42040,3.7,CWE-116,Axios: Null Byte Injection via Reverse-Encoding in AxiosURLSearchParams,axios\.VERSION,1.15.1
+axios,1.15.2,CVE-2026-67314,5.4,CWE-1321,Axios: Prototype pollution auth subfields can inject Basic auth,axios\.VERSION,1.18.0
+axios,1.0.0,CVE-2026-42042,5.4,CWE-183,Axios: XSRF Token Cross-Origin Leakage via Prototype Pollution Gadget in `withXSRFToken` Boolean Coercion,axios\.VERSION,1.15.1
+axios,0.30.4,MAL-2026-2307,9.8,CWE-506,Malicious code in axios (npm),axios\.VERSION,1.14.1
