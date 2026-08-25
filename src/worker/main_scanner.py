@@ -326,11 +326,36 @@ def deduplicate_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 # ------------------------------------------------------------------------------
 # Unified Scoring Methodology
 # ------------------------------------------------------------------------------
-def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = None) -> Dict[str, Any]:
+def compute_bravo6_score(
+    findings: List[Dict[str, Any]],
+    waf: Optional[str] = None,
+    tests_run: Optional[int] = None,
+    modules_discovered: Optional[int] = None,
+    page_is_representative: bool = True,
+) -> Dict[str, Any]:
     """
-    Two-Tier Scoring Calibration Fix: 
+    Two-Tier Scoring Calibration Fix:
     Prevent heavily weighing bleeding-edge headers like COOP, COEP, etc.
     (Bug 1 Fix: reads directly from raw_data tier).
+
+    Coverage-awareness fix: `score`/`grade` are computed exactly as before
+    (unchanged for any fully-covered scan, e.g. tests_run == modules_discovered
+    and page_is_representative == True) so existing consumers reading those two
+    fields keep seeing identical values. Additive-only: this also returns
+    `grade_reliable` (False when the page wasn't representative -- e.g. a WAF/
+    challenge page -- or when fewer modules ran than were discovered) and a
+    human-readable `coverage_note` explaining why, so a confident-looking grade
+    can no longer be produced from a scan that examined little of the target.
+
+    Score-resolution fix: `score` stays clamped to [0, 100] as before (needed
+    for the letter-grade thresholds and any consumer expecting a 0-100 value).
+    A very small number of critical/high findings is enough to reach that
+    floor, after which two sites with very different real-world risk (e.g. a
+    site missing every baseline header outright vs. a mostly-solid site with
+    a couple of inflated findings) become indistinguishable at "0/F". The
+    additive `raw_score` field is NOT clamped at 0, so sites that both floor
+    the visible `score` can still be told apart by how far below the floor
+    their actual deduction total falls.
     """
     BASE_PENALTY = {"critical": 30, "high": 15, "medium": 5, "low": 2, "info": 0}
     
@@ -357,6 +382,7 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
     tier2_deduction = min(tier2_deduction, 10.0)
     
     total_deduction = tier1_deduction + tier2_deduction
+    raw_score = round(100.0 - total_deduction, 2)
     score = max(0.0, 100.0 - total_deduction)
     int_score = round(score)
     
@@ -365,15 +391,31 @@ def compute_bravo6_score(findings: List[Dict[str, Any]], waf: Optional[str] = No
     elif int_score >= 65: grade = "C"
     elif int_score >= 55: grade = "D"
     else: grade = "F"
-    
+
+    coverage_gaps = []
+    if not page_is_representative:
+        coverage_gaps.append("page was not representative (WAF/challenge/error response detected)")
+    if (
+        tests_run is not None
+        and modules_discovered is not None
+        and tests_run < modules_discovered
+    ):
+        coverage_gaps.append(f"only {tests_run}/{modules_discovered} scan modules completed")
+
+    grade_reliable = len(coverage_gaps) == 0
+    coverage_note = ("Grade may be unreliable: " + "; ".join(coverage_gaps) + ".") if coverage_gaps else None
+
     return {
         "score": int_score,
+        "raw_score": raw_score,
         "grade": grade,
         "deductions": {
             "tier1": round(tier1_deduction, 2),
             "tier2": round(tier2_deduction, 2)
         },
-        "waf_detected": waf is not None
+        "waf_detected": waf is not None,
+        "grade_reliable": grade_reliable,
+        "coverage_note": coverage_note
     }
 
 # ------------------------------------------------------------------------------
@@ -493,11 +535,20 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
             if sev in summary: summary[sev] += 1
             
         try:
-            score_info = compute_bravo6_score(deduplicated, ctx.waf_challenge_detected)
+            score_info = compute_bravo6_score(
+                deduplicated,
+                ctx.waf_challenge_detected,
+                tests_run=tests_run,
+                modules_discovered=len(plugins),
+                page_is_representative=ctx.page_is_representative,
+            )
         except Exception as e:
             logger.error(f"Score computation failed: {e}")
-            score_info = {"score": 0, "grade": "F", "deductions": {}, "waf_detected": False}
-            
+            score_info = {
+                "score": 0, "raw_score": 0, "grade": "F", "deductions": {}, "waf_detected": False,
+                "grade_reliable": False, "coverage_note": f"Score computation failed: {e}"
+            }
+
         final_result = {
             "scanId": str(uuid.uuid4()),
             "url": url,
@@ -515,7 +566,10 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
             "deduplicated_count": len(all_raw_findings) - len(deduplicated),
             "summary": summary,
             "score": score_info.get("score"),
+            "raw_score": score_info.get("raw_score"),
             "grade": score_info.get("grade"),
+            "grade_reliable": score_info.get("grade_reliable", True),
+            "coverage_note": score_info.get("coverage_note"),
             "metrics": ctx.metrics
         }
         
@@ -606,6 +660,86 @@ if __name__ == "__main__":
                 score_info = compute_bravo6_score(normalized)
                 self.assertEqual(score_info["deductions"]["tier2"], 10.0, "Tier 2 deduction was not capped at 10.")
                 self.assertEqual(score_info["score"], 90, "Score calculation is incorrect.")
+                self.assertTrue(
+                    score_info["grade_reliable"],
+                    "A fully-covered scan (no tests_run/modules_discovered/representativeness "
+                    "gap supplied) must default to grade_reliable=True for backward compatibility."
+                )
+                self.assertIsNone(score_info["coverage_note"])
+                self.assertEqual(score_info["raw_score"], 90.0, "raw_score must match the clamped score when nothing floors.")
+
+            def test_raw_score_is_not_clamped_when_score_floors_at_zero(self):
+                """Score-resolution fix: two sites that both floor score/grade at 0/F
+                must still be distinguishable via the uncapped raw_score. Mirrors the
+                audit's real-world case: gs.alexu.edu.eg (missing essentially every
+                baseline header) and facebook.com (a mostly-solid site whose deduction
+                was inflated by the test_05 boost bug) both landed on an identical
+                0/F under the old scoring, losing all signal about which was worse."""
+                many_criticals = [
+                    {"title": f"Critical issue {i}", "severity": "critical", "raw_data": {}}
+                    for i in range(6)  # 6 * 30 = 180 points of deduction
+                ]
+                normalized = [normalize_finding(f, "test_05", idx) for idx, f in enumerate(many_criticals)]
+                score_info = compute_bravo6_score(normalized)
+
+                self.assertEqual(score_info["score"], 0, "Clamped score must still floor at 0 as before.")
+                self.assertEqual(score_info["grade"], "F")
+                self.assertEqual(
+                    score_info["raw_score"], -80.0,
+                    "raw_score must reflect the true, uncapped deduction total (100 - 180 = -80)."
+                )
+
+            def test_raw_score_distinguishes_two_sites_that_both_floor_at_zero(self):
+                mildly_bad = [{"title": f"Critical issue {i}", "severity": "critical", "raw_data": {}} for i in range(4)]
+                catastrophic = [{"title": f"Critical issue {i}", "severity": "critical", "raw_data": {}} for i in range(10)]
+
+                mild_info = compute_bravo6_score([normalize_finding(f, "m", i) for i, f in enumerate(mildly_bad)])
+                bad_info = compute_bravo6_score([normalize_finding(f, "m", i) for i, f in enumerate(catastrophic)])
+
+                self.assertEqual(mild_info["score"], 0)
+                self.assertEqual(bad_info["score"], 0)
+                self.assertEqual(mild_info["grade"], "F")
+                self.assertEqual(bad_info["grade"], "F")
+                # Both floor identically on the clamped fields, but raw_score still
+                # tells them apart.
+                self.assertGreater(
+                    mild_info["raw_score"], bad_info["raw_score"],
+                    "raw_score must distinguish a less-catastrophic 0/F from a more-catastrophic 0/F."
+                )
+
+            def test_coverage_gap_from_non_representative_page_marks_grade_unreliable(self):
+                """Coverage-awareness fix: a WAF/challenge-blocked scan must not produce a
+                confident grade. Mirrors the real gammal.tech scan (page_is_representative
+                False, only 2/5 modules ran, yet the old code emitted score=96/grade=A)."""
+                findings = [{"title": "Missing DNS CAA Record", "severity": "low", "raw_data": {}}]
+                normalized = [normalize_finding(f, "test_04", 0) for f in findings]
+
+                score_info = compute_bravo6_score(
+                    normalized, tests_run=2, modules_discovered=5, page_is_representative=False
+                )
+                self.assertFalse(score_info["grade_reliable"])
+                self.assertIsNotNone(score_info["coverage_note"])
+                self.assertIn("not representative", score_info["coverage_note"])
+                self.assertIn("2/5", score_info["coverage_note"])
+                # The numeric score/grade themselves must still be computed normally --
+                # this is an additive signal, not a replacement for the existing fields.
+                self.assertEqual(score_info["score"], 98)
+                self.assertEqual(score_info["grade"], "A")
+
+            def test_coverage_gap_from_partial_module_completion_alone(self):
+                """Even with a representative page, fewer completed modules than were
+                discovered must also mark the grade unreliable."""
+                score_info = compute_bravo6_score([], tests_run=3, modules_discovered=5, page_is_representative=True)
+                self.assertFalse(score_info["grade_reliable"])
+                self.assertIn("3/5", score_info["coverage_note"])
+                self.assertNotIn("not representative", score_info["coverage_note"])
+
+            def test_full_coverage_with_explicit_counts_stays_reliable(self):
+                """tests_run == modules_discovered and a representative page must NOT be
+                flagged, even when the counts are explicitly supplied (not defaulted)."""
+                score_info = compute_bravo6_score([], tests_run=5, modules_discovered=5, page_is_representative=True)
+                self.assertTrue(score_info["grade_reliable"])
+                self.assertIsNone(score_info["coverage_note"])
 
             async def test_bug4_cache_hits(self):
                 """Bug 4: Integration test running 3 simulated concurrent checks. Assert cache_hits >= 1."""

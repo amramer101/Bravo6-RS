@@ -614,18 +614,52 @@ async def run(ctx: Any) -> dict:
     # 4. Context-Aware Severity Boosting
     is_sensitive = any(cat in site_context.get("categories", []) for cat in ("ecommerce", "login"))
     is_sensitive = is_sensitive or site_context.get("has_login_form", False)
-    
+
+    # Scoped narrowly to CSP script-execution-control and HSTS: previously ANY
+    # baseline-tier finding (HSTS, CSP, clickjacking, cache-control,
+    # X-Content-Type-Options, Referrer-Policy, info-disclosure headers) plus
+    # every "missing"-titled hardening-tier finding was escalated one severity
+    # tier whenever a password field appeared anywhere on the page -- a proxy
+    # signal with no verified relationship to whether the specific flagged gap
+    # is actually exploitable in a login-relevant context. On facebook.com
+    # this produced a ~60-point score swing purely from boosting Referrer-
+    # Policy/frame-ancestors/HSTS-directive findings that have no direct
+    # causal link to credential theft. The boost is now limited to: (a) HSTS
+    # findings (protocol-downgrade/strip attacks directly expose credentials
+    # in transit), and (b) the CSP findings that represent an actual script-
+    # execution-control failure (CSP entirely absent, or allowing
+    # 'unsafe-inline'/'unsafe-eval') -- NOT CSP directive-completeness gaps
+    # like a missing frame-ancestors or missing nonce/hash, which share the
+    # same "Content-Security-Policy" location but carry no direct script-
+    # injection risk of their own. Every boosted finding records the
+    # escalation in its own evidence field instead of hiding it.
+    CSP_EXECUTION_CONTROL_TITLES = {
+        "Missing Content-Security-Policy",
+        "CSP allows 'unsafe-inline'",
+        "CSP allows 'unsafe-eval'",
+    }
+
+    def _is_boostable(finding: Dict[str, Any]) -> bool:
+        loc = finding.get("location")
+        if loc == "Strict-Transport-Security":
+            return True
+        if loc == "Content-Security-Policy" and finding.get("title") in CSP_EXECUTION_CONTROL_TITLES:
+            return True
+        return False
+
     if is_sensitive:
         for f in all_findings:
             tier = f.get("raw_data", {}).get("tier", "")
-            if tier == "baseline":
-                if f["severity"] == "high":
-                    f["severity"] = "critical"
-                elif f["severity"] == "medium":
-                    f["severity"] = "high"
-            elif tier == "hardening":
-                if f["severity"] == "low" and "missing" in f["title"].lower():
-                    f["severity"] = "medium"
+            if tier != "baseline" or not _is_boostable(f):
+                continue
+            if f["severity"] == "high":
+                f["severity"] = "critical"
+                f["evidence"] = f.get("evidence", "") + \
+                    " [severity escalated from 'high' to 'critical': sensitive-page context (login form or ecommerce/login page detected) affecting CSP/HSTS]"
+            elif f["severity"] == "medium":
+                f["severity"] = "high"
+                f["evidence"] = f.get("evidence", "") + \
+                    " [severity escalated from 'medium' to 'high': sensitive-page context (login form or ecommerce/login page detected) affecting CSP/HSTS]"
 
     return {
         "findings": all_findings,
@@ -710,6 +744,94 @@ if __name__ == "__main__":
                 headers = {"Content-Security-Policy": "frame-ancestors;"}
                 findings = _check_clickjacking(headers, "https://example.com", is_api=False)
                 self.assertEqual(findings, [])
+
+        class _BoostCtx:
+            """Minimal stand-in for ScannerContext, just enough to drive run()."""
+            def __init__(self, url, html, headers):
+                self.url = url
+                self.page_is_representative = True
+                self.main_page_cache = {"status": 200, "html": html, "headers": headers}
+
+        class TestSensitivePageBoostScoping(unittest.IsolatedAsyncioTestCase):
+            """
+            Regression tests for narrowing the sensitive-page severity boost.
+            Previously ANY baseline-tier finding (HSTS, CSP, clickjacking,
+            cache-control, X-Content-Type-Options, Referrer-Policy, info-
+            disclosure headers) plus every "missing"-titled hardening-tier
+            finding was escalated one severity tier whenever a password field
+            appeared anywhere on the page. Mirrors the real facebook.com scan:
+            a login form on the homepage boosted Missing-Referrer-Policy and
+            CSP-missing-frame-ancestors (both medium->high) even though
+            neither header has a direct causal link to credential theft,
+            contributing a ~60-point score swing. The fix limits boosting to
+            CSP/HSTS findings only.
+            """
+
+            SENSITIVE_HTML = '<html><body><input type="password" name="pw"></body></html>'
+
+            async def _run_with_headers(self, headers):
+                ctx = _BoostCtx("https://example.com", self.SENSITIVE_HTML, headers)
+                result = await run(ctx)
+                return {f["title"]: f for f in result["findings"]}
+
+            async def test_csp_and_hsts_findings_still_get_boosted(self):
+                headers = {
+                    "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval'",
+                    "Strict-Transport-Security": "max-age=15552000; preload",
+                }
+                findings = await self._run_with_headers(headers)
+
+                unsafe_inline = findings["CSP allows 'unsafe-inline'"]
+                self.assertEqual(unsafe_inline["severity"], "critical",
+                                  "CSP unsafe-inline must still be boosted (high->critical) on a sensitive page.")
+                self.assertIn("severity escalated", unsafe_inline["evidence"])
+
+                hsts = next(f for t, f in findings.items() if t.startswith("HSTS present but"))
+                self.assertEqual(hsts["severity"], "high",
+                                  "HSTS-directive gap must still be boosted (medium->high) on a sensitive page.")
+                self.assertIn("severity escalated", hsts["evidence"])
+
+            async def test_referrer_policy_and_frame_ancestors_are_no_longer_boosted(self):
+                headers = {
+                    "Content-Security-Policy": "default-src 'self'",  # no frame-ancestors directive
+                    "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+                }
+                findings = await self._run_with_headers(headers)
+
+                frame_ancestors = findings["CSP missing frame-ancestors directive"]
+                self.assertEqual(
+                    frame_ancestors["severity"], "medium",
+                    "CSP-missing-frame-ancestors has no direct causal link to credential theft and must stay at source severity."
+                )
+                self.assertNotIn("severity escalated", frame_ancestors["evidence"])
+
+                referrer = findings["Missing Referrer-Policy"]
+                self.assertEqual(
+                    referrer["severity"], "medium",
+                    "Missing Referrer-Policy has no direct causal link to credential theft and must stay at source severity."
+                )
+                self.assertNotIn("severity escalated", referrer["evidence"])
+
+            async def test_hardening_tier_findings_are_no_longer_boosted(self):
+                headers = {
+                    "Content-Security-Policy": "default-src 'self'",
+                    "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+                }
+                findings = await self._run_with_headers(headers)
+                coep = findings["Missing Cross-Origin-Embedder-Policy"]
+                self.assertEqual(
+                    coep["severity"], "low",
+                    "Hardening-tier findings must no longer be escalated by the sensitive-page heuristic."
+                )
+
+            async def test_non_sensitive_page_never_boosts_anything(self):
+                html_no_password = "<html><body>hello</body></html>"
+                ctx = _BoostCtx("https://example.com", html_no_password, {
+                    "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval'",
+                })
+                result = await run(ctx)
+                findings = {f["title"]: f for f in result["findings"]}
+                self.assertEqual(findings["CSP allows 'unsafe-inline'"]["severity"], "high")
 
         sys.argv = [sys.argv[0]]
         unittest.main()

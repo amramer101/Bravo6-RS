@@ -102,8 +102,14 @@ def make_url(base: str, path: str) -> str:
 
 
 def guess_type_and_sev(path: str) -> Tuple[str, str, int]:
-    if path in STATIC_SENSITIVE_PATHS:
-        return STATIC_SENSITIVE_PATHS[path]
+    # STATIC_SENSITIVE_PATHS is keyed without a leading slash, but callers
+    # (notably main_scanner.py's COMMON_SENSITIVE_PATHS) always pass paths
+    # WITH a leading slash. Strip it before lookup so the curated table is
+    # actually reachable instead of always falling through to the generic
+    # substring heuristic below.
+    normalized = path.lstrip("/")
+    if normalized in STATIC_SENSITIVE_PATHS:
+        return STATIC_SENSITIVE_PATHS[normalized]
     p = path.lower()
     if "env" in p: return ("keyval", "critical", 20)
     if "phpinfo" in p or "info.php" in p: return ("phpinfo", "high", 100)
@@ -664,6 +670,61 @@ if __name__ == "__main__":
                 body = "User-agent: *\nDisallow: /private-media/\n"
                 findings = _analyze_robots_txt(self.URL, body, {"WordPress"})
                 self.assertEqual(findings[0]["title"], "robots.txt present with only standard paths")
+
+        class TestStaticSensitivePathsReachableFromOrchestrator(unittest.TestCase):
+            """Regression test for the leading-slash lookup mismatch: STATIC_SENSITIVE_PATHS
+            is keyed without a leading slash, but main_scanner.py's COMMON_SENSITIVE_PATHS
+            (what actually drives phase_path_probing via ctx.sensitive_paths in production)
+            is entirely leading-slash-prefixed. Before the fix, 0 of the orchestrator's real
+            paths ever hit this dict, silently discarding all curated (type, severity, size)
+            tuples in favor of the crude substring fallback. This test imports the real
+            orchestrator path list -- not a hardcoded copy -- so it can't drift out of sync
+            with main_scanner.py again.
+            """
+
+            def test_every_orchestrator_path_with_a_static_entry_resolves_to_it(self):
+                import main_scanner
+
+                checked_at_least_one = False
+                for orch_path in main_scanner.COMMON_SENSITIVE_PATHS:
+                    normalized = orch_path.lstrip("/")
+                    if normalized not in STATIC_SENSITIVE_PATHS:
+                        continue
+                    checked_at_least_one = True
+                    expected = STATIC_SENSITIVE_PATHS[normalized]
+                    self.assertEqual(
+                        guess_type_and_sev(orch_path), expected,
+                        f"Orchestrator path {orch_path!r} did not resolve to its curated "
+                        f"STATIC_SENSITIVE_PATHS entry -- the leading-slash lookup is broken again."
+                    )
+
+                # Sanity check: main_scanner.py and this module's dict must actually overlap,
+                # otherwise the loop above would trivially pass without testing anything.
+                self.assertTrue(
+                    checked_at_least_one,
+                    "No overlap found between main_scanner.COMMON_SENSITIVE_PATHS and "
+                    "STATIC_SENSITIVE_PATHS -- this test would silently test nothing."
+                )
+
+            def test_adminer_php_resolves_to_curated_adminer_type_not_unknown_fallback(self):
+                # Concrete real-world case from the audit: /adminer.php (as passed by the
+                # orchestrator, with a leading slash) must resolve to the curated
+                # ("adminer", "high", 100) tuple, not fall through to ("unknown", "medium", 20).
+                self.assertEqual(guess_type_and_sev("/adminer.php"), ("adminer", "high", 100))
+
+            def test_composer_json_resolves_to_curated_info_severity_not_inflated_medium(self):
+                # Concrete real-world case from the audit: /composer.json and /package.json
+                # are intentionally curated as low-value ("json", "info", 20) since they're
+                # routinely public -- they must not be inflated to "medium" via the generic
+                # .json-extension fallback.
+                self.assertEqual(guess_type_and_sev("/composer.json"), ("json", "info", 20))
+                self.assertEqual(guess_type_and_sev("/package.json"), ("json", "info", 20))
+
+            def test_lookup_still_works_for_paths_without_a_leading_slash(self):
+                # Backward compatibility: phase_path_probing's own fallback
+                # (list(STATIC_SENSITIVE_PATHS.keys())) yields paths with no leading slash;
+                # the normalization must not break that existing call pattern.
+                self.assertEqual(guess_type_and_sev("adminer.php"), ("adminer", "high", 100))
 
         class _CommentCtx:
             """Minimal stand-in for ScannerContext, just enough for phase_comment_analysis."""

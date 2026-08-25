@@ -222,7 +222,13 @@ def _extract_scripts(soup: BeautifulSoup, base_url: str):
         src = tag.get("src")
         if src:
             abs_url = urljoin(base_url, src.strip())
-            if not BENIGN_DOMAINS_RE.search(abs_url) and urlparse(abs_url).scheme in ("http", "https"):
+            # BENIGN_DOMAINS_RE's bare keywords (jquery|bootstrap|react|...) have no
+            # domain qualifier, so matching them against the full URL (path/filename
+            # included) silently excluded any FIRST-PARTY script whose filename merely
+            # contained one of those common substrings (e.g. "vendor.react.a1b2c3.js"
+            # hosted on the target's own domain) from secret scanning entirely, as if
+            # it were a known third-party CDN library. Match against the hostname only.
+            if not BENIGN_DOMAINS_RE.search(urlparse(abs_url).netloc) and urlparse(abs_url).scheme in ("http", "https"):
                 external.append(abs_url)
         else:
             content = (tag.string or "").strip()
@@ -548,6 +554,37 @@ if __name__ == "__main__":
                 self.assertEqual(finding["severity"], "info", "severity must be 'info', not 'informational'.")
                 self.assertEqual(finding["confidence"], "informational", "confidence tier must remain 'informational'.")
                 self.assertNotEqual(finding["severity"], "informational")
+
+        class TestBenignDomainsHostnameScoping(unittest.TestCase):
+            """Regression test: BENIGN_DOMAINS_RE's bare keywords (jquery|bootstrap|
+            react|angular|vue|lodash|moment) have no domain qualifier. Matching them
+            against the full URL (not just the hostname) silently excluded any
+            first-party script whose PATH or FILENAME merely contained one of these
+            common substrings from secret scanning entirely, as if it were a known
+            third-party CDN library."""
+
+            def test_first_party_script_with_library_name_in_filename_is_not_excluded(self):
+                html = '<html><head><script src="/assets/vendor.react.a1b2c3.js"></script></head></html>'
+                soup = BeautifulSoup(html, "html.parser")
+                external, _ = _extract_scripts(soup, "https://example.com/")
+                self.assertEqual(
+                    external, ["https://example.com/assets/vendor.react.a1b2c3.js"],
+                    "A first-party script named 'vendor.react....js' must still be scanned for secrets."
+                )
+
+            def test_genuine_cdn_script_is_still_excluded(self):
+                html = '<html><head><script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script></head></html>'
+                soup = BeautifulSoup(html, "html.parser")
+                external, _ = _extract_scripts(soup, "https://example.com/")
+                self.assertEqual(external, [], "A genuine cdn.jsdelivr.net URL must still be excluded.")
+
+            def test_first_party_script_on_a_domain_containing_a_cdn_substring_is_scanned(self):
+                # Hostname-scoping must key off the actual host, not merely "does the
+                # benign-domain substring appear somewhere in the URL".
+                html = '<html><head><script src="/static/app.js"></script></head></html>'
+                soup = BeautifulSoup(html, "html.parser")
+                external, _ = _extract_scripts(soup, "https://shop.example.com/")
+                self.assertEqual(external, ["https://shop.example.com/static/app.js"])
 
         sys.argv = [sys.argv[0]]
         unittest.main()
