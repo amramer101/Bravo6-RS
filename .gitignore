@@ -67,3 +67,4 @@ src/worker/results/*.json
 src/worker/**.html
 src/worker/**.json
 
+/src/cve-pipeline/osv_raw_cache/
