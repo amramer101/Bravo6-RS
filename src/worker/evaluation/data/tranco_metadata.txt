@@ -1,0 +1,17 @@
+Tranco list ID: N2Q8W
+Generated on (per Tranco API 'created_on'): 2026-08-28T22:00:01.989030
+Fetched/frozen at (this run, UTC): 2026-08-29T18:46:32.273721+00:00
+Citation URL: https://tranco-list.eu/list/N2Q8W
+Download URL used: https://tranco-list.eu/download/N2Q8W/1000000
+Local frozen CSV: tranco_N2Q8W.csv
+Row count: 1,000,000
+First rows sampled: [['1', 'google.com'], ['2', 'cloudflare.com'], ['3', 'gstatic.com']]
+
+Citation for the paper's Methodology section:
+  "Tranco list ID N2Q8W, generated 2026-08-28T22:00:01.989030, https://tranco-list.eu/list/N2Q8W"
+
+IMPORTANT: every downstream script in this harness (sample_sites.py,
+run_evaluation.py, aggregate_results.py) reads tranco_N2Q8W.csv from disk --
+none of them re-fetch Tranco live. This file is the permanent source of
+truth for this evaluation run; do not overwrite or delete it once a sample
+has been drawn from it, or the sample can no longer be regenerated.

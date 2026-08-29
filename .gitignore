@@ -68,3 +68,13 @@ src/worker/**.html
 src/worker/**.json
 
 /src/cve-pipeline/osv_raw_cache/
+
+# Evaluation harness: the frozen Tranco source list is large (tens of MB)
+# and fully re-fetchable via evaluation/fetch_tranco_list.py --list-id
+# <id> (see evaluation/data/tranco_metadata.txt for the exact list ID
+# used) -- not meant to live in git. sample_sites.csv/.txt (the actual
+# drawn sample) stay tracked: small, human-readable, and the citable
+# record of exactly which domains a given evaluation run used. Per-batch
+# scan results are regenerable via run_evaluation.py against that sample.
+src/worker/evaluation/data/tranco_*.csv
+src/worker/evaluation/results/
