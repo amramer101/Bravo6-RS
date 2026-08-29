@@ -298,13 +298,18 @@ def _analyze_cert(der: bytes, hostname: str) -> dict:
     }
 
 # ── Concurrent OpenSSL Probes ──────────────────────────────────────────────
-async def _probe_protocol(hostname: str, port: int, flag: str, name: str, sem: asyncio.Semaphore) -> Tuple[str, str, bool]:
+async def _probe_protocol(hostname: str, port: int, flag: str, name: str, sem: asyncio.Semaphore) -> Tuple[str, str, bool, bool]:
+    """Returns ("protocol", name, supported, completed). `completed` is False
+    when the probe never finished (timeout / openssl missing) -- a distinct
+    outcome from "completed and the protocol was refused" (supported=False,
+    completed=True). Callers must not treat a probe that didn't complete as
+    proof the protocol is unsupported."""
     async with sem:
         out, err, timed_out = await _run_openssl(["s_client", "-connect", f"{hostname}:{port}", flag, "-servername", hostname], timeout=5)
         if timed_out or b"OPENSSL_MISSING" in err:
-            return ("protocol", name, False)
+            return ("protocol", name, False, False)
         supported = b"BEGIN CERTIFICATE" in out and b"CONNECTED" in out
-        return ("protocol", name, supported)
+        return ("protocol", name, supported, True)
 
 async def _probe_weak_cipher(hostname: str, port: int, cipher: str, sem: asyncio.Semaphore) -> Tuple[str, str, Optional[str]]:
     async with sem:
@@ -659,10 +664,12 @@ async def run(ctx: ScannerContext) -> dict:
         results = await asyncio.gather(*tasks)
         
         details["protocols"] = []
+        protocol_probe_completed: Dict[str, bool] = {}
         for res in results:
             if res[0] == "protocol":
                 name, supported = res[1], res[2]
                 tls_versions[name] = supported
+                protocol_probe_completed[name] = res[3] if len(res) > 3 else True
                 if supported: details["protocols"].append(name)
             
             elif res[0] == "weak_cipher":
@@ -788,7 +795,9 @@ async def run(ctx: ScannerContext) -> dict:
                 remediation="Disable TLS 1.1 and enforce TLS 1.2+ minimum.",
                 detection_method="Protocol Probing"
             ))
-        if tls_versions.get("TLSv1.3") and not any(tls_versions.get(v) for v in ["TLSv1.2", "TLSv1.1", "TLSv1.0", "SSLv3", "SSLv2"]):
+        if (tls_versions.get("TLSv1.3")
+                and not any(tls_versions.get(v) for v in ["TLSv1.2", "TLSv1.1", "TLSv1.0", "SSLv3", "SSLv2"])
+                and all(protocol_probe_completed.get(v, False) for v in ["TLSv1.2", "TLSv1.1", "TLSv1.0"])):
             findings.append(_make_finding(
                 title="Modern TLS 1.3 Only Configuration",
                 severity="info",
@@ -802,18 +811,58 @@ async def run(ctx: ScannerContext) -> dict:
                 detection_method="Protocol Probing"
             ))
         elif not tls_versions.get("TLSv1.3") and not tls_versions.get("TLSv1.2"):
-            findings.append(_make_finding(
-                title="No Modern TLS Versions Supported",
-                severity="critical",
-                confidence="verified-live",
-                cwe="CWE-757",
-                owasp="A02:2021-Cryptographic Failures",
-                location=f"TLS Protocols {hostname}:{port}",
-                evidence=f"Modern TLS (1.2/1.3) failed to negotiate. Supported: {details.get('protocols')}",
-                poc=f"openssl s_client -connect {hostname}:{port} -tls1_2",
-                remediation="Upgrade TLS stack to support and prefer TLS 1.2 and TLS 1.3.",
-                detection_method="Protocol Probing"
-            ))
+            # A probe that never completed (timeout / subprocess contention) is
+            # NOT proof the protocol is unsupported. Only claim "no modern TLS"
+            # when BOTH the TLS 1.2 AND the TLS 1.3 probe actually ran to
+            # completion and the server refused each -- an `or` here is not
+            # enough: a TLS-1.3-only server (the *best* configuration) whose
+            # 1.2 probe completes with a genuine refusal but whose 1.3 probe
+            # times out under load would otherwise satisfy the `or` and fire
+            # this critical exactly backwards, on a server whose real TLS 1.3
+            # status was never confirmed either way. Otherwise this is an
+            # environment/probe failure -- and note that Step 2 above already
+            # fetched the certificate over a default-context (TLS 1.2+ minimum)
+            # handshake, so the server demonstrably DOES negotiate modern TLS.
+            # Live-confirmed false positive: vkuseraudio.net (supports TLS 1.2
+            # AND 1.3, verified independently with openssl s_client) was reported
+            # critical "No Modern TLS Versions Supported" under evaluation-batch
+            # load when all six concurrent openssl protocol probes timed out.
+            modern_probe_completed = (
+                protocol_probe_completed.get("TLSv1.2", False)
+                and protocol_probe_completed.get("TLSv1.3", False)
+            )
+            if modern_probe_completed:
+                findings.append(_make_finding(
+                    title="No Modern TLS Versions Supported",
+                    severity="critical",
+                    confidence="verified-live",
+                    cwe="CWE-757",
+                    owasp="A02:2021-Cryptographic Failures",
+                    location=f"TLS Protocols {hostname}:{port}",
+                    evidence=f"Modern TLS (1.2/1.3) failed to negotiate. Supported: {details.get('protocols')}",
+                    poc=f"openssl s_client -connect {hostname}:{port} -tls1_2",
+                    remediation="Upgrade TLS stack to support and prefer TLS 1.2 and TLS 1.3.",
+                    detection_method="Protocol Probing"
+                ))
+            else:
+                findings.append(_make_finding(
+                    title="TLS protocol enumeration inconclusive (openssl probes did not complete)",
+                    severity="info",
+                    confidence="informational",
+                    cwe="",
+                    owasp="",
+                    location=f"TLS Protocols {hostname}:{port}",
+                    evidence=(
+                        "None of the openssl protocol probes completed (timeout or subprocess "
+                        "contention), so supported TLS versions could not be enumerated. This is "
+                        "NOT a finding of weak TLS: the certificate was successfully retrieved "
+                        "earlier over a modern-TLS (1.2+) handshake, so the server does negotiate "
+                        "modern TLS. Re-run with less concurrent load for a full protocol matrix."
+                    ),
+                    poc=f"openssl s_client -connect {hostname}:{port} -tls1_2 -servername {hostname}",
+                    remediation="Re-run the TLS scan with lower concurrency to enumerate the full protocol/cipher matrix.",
+                    detection_method="Protocol Probing (inconclusive)"
+                ))
 
     # Step 6: DNS Validation (CAA / DANE TLSA)
     if dig_available:
@@ -1065,6 +1114,109 @@ if __name__ == "__main__":
                 # ja4s must never masquerade as a real hash; it should always be the
                 # explicit sentinel, distinct from both a real hash and None.
                 self.assertEqual(JA4S_NOT_IMPLEMENTED, "not_implemented")
+
+        class TestProtocolProbeTimeoutNotTreatedAsUnsupported(unittest.IsolatedAsyncioTestCase):
+            """Regression test for the live-confirmed false positive on
+            vkuseraudio.net: under evaluation-batch subprocess load, all six
+            concurrent `openssl s_client` protocol probes timed out, and the
+            scout emitted a *critical* 'No Modern TLS Versions Supported' even
+            though the site negotiates both TLS 1.2 and 1.3 (verified
+            independently) and the scout had *already* fetched its certificate
+            over a modern-TLS handshake in the same run. `_probe_protocol` must
+            distinguish 'probe did not complete' from 'protocol refused'."""
+
+            async def test_probe_reports_not_completed_on_timeout(self):
+                async def fake_run_openssl(args, timeout=5):
+                    return b"", b"", True  # timed_out
+                orig = globals()["_run_openssl"]
+                globals()["_run_openssl"] = fake_run_openssl
+                try:
+                    res = await _probe_protocol("example.com", 443, "-tls1_2", "TLSv1.2", asyncio.Semaphore(1))
+                finally:
+                    globals()["_run_openssl"] = orig
+                self.assertEqual(res[:3], ("protocol", "TLSv1.2", False))
+                self.assertEqual(res[3], False, "A timed-out probe must be marked not-completed, not just unsupported.")
+
+            async def test_probe_reports_completed_on_clean_refusal(self):
+                async def fake_run_openssl(args, timeout=5):
+                    return b"CONNECTED(00000003)\n140: no protocols available\n", b"", False
+                orig = globals()["_run_openssl"]
+                globals()["_run_openssl"] = fake_run_openssl
+                try:
+                    res = await _probe_protocol("example.com", 443, "-tls1_1", "TLSv1.1", asyncio.Semaphore(1))
+                finally:
+                    globals()["_run_openssl"] = orig
+                self.assertEqual(res, ("protocol", "TLSv1.1", False, True))
+
+        class TestModernProbeCompletedRequiresBothProbes(unittest.IsolatedAsyncioTestCase):
+            """Regression test for the guard-tightening: `modern_probe_completed`
+            must require BOTH the TLS 1.2 AND the TLS 1.3 probe to have actually
+            completed before 'No Modern TLS Versions Supported' can be claimed.
+
+            Scenario closed here: the TLS 1.2 probe completes with a genuine
+            refusal (supported=False, completed=True) while the TLS 1.3 probe
+            times out (completed=False) -- a TLS-1.3-only server under load. The
+            old `or` guard fired the *critical* here, exactly backwards. The
+            scout must instead emit the 'TLS protocol enumeration inconclusive'
+            info finding, same as the fully-timed-out case."""
+
+            def _install(self, mapping):
+                self._saved = {k: globals()[k] for k in mapping}
+                globals().update(mapping)
+                self.addCleanup(lambda: globals().update(self._saved))
+
+            async def _run_scout(self):
+                async def fake_check_binary(cmd, arg):
+                    return cmd == "openssl"
+
+                async def fake_run_openssl(args, timeout=5):
+                    # TLS 1.2 probe: completes, server cleanly refuses (no cert).
+                    if "-tls1_2" in args:
+                        return b"CONNECTED(00000003)\nno peer certificate available\n", b"", False
+                    # TLS 1.3 probe (and everything else): times out under load.
+                    return b"", b"", True
+
+                _cert = {
+                    "days_until_expiry": 200, "not_after": "2030-01-01T00:00:00+00:00",
+                    "hostname_match": True, "self_signed": False, "weak_signature": False,
+                    "key_size": 2048, "key_type": "rsa", "cert_scts": 2,
+                }
+                self._install({
+                    "_check_internal": lambda hostname: False,
+                    "_check_binary": fake_check_binary,
+                    "_run_openssl": fake_run_openssl,
+                    "_get_cert_der": lambda hostname, port: b"dummy-der",
+                    "_analyze_cert": lambda der, hostname: dict(_cert),
+                    "_verify_chain_via_ssl_connect": lambda hostname, port: (None, None),
+                    "_get_stapled_ocsp_response": lambda hostname, port: b"stapled",
+                    "_get_scts_count_tls_ext": lambda hostname, port: 2,
+                })
+
+                ctx = ScannerContext(
+                    url="https://tls13-only.example",
+                    session=None,
+                    config={},
+                    page_is_representative=True,
+                    waf_challenge_detected=None,
+                    sensitive_paths=[],
+                    main_page_cache={},
+                )
+                return await run(ctx)
+
+            async def test_tls12_refused_tls13_timed_out_is_inconclusive_not_critical(self):
+                result = await self._run_scout()
+                titles = [f["title"] for f in result["findings"]]
+
+                self.assertNotIn(
+                    "No Modern TLS Versions Supported", titles,
+                    "A timed-out TLS 1.3 probe must NOT let the critical fire -- the "
+                    "server's real TLS 1.3 status was never confirmed."
+                )
+                inconclusive = [f for f in result["findings"]
+                                if f["title"].startswith("TLS protocol enumeration inconclusive")]
+                self.assertEqual(len(inconclusive), 1, titles)
+                self.assertEqual(inconclusive[0]["severity"], "info")
+                self.assertEqual(inconclusive[0]["confidence"], "informational")
 
         sys.argv = [sys.argv[0]]
         unittest.main()

@@ -185,6 +185,22 @@ def is_html_shaped(body: str) -> bool:
     return "<html" in b or "<!doctype" in b or "<head" in b or "<body" in b
 
 
+def unverified_200_is_soft404(expected_type: str, is_html: bool, matches_soft_404_length: bool) -> bool:
+    """Decide whether an unverified HTTP 200 for a sensitive path should be
+    treated as a soft-404 rather than a (plausible-unconfirmed) exposure.
+
+    An HTML-shaped body for a path whose expected file format is never HTML
+    (INI like /.aws/credentials, dotfiles like /.npmrc, git metadata, JSON,
+    backups...) is a soft-404 signal, not evidence of exposure. Only phpinfo
+    and adminer legitimately render as HTML, so only those two opt out of the
+    shape check. The generic 'unknown' bucket used to opt out too, which let a
+    SPA app-shell 200 for /.aws/credentials surface as a real-looking finding.
+    Live-confirmed: peacocktv.com and fastpanel.direct both serve their SPA
+    HTML (identical byte length across paths) for /.aws/credentials and /.npmrc.
+    """
+    return (is_html and expected_type not in ("phpinfo", "adminer")) or matches_soft_404_length
+
+
 def get_header_case_insensitive(headers: dict, name: str) -> str:
     for k, v in (headers or {}).items():
         if k.lower() == name.lower():
@@ -269,7 +285,7 @@ async def phase_path_probing(ctx: Any, requests_made: list) -> List[dict]:
                     "detection_method": "path_probe_200_verified"
                 })
             else:
-                if (is_html and expected_type not in ["phpinfo", "adminer", "unknown"]) or matches_soft_404_length:
+                if unverified_200_is_soft404(expected_type, is_html, matches_soft_404_length):
                     findings.append({
                         "title": f"[LIKELY SOFT-404] Accessible sensitive file: {path}",
                         "severity": "info",
@@ -670,6 +686,35 @@ if __name__ == "__main__":
                 body = "User-agent: *\nDisallow: /private-media/\n"
                 findings = _analyze_robots_txt(self.URL, body, {"WordPress"})
                 self.assertEqual(findings[0]["title"], "robots.txt present with only standard paths")
+
+        class TestUnverified200SoftError404Classification(unittest.TestCase):
+            """Regression: a SPA app-shell HTML 200 for a path whose expected
+            format is never HTML (INI/dotfile/JSON/git) must be treated as a
+            soft-404, not a plausible-unconfirmed exposure. Live-confirmed on
+            peacocktv.com and fastpanel.direct, which both served their SPA
+            HTML for /.aws/credentials and /.npmrc; expected_type 'unknown'
+            used to opt out of the shape check and surface a low-severity
+            'Accessible sensitive file' finding."""
+
+            def test_html_shaped_body_for_unknown_type_is_soft404(self):
+                self.assertTrue(unverified_200_is_soft404("unknown", is_html=True, matches_soft_404_length=False))
+
+            def test_html_shaped_body_for_keyval_type_is_soft404(self):
+                self.assertTrue(unverified_200_is_soft404("keyval", is_html=True, matches_soft_404_length=False))
+
+            def test_phpinfo_and_adminer_still_opt_out_of_shape_check(self):
+                # phpinfo/adminer legitimately render as HTML -- a real hit must
+                # not be reclassified as soft-404 on shape alone.
+                self.assertFalse(unverified_200_is_soft404("phpinfo", is_html=True, matches_soft_404_length=False))
+                self.assertFalse(unverified_200_is_soft404("adminer", is_html=True, matches_soft_404_length=False))
+
+            def test_non_html_body_for_unknown_type_is_not_soft404(self):
+                # A genuine INI/text exposure (not HTML-shaped) must still fall
+                # through to the plausible-unconfirmed path.
+                self.assertFalse(unverified_200_is_soft404("unknown", is_html=False, matches_soft_404_length=False))
+
+            def test_length_match_still_forces_soft404_regardless_of_type(self):
+                self.assertTrue(unverified_200_is_soft404("phpinfo", is_html=False, matches_soft_404_length=True))
 
         class TestStaticSensitivePathsReachableFromOrchestrator(unittest.TestCase):
             """Regression test for the leading-slash lookup mismatch: STATIC_SENSITIVE_PATHS
