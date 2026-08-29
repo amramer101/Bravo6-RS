@@ -154,6 +154,46 @@ class ScannerContext:
 # ------------------------------------------------------------------------------
 # Initialization & Pre-Flight
 # ------------------------------------------------------------------------------
+def detect_waf_and_representativeness(status: int, headers: Dict[str, Any], html: str) -> tuple:
+    """Pure WAF/challenge-page detection, factored out of
+    fetch_main_page_and_analyze() so it's directly unit-testable without
+    mocking an HTTP session. Returns (waf_name_or_None, page_is_representative).
+    """
+    headers_lower = {k.lower(): str(v).lower() for k, v in headers.items()}
+    html_lower = html.lower()
+
+    waf = None
+    rep = True
+
+    if "cf-ray" in headers_lower or "cloudflare" in headers_lower.get("server", ""):
+        waf = "Cloudflare"
+    elif "x-sucuri-id" in headers_lower: waf = "Sucuri"
+    elif "x-amz-cf-id" in headers_lower: waf = "AWS CloudFront"
+    # Live-confirmed regression: elcorteingles.es's real Akamai block page
+    # ("Access Denied", Server: AkamaiGHost) has neither the
+    # x-akamai-transformed header nor the literal word "akamai" anywhere in
+    # its 374-byte body -- only in the Server header value ("AkamaiGHost").
+    # Check that too, mirroring how the Cloudflare branch above already
+    # checks the Server header's content, not just specific header names.
+    elif "x-akamai-transformed" in headers_lower or "akamai" in headers_lower.get("server", ""): waf = "Akamai"
+    elif "x-iinfo" in headers_lower or "x-cdn" in headers_lower: waf = "Imperva/Incapsula"
+
+    if status >= 400:
+        rep = False
+
+    if "cf-chl" in html_lower or "cf-mitigated" in html_lower or "just a moment..." in html_lower:
+        waf = "Cloudflare"
+        rep = False
+    elif "akamai" in html_lower and "access denied" in html_lower:
+        rep = False
+        waf = "Akamai"
+    elif "incapsula incident id" in html_lower:
+        rep = False
+        waf = "Imperva/Incapsula"
+
+    return waf, rep
+
+
 async def fetch_main_page_and_analyze(ctx: ScannerContext):
     """Fetch main page once, store it, and analyze for WAF/Challenge Pages."""
     url = ctx.url
@@ -179,32 +219,7 @@ async def fetch_main_page_and_analyze(ctx: ScannerContext):
             ctx.main_page_cache["soup"] = BeautifulSoup(html, "html.parser")
             
             # WAF and Representative Page Gate
-            headers_lower = {k.lower(): str(v).lower() for k, v in headers.items()}
-            html_lower = html.lower()
-            
-            waf = None
-            rep = True
-            
-            if "cf-ray" in headers_lower or "cloudflare" in headers_lower.get("server", ""):
-                waf = "Cloudflare"
-            elif "x-sucuri-id" in headers_lower: waf = "Sucuri"
-            elif "x-amz-cf-id" in headers_lower: waf = "AWS CloudFront"
-            elif "x-akamai-transformed" in headers_lower: waf = "Akamai"
-            elif "x-iinfo" in headers_lower or "x-cdn" in headers_lower: waf = "Imperva/Incapsula"
-            
-            if status >= 400:
-                rep = False
-                
-            if "cf-chl" in html_lower or "cf-mitigated" in html_lower or "just a moment..." in html_lower:
-                waf = "Cloudflare"
-                rep = False
-            elif "akamai" in html_lower and "access denied" in html_lower:
-                rep = False
-                waf = "Akamai"
-            elif "incapsula incident id" in html_lower:
-                rep = False
-                waf = "Imperva/Incapsula"
-                
+            waf, rep = detect_waf_and_representativeness(status, headers, html)
             ctx.waf_challenge_detected = waf
             ctx.page_is_representative = rep
 
@@ -749,6 +764,40 @@ if __name__ == "__main__":
                 score_info = compute_bravo6_score([], tests_run=5, modules_discovered=5, page_is_representative=True)
                 self.assertTrue(score_info["grade_reliable"])
                 self.assertIsNone(score_info["coverage_note"])
+
+            def test_akamai_detected_via_server_header_on_real_block_page(self):
+                """Live-confirmed regression: elcorteingles.es's real Akamai
+                'Access Denied' block page has neither the
+                x-akamai-transformed header nor the literal word "akamai" in
+                its body -- only Server: AkamaiGHost. Must still be detected."""
+                status = 403
+                headers = {"Server": "AkamaiGHost", "Content-Type": "text/html"}
+                html = '<HTML><HEAD>\n<TITLE>Access Denied</TITLE>\n</HEAD><BODY>\n<H1>Access Denied</H1>\nYou don\'t have permission...\n</BODY></HTML>'
+                waf, rep = detect_waf_and_representativeness(status, headers, html)
+                self.assertEqual(waf, "Akamai")
+                self.assertFalse(rep)
+
+            def test_akamai_still_detected_via_legacy_header_name(self):
+                """Regression guard: the pre-existing x-akamai-transformed
+                header path must keep working after the fix."""
+                waf, rep = detect_waf_and_representativeness(
+                    200, {"X-Akamai-Transformed": "9 - 0 pmb=mtr"}, "<html>ok</html>"
+                )
+                self.assertEqual(waf, "Akamai")
+
+            def test_akamai_still_detected_via_body_marker(self):
+                """Regression guard: the pre-existing body-based
+                'akamai' + 'access denied' path must keep working too."""
+                waf, rep = detect_waf_and_representativeness(
+                    200, {}, "<html>Access Denied by Akamai edge server</html>"
+                )
+                self.assertEqual(waf, "Akamai")
+                self.assertFalse(rep)
+
+            def test_unrelated_server_header_not_misdetected_as_akamai(self):
+                waf, rep = detect_waf_and_representativeness(200, {"Server": "nginx"}, "<html>ok</html>")
+                self.assertIsNone(waf)
+                self.assertTrue(rep)
 
             async def test_bug4_cache_hits(self):
                 """Bug 4: Integration test running 3 simulated concurrent checks. Assert cache_hits >= 1."""

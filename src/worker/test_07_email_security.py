@@ -375,6 +375,27 @@ async def _check_dmarc(domain: str) -> List[Dict[str, Any]]:
 DKIM_COMMON_SELECTORS = ["default", "selector1", "selector2", "google", "dkim"]
 
 
+def _is_genuine_dkim_record(txt: str) -> bool:
+    """A DKIM TXT record only counts as a genuine, active key if it
+    actually declares itself as DKIM (v=DKIM1) AND its public-key ('p=')
+    tag has a non-empty value. An empty p= tag is DKIM's own explicit
+    key-revocation signal per RFC 6376 section 3.6.1 -- not a usable key.
+    Live-confirmed root cause: a wildcard DNS record on awsdns-44.com (an
+    AWS-infrastructure domain with no actual web server) answers
+    'v=DKIM1; p=' -- literally empty -- for every selector queried,
+    including all 5 of this scout's common selectors simultaneously. The
+    previous check (`"v=dkim1" in r.lower() or re.search(r'p=', r)`) was an
+    OR: presence of EITHER signal alone was enough, so it both accepted the
+    empty-key case and could have accepted an unrelated TXT record that
+    merely contains "p=" as a substring with no DKIM version tag at all.
+    Requiring both, with a non-empty p=, is the actual shape of a real key.
+    """
+    if "v=dkim1" not in txt.lower():
+        return False
+    m = re.search(r'(?i)\bp\s*=\s*([^;]*)', txt)
+    return bool(m and m.group(1).strip())
+
+
 async def _check_dkim(domain: str) -> List[Dict[str, Any]]:
     tasks = [_dns_query(f"{sel}._domainkey.{domain}", "TXT") for sel in DKIM_COMMON_SELECTORS]
     results = await asyncio.gather(*tasks)
@@ -385,9 +406,7 @@ async def _check_dkim(domain: str) -> List[Dict[str, Any]]:
         if status == "failed":
             any_query_failed = True
             continue
-        if status == "answered" and any(
-            "v=dkim1" in r.lower() or re.search(r'(?i)\bp=', r) for r in txt_records
-        ):
+        if status == "answered" and any(_is_genuine_dkim_record(r) for r in txt_records):
             found_selectors.append(sel)
 
     location = f"DNS TXT: {domain} (DKIM selectors)"
@@ -658,6 +677,40 @@ if __name__ == "__main__":
                 self.assertEqual(len(findings), 1)
                 self.assertNotIn("missing", findings[0]["title"].lower())
                 self.assertIn("failed to complete", findings[0]["evidence"].lower())
+
+            def test_empty_p_tag_wildcard_record_not_reported_as_found(self):
+                # Live-confirmed regression: awsdns-44.com has a wildcard DNS
+                # record answering 'v=DKIM1; p=' (empty public key -- DKIM's
+                # own revocation signal per RFC 6376) for every selector,
+                # including all 5 common ones simultaneously. This must NOT
+                # be reported as a genuine "DKIM record found".
+                async def fake(domain, record_type):
+                    return "answered", ["v=DKIM1; p="]
+                with mock.patch("__main__._dns_query", new=fake):
+                    findings = asyncio.run(_check_dkim("awsdns-44.com"))
+                self.assertEqual(len(findings), 1)
+                self.assertNotIn("found", findings[0]["title"].lower())
+                self.assertIn("inconclusive", findings[0]["title"].lower())
+
+            def test_record_with_p_but_no_dkim_version_tag_not_reported_as_found(self):
+                # A TXT record that merely contains the substring "p=" with
+                # no "v=DKIM1" at all is not a DKIM record -- both signals
+                # are required, not either alone.
+                async def fake(domain, record_type):
+                    return "answered", ["some-unrelated-verification-token p=abc123"]
+                with mock.patch("__main__._dns_query", new=fake):
+                    findings = asyncio.run(_check_dkim("example.com"))
+                self.assertIn("inconclusive", findings[0]["title"].lower())
+
+            def test_genuine_dkim_record_with_real_key_still_reported_as_found(self):
+                # Regression guard: the fix must not become so strict that it
+                # rejects real, live-confirmed DKIM keys (olx.pl's actual
+                # published record, captured during this audit).
+                real_record = (
+                    "v=DKIM1; g=*; k=rsa; "
+                    "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDAqB0ia/Ng5rk8NlFId9tMrRikb9gon49XKb3KQlqfVZ8fg0xqtp8270TS23IhSt9WjnPZ26kteFbDpw"
+                )
+                self.assertTrue(_is_genuine_dkim_record(real_record))
 
         class TestExtractDomain(unittest.TestCase):
             """_extract_domain is now backed by tldextract's bundled Public

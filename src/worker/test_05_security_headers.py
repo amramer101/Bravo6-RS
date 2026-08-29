@@ -577,22 +577,23 @@ async def run(ctx: Any) -> dict:
             is_rep = False
             
     if not is_rep:
-        return {
-            "findings": [{
-                "title": f"Non-representative response (HTTP {final_status}) — header analysis skipped",
-                "severity": "info",
-                "confidence": "plausible-unconfirmed",
-                "cwe": "CWE-200",
-                "owasp": "A05:2021",
-                "location": "HTTP Response",
-                "evidence": "This may be a WAF/challenge page, not the target's real configuration.",
-                "poc": f"curl -Is {url}",
-                "remediation": "Ensure the scanner can reach the actual application.",
-                "detection_method": "Representativeness Check",
-                "raw_data": {"tier": "meta"}
-            }],
-            "details": {"requests_made": 0, "info": "Analysis skipped due to non-representative page."}
-        }
+        # Cross-scout consistency fix: test_01/02/03/06 all report a
+        # non-representative page via {"fatal_error": ...}, which
+        # main_scanner.py excludes from tests_run and adds to errors/
+        # errors_count. This scout previously returned a normal findings
+        # list (one info-severity "skipped" note) instead -- main_scanner.py
+        # then counted it as "complete" and included it in tests_run, which
+        # silently inflated tests_run (and correspondingly the "N/7 modules
+        # completed" figure in compute_bravo6_score's coverage_note) by one
+        # on every WAF-blocked/non-representative scan. Live-confirmed on a
+        # 10-site batch: vkuseraudio.net and elcorteingles.es both showed
+        # tests_run=3 (test_04 + this scout's fake "complete" + test_07)
+        # instead of the honest tests_run=2, understating how little of the
+        # scan actually ran. Matching the other four scouts' convention here
+        # doesn't change score/grade (the removed finding was severity=info,
+        # which always contributes zero to BASE_PENALTY) -- it only fixes
+        # the accuracy of tests_run/errors/coverage_note.
+        return {"fatal_error": f"Non-representative response (HTTP {final_status}); header analysis skipped."}
         
     # 2. Site Context Categorization
     site_context = await _categorize_site(html, headers)
@@ -832,6 +833,25 @@ if __name__ == "__main__":
                 result = await run(ctx)
                 findings = {f["title"]: f for f in result["findings"]}
                 self.assertEqual(findings["CSP allows 'unsafe-inline'"]["severity"], "high")
+
+        class TestNonRepresentativePageReportsFatalError(unittest.IsolatedAsyncioTestCase):
+            """Cross-scout consistency regression: a non-representative page
+            must report itself via {"fatal_error": ...} like test_01/02/03/06
+            do, not a normal findings list -- main_scanner.py only excludes
+            fatal_error responses from tests_run and includes them in
+            errors/errors_count. Live-confirmed impact: before this fix,
+            WAF-blocked scans (vkuseraudio.net, elcorteingles.es) showed an
+            inflated tests_run because this scout counted itself as
+            "complete" while doing nothing but note the page was skipped."""
+
+            async def test_non_representative_page_returns_fatal_error_not_findings(self):
+                ctx = _BoostCtx("https://example.com", "<html>blocked</html>", {})
+                ctx.page_is_representative = False
+                ctx.main_page_cache["status"] = 403
+                result = await run(ctx)
+                self.assertIn("fatal_error", result)
+                self.assertNotIn("findings", result)
+                self.assertIn("403", result["fatal_error"])
 
         sys.argv = [sys.argv[0]]
         unittest.main()
