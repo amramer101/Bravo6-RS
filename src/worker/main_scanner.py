@@ -54,6 +54,7 @@ DEFAULT_TIMEOUTS = {
     "test_05_security_headers": 20,
     "test_06_info_disclosure": 90,
     "test_07_email_security": 30,
+    "test_08_cors": 15,
 }
 
 # ------------------------------------------------------------------------------
