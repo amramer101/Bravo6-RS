@@ -49,9 +49,11 @@ RETRY_BACKOFF = 2
 DEFAULT_TIMEOUTS = {
     "test_01_secrets": 60,
     "test_02_frontend_libs": 45,
+    "test_03_cookies": 15,
     "test_04_ssl_tls": 30,
     "test_05_security_headers": 20,
     "test_06_info_disclosure": 90,
+    "test_07_email_security": 30,
 }
 
 # ------------------------------------------------------------------------------
@@ -155,17 +157,24 @@ class ScannerContext:
 async def fetch_main_page_and_analyze(ctx: ScannerContext):
     """Fetch main page once, store it, and analyze for WAF/Challenge Pages."""
     url = ctx.url
-    ctx.main_page_cache = {"status": 0, "html": "", "headers": {}, "soup": None, "error": None}
-    
+    ctx.main_page_cache = {"status": 0, "html": "", "headers": {}, "set_cookie_headers": [], "soup": None, "error": None}
+
     try:
         ctx.metrics["http_requests"] += 1
         async with ctx.session.get(url) as resp:
             status = resp.status
             headers = dict(resp.headers)
+            # dict(resp.headers) keeps only ONE value per header name, so a response
+            # setting multiple cookies (the common case) silently loses all but one
+            # Set-Cookie header here. Cookie-auditing scouts need every cookie, not
+            # just the last one, so also capture the raw multi-value list separately
+            # -- additive only, "headers" above is untouched for existing consumers.
+            set_cookie_headers = resp.headers.getall("Set-Cookie", [])
             html = await resp.text()
-            
+
             ctx.main_page_cache["status"] = status
             ctx.main_page_cache["headers"] = headers
+            ctx.main_page_cache["set_cookie_headers"] = set_cookie_headers
             ctx.main_page_cache["html"] = html
             ctx.main_page_cache["soup"] = BeautifulSoup(html, "html.parser")
             

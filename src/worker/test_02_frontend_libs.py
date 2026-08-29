@@ -202,6 +202,35 @@ def _version_in_cve_range(detected_version: str, min_affected: str, fixed_in: st
     return True
 
 
+def _general_pattern_confirms_version(lib: str, js_content: str, ver_str: Optional[str]) -> bool:
+    """Fallback CVE-confirmation check for real-world minified CDN bundles.
+
+    cve_database_v2.csv's own `signature` regex expects a literal un-minified
+    assignment (e.g. `jQuery.fn.jquery = "3.3.1"`). Confirmed live against the
+    actual jquery@3.3.1 and bootstrap@4.1.3 CDN builds that neither contains
+    that text -- both carry the version in a banner comment instead (e.g.
+    `/*! jQuery v3.3.1 | ... */`), which is exactly what LIB_CONTENT_GENERAL
+    already detects (that's how ver_str was found for these in the first
+    place when is_sig=False). Relying only on the strict signature here is a
+    false negative: the version was already independently bounded and
+    validated by is_version_valid() before this check ever runs.
+
+    Re-checks with the SAME tightly-scoped, per-library LIB_CONTENT_GENERAL
+    pattern already used for detection, scoped to this specific script's
+    content, and requires the captured version to equal `ver_str` EXACTLY --
+    not "any version mentioned" -- so this doesn't reopen the historical
+    Lodash/Moment cross-contamination bug and can't be tricked by a banner
+    comment for a different version than the one actually being reported.
+    """
+    if not js_content or not ver_str:
+        return False
+    general_pat = LIB_CONTENT_GENERAL.get(lib.lower())
+    if not general_pat:
+        return False
+    gm = general_pat.search(js_content)
+    return bool(gm and gm.group(1) == ver_str)
+
+
 # ------------------------------------------------------------------------------
 # Helper Functions
 # ------------------------------------------------------------------------------
@@ -427,7 +456,8 @@ async def run(ctx: ScannerContext) -> dict:
             for cve_row in cve_matches:
                 signature = str(cve_row.get("signature", "")).strip()
                 signature_found = False
-                
+                matched_via = "strict"
+
                 if signature and js_content:
                     try:
                         # Sandbox regex to avoid ReDoS on main thread
@@ -437,6 +467,25 @@ async def run(ctx: ScannerContext) -> dict:
                         signature_found = False
                 elif not signature:
                     signature_found = True  # Blind version trust if dataset lacks signature
+
+                # Fallback for real-world minified CDN bundles: the CVE CSV's own
+                # `signature` regex expects a literal un-minified assignment (e.g.
+                # `jQuery.fn.jquery = "3.3.1"`). Confirmed live against the actual
+                # jquery@3.3.1 and bootstrap@4.1.3 CDN builds that neither contains
+                # that text -- both carry the version in a banner comment instead
+                # (e.g. `/*! jQuery v3.3.1 | ... */`), which is exactly what
+                # LIB_CONTENT_GENERAL already detects (that's how ver_str was found
+                # for these in the first place when is_sig=False). Falling through
+                # to "no CVE reported" here is a false negative: the version was
+                # already independently bounded and validated by is_version_valid()
+                # before reaching this step. Re-check with LIB_CONTENT_GENERAL and
+                # require its captured version to equal ver_str EXACTLY (not blind
+                # trust -- it's the same tightly-scoped per-library pattern
+                # re-verified against this specific script's content, so it doesn't
+                # reopen the historical cross-contamination bug).
+                if not signature_found and _general_pattern_confirms_version(lib, js_content, ver_str):
+                    signature_found = True
+                    matched_via = "general"
 
                 if signature_found:
                     cve_reported = True
@@ -455,11 +504,15 @@ async def run(ctx: ScannerContext) -> dict:
                     findings.append({
                         "title": f"Vulnerable {lib.title()} Component: {cve_id}",
                         "severity": severity,
-                        "confidence": "verified-live",
+                        "confidence": "verified-live" if matched_via == "strict" else "verified-static",
                         "cwe": cve_row.get("cwe", "CWE-1035"),
                         "owasp": "A06:2021-Vulnerable and Outdated Components",
                         "location": location,
-                        "evidence": f"Detected {lib}@{ver_str} in {best['source']}. CVE: {cve_id} matched. Summary: {cve_row.get('summary', 'Known vulnerability')}.",
+                        "evidence": (
+                            f"Detected {lib}@{ver_str} in {best['source']}. CVE: {cve_id} matched "
+                            f"via {'strict assignment signature' if matched_via == 'strict' else 'version-banner fallback signature (minified CDN build)'}. "
+                            f"Summary: {cve_row.get('summary', 'Known vulnerability')}."
+                        ),
                         "poc": _build_poc(location, lib, ver_str, is_sig),
                         "remediation": f"Upgrade {lib} to version {cve_row.get('upgrade_rec', 'latest')} or later.",
                         "detection_method": "SCA + Local Cache + Signature Verification"
@@ -620,9 +673,110 @@ if __name__ == "__main__":
 
                 lodash_finding = next((f for f in result["findings"] if "lodash" in f["title"].lower()), None)
                 self.assertIsNotNone(lodash_finding)
-                self.assertEqual(lodash_finding["confidence"], "verified-live")
+                self.assertEqual(
+                    lodash_finding["confidence"], "verified-live",
+                    "The strict assignment signature (lodash.VERSION = '4.17.15') is present in "
+                    "the mock content, so it must confirm the CVE on its own -- the new general-"
+                    "pattern fallback must not downgrade or interfere with the already-working "
+                    "strict path."
+                )
+                self.assertIn("strict assignment signature", lodash_finding["evidence"])
                 self.assertNotIn("2.30.1", lodash_finding["evidence"],
                                   "Lodash must not steal Moment's 2.30.1 version string.")
+
+        class TestCveGeneralPatternFallback(unittest.TestCase):
+            """Regression tests for the general-pattern CVE-confirmation fallback.
+            Live-confirmed root cause: cve_database_v2.csv's `signature` column
+            expects a literal un-minified assignment (e.g. `jQuery.fn.jquery =
+            "3.3.1"`), but real CDN builds (jquery@3.3.1 slim, bootstrap@4.1.3) only
+            carry the version in a banner comment -- the exact shape
+            LIB_CONTENT_GENERAL already matches during initial detection. Without
+            this fallback, a correctly-detected, correctly-range-matched vulnerable
+            component silently produces no "Vulnerable Component" finding at all.
+            """
+
+            async def _run_single_script_scan(self, script_url: str, js_content: str, cve_rows: list):
+                mock_html = f'<html><head><script src="{script_url}"></script></head></html>'
+                ctx = ScannerContext(
+                    url="https://example.com", session=None, config={"cve_csv_url": "mock"},
+                    page_is_representative=True, waf_challenge_detected=None, sensitive_paths=[],
+                    main_page_cache={"html": mock_html, "soup": BeautifulSoup(mock_html, "html.parser"), "status": 200},
+                )
+
+                async def mock_fetch_js(js_url: str) -> str:
+                    return js_content if js_url == script_url else ""
+                ctx.fetch_js = mock_fetch_js
+
+                async def mock_fetch_cve_dataset(c_ctx, url):
+                    return cve_rows, 0
+
+                global fetch_cve_dataset
+                original_fetch = fetch_cve_dataset
+                globals()['fetch_cve_dataset'] = mock_fetch_cve_dataset
+                try:
+                    return await run(ctx)
+                finally:
+                    globals()['fetch_cve_dataset'] = original_fetch
+
+            def test_real_world_jquery_331_minified_banner_confirms_cve(self):
+                # Live-confirmed real content shape: no `jQuery.fn.jquery =` assignment
+                # anywhere, only the version-banner comment.
+                js_content = "/*! jQuery v3.3.1 | (c) JS Foundation and other contributors | jquery.org/license */"
+                cve_rows = [{
+                    "library": "jquery", "min_affected": "1.1.4", "fixed_in": "3.4.0",
+                    "cve": "CVE-2019-11358", "cvss": "6.1", "cwe": "CWE-1321",
+                    "signature": r"jQuery\.fn\.jquery",
+                    "summary": "XSS in jQuery", "upgrade_rec": "3.4.0",
+                }]
+                result = asyncio.run(self._run_single_script_scan(
+                    "https://code.jquery.com/jquery-3.3.1.slim.min.js", js_content, cve_rows
+                ))
+                finding = next((f for f in result["findings"] if "vulnerable" in f["title"].lower()), None)
+                self.assertIsNotNone(finding, "Expected a Vulnerable Jquery Component finding via the fallback.")
+                self.assertEqual(finding["confidence"], "verified-static")
+                self.assertIn("version-banner fallback", finding["evidence"])
+
+            def test_real_world_bootstrap_413_minified_banner_confirms_cve(self):
+                js_content = (
+                    "/*!\n  * Bootstrap v4.1.3 (https://getbootstrap.com/)\n"
+                    "  * Copyright 2011-2018 The Bootstrap Authors\n  */"
+                )
+                cve_rows = [{
+                    "library": "bootstrap", "min_affected": "4.0.0", "fixed_in": "4.3.0",
+                    "cve": "CVE-2019-8331", "cvss": "6.1", "cwe": "CWE-79",
+                    "signature": r"Bootstrap\.VERSION",
+                    "summary": "XSS in Bootstrap tooltip/popover", "upgrade_rec": "4.3.0",
+                }]
+                result = asyncio.run(self._run_single_script_scan(
+                    "https://stackpath.bootstrapcdn.com/bootstrap/4.1.3/js/bootstrap.min.js", js_content, cve_rows
+                ))
+                finding = next((f for f in result["findings"] if "vulnerable" in f["title"].lower()), None)
+                self.assertIsNotNone(finding, "Expected a Vulnerable Bootstrap Component finding via the fallback.")
+                self.assertEqual(finding["confidence"], "verified-static")
+                self.assertIn("version-banner fallback", finding["evidence"])
+
+            def test_fallback_rejects_content_confirming_a_different_version(self):
+                # Direct unit-level test of the exact-match guard: a banner comment
+                # for a DIFFERENT version than the one actually being reported must
+                # not confirm the CVE -- "any version mentioned" is not enough.
+                self.assertFalse(
+                    _general_pattern_confirms_version("jquery", "jQuery v3.4.0", "3.3.1"),
+                    "The fallback must require an EXACT match to ver_str, not just any version string."
+                )
+                self.assertTrue(
+                    _general_pattern_confirms_version("jquery", "jQuery v3.3.1", "3.3.1")
+                )
+
+            def test_fallback_handles_library_with_no_general_pattern_entry(self):
+                # A library not present in LIB_CONTENT_GENERAL must not crash --
+                # general_pat is None and the fallback cleanly returns False.
+                self.assertFalse(
+                    _general_pattern_confirms_version("not-a-real-library", "anything v1.0.0", "1.0.0")
+                )
+
+            def test_fallback_returns_false_on_empty_content_or_version(self):
+                self.assertFalse(_general_pattern_confirms_version("jquery", "", "3.3.1"))
+                self.assertFalse(_general_pattern_confirms_version("jquery", "jQuery v3.3.1", None))
 
         sys.argv = [sys.argv[0]]
         unittest.main()  # exits the process on completion (default behavior)
