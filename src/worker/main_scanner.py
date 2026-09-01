@@ -55,6 +55,17 @@ DEFAULT_TIMEOUTS = {
     "test_06_info_disclosure": 90,
     "test_07_email_security": 30,
     "test_08_cors": 15,
+    # test_09_sri intentionally has no entry: it makes zero network requests
+    # (pure reparse of already-cached HTML), so the 60s default is never hit.
+    # test_10_hallucinated_deps has TWO distinct outbound hops with different
+    # hosts/latency/failure modes, so it carries a per-hop budget for each in
+    # addition to the whole-scout cap the orchestrator reads below:
+    #   *_manifest_fetch  - one GET to the TARGET site per well-known manifest path
+    #   *_registry_lookup - one GET per package to npm/PyPI (a DIFFERENT host);
+    #                       a slow registry must not block/corrupt the target portion
+    "test_10_hallucinated_deps": 45,
+    "test_10_hallucinated_deps_manifest_fetch": 8,
+    "test_10_hallucinated_deps_registry_lookup": 6,
 }
 
 # ------------------------------------------------------------------------------

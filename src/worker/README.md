@@ -1,6 +1,6 @@
 # Bravo6 Scanner (`src/worker/`)
 
-The scanner itself: an async orchestrator (`main_scanner.py`) plus seven auto-discovered scout
+The scanner itself: an async orchestrator (`main_scanner.py`) plus ten auto-discovered scout
 plugins. Every request the scanner makes is passive (GET/HEAD/OPTIONS/DNS — the same traffic a
 normal page load or DNS lookup produces).
 
@@ -15,6 +15,9 @@ normal page load or DNS lookup produces).
 | `test_05_security_headers.py` | HTTP security headers: CSP, HSTS, clickjacking protection, and hardening headers |
 | `test_06_info_disclosure.py` | Exposed sensitive files/paths, HTML comments, tech fingerprinting, robots.txt |
 | `test_07_email_security.py` | SPF/DMARC/DKIM (pure DNS — does not contact the target's web server) |
+| `test_08_cors.py` | CORS misconfiguration: wildcard-with-credentials, arbitrary-origin reflection (one synthetic cross-origin preflight probe) |
+| `test_09_sri.py` | Subresource Integrity: cross-origin `<script>`/`<link rel="stylesheet">` missing `integrity`, or `integrity` present without a valid `crossorigin` (zero new requests — reparses the cached HTML) |
+| `test_10_hallucinated_deps.py` | AI-introduced supply-chain risk: if a dependency manifest (`package.json`/`requirements.txt`/lockfiles) is exposed on the web root, cross-checks each declared package name against npm/PyPI — a confirmed registry 404 is a "hallucinated" (slopsquattable) dependency |
 
 There is no `test_03` collision with anything named "mixed content" — that check lives, unwired,
 in `../../future-work/code-scan/`.
@@ -42,6 +45,9 @@ python3 test_04_ssl_tls.py --test
 python3 test_05_security_headers.py --test
 python3 test_06_info_disclosure.py --test
 python3 test_07_email_security.py --test
+python3 test_08_cors.py --test
+python3 test_09_sri.py --test
+python3 test_10_hallucinated_deps.py --test
 ```
 
 ## Running the evaluation harness
