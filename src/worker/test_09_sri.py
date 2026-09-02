@@ -39,15 +39,16 @@ Checks, per cross-origin resource:
     because the asset sub-host is almost certainly operated by the same
     party as the site.
   - integrity present but crossorigin missing/invalid     -> medium,
-    a distinct finding ("SRI Present But Not Enforced"). Browsers
-    silently DO NOT perform the integrity check without a valid
-    crossorigin attribute, so the team believes it is protected when it
-    is not -- arguably more worth surfacing clearly than plain absence.
+    a distinct finding (titled "SRI present but not enforced - missing/
+    invalid crossorigin attribute"). Browsers silently DO NOT perform the
+    integrity check without a valid crossorigin attribute, so the team
+    believes it is protected when it is not -- arguably more worth
+    surfacing clearly than plain absence.
   - integrity present + valid crossorigin                 -> no finding
   - no cross-origin <script>/<link rel=stylesheet> at all -> one
-    info/informational finding ("SRI not applicable to this page"),
-    mirroring how test_08_cors reports "no CORS headers observed" rather
-    than silently returning zero findings.
+    info/informational finding (titled "Subresource Integrity not
+    applicable to this page"), mirroring how test_08_cors reports "no CORS
+    headers observed" rather than silently returning zero findings.
 """
 
 from typing import Any, Dict, List, Optional

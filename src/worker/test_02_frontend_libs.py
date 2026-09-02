@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Bravo6 Enterprise SCA Engine (v8.5 – Local Cache, Signature Aware, Context-Bound)
 =============================================================================
 - Complies strictly with Bravo6 Unified Plugin Contract v8.5.

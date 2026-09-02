@@ -71,9 +71,10 @@ def _get_header(headers: Dict, name: str, default: Optional[str] = None) -> Opti
 
 def _make_finding(
     title: str, severity: str, confidence: str, cwe: str, owasp: str,
-    location: str, evidence: str, poc: str, remediation: str, detection_method: str
+    location: str, evidence: str, poc: str, remediation: str, detection_method: str,
+    tier: Optional[str] = None
 ) -> Dict[str, Any]:
-    return {
+    finding = {
         "title": title,
         "severity": severity,
         "confidence": confidence,
@@ -85,6 +86,12 @@ def _make_finding(
         "remediation": remediation,
         "detection_method": detection_method
     }
+    # Only defense-in-depth findings carry an explicit tier. Everything else
+    # is left untagged and the orchestrator scores it as "baseline" (its
+    # documented default), so existing findings are byte-for-byte unchanged.
+    if tier is not None:
+        finding["raw_data"] = {"tier": tier}
+    return finding
 
 def _build_expiry_finding(cert_info: Dict[str, Any], hostname: str, port: int, cert_poc: str) -> Optional[Dict[str, Any]]:
     """
@@ -619,7 +626,8 @@ async def run(ctx: ScannerContext) -> dict:
             evidence=evidence_msg,
             poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -status < /dev/null 2>/dev/null | grep -A5 'OCSP Response'",
             remediation="Enable OCSP stapling on the web server to improve performance and privacy of revocation checks.",
-            detection_method="TLS Handshake OCSP Extension Check"
+            detection_method="TLS Handshake OCSP Extension Check",
+            tier="hardening"
         ))
 
     tls_scts = await asyncio.get_running_loop().run_in_executor(None, _get_scts_count_tls_ext, hostname, port)
@@ -891,7 +899,8 @@ async def run(ctx: ScannerContext) -> dict:
                 evidence="No CAA records were returned for the domain.",
                 poc=f"dig CAA {hostname} +short",
                 remediation="Add a CAA record to explicitly authorize specific Certificate Authorities for your domain.",
-                detection_method="DNS Query"
+                detection_method="DNS Query",
+                tier="hardening"
             ))
 
         tlsa_name = f"_{port}._tcp.{hostname}"
@@ -1217,6 +1226,85 @@ if __name__ == "__main__":
                 self.assertEqual(len(inconclusive), 1, titles)
                 self.assertEqual(inconclusive[0]["severity"], "info")
                 self.assertEqual(inconclusive[0]["confidence"], "informational")
+
+        class TestDefenseInDepthFindingsAreHardeningTier(unittest.IsolatedAsyncioTestCase):
+            """Regression test for the tier fix: 'OCSP Stapling Not Enabled' and
+            'Missing DNS CAA Record' are defense-in-depth absences (they only
+            matter if something else is also compromised), so they MUST carry
+            raw_data["tier"] == "hardening" -- landing them in the orchestrator's
+            pooled/capped tier2 bucket, same as test_05's missing-header findings,
+            not the uncapped "baseline" pool. Previously both fell through
+            untagged and were scored as baseline."""
+
+            def _install(self, mapping):
+                self._saved = {k: globals()[k] for k in mapping}
+                globals().update(mapping)
+                self.addCleanup(lambda: globals().update(self._saved))
+
+            async def _run_scout(self):
+                async def fake_check_binary(cmd, arg):
+                    return cmd in ("openssl", "dig")
+
+                async def fake_run_openssl(args, timeout=5):
+                    # Every protocol probe completes with a clean refusal --
+                    # keeps this test focused on the two DNS/OCSP findings.
+                    return b"CONNECTED(00000003)\nno peer certificate available\n", b"", False
+
+                async def fake_check_dns_record(hostname, record_type):
+                    return None  # no CAA, no TLSA
+
+                _cert = {
+                    "days_until_expiry": 200, "not_after": "2030-01-01T00:00:00+00:00",
+                    "hostname_match": True, "self_signed": False, "weak_signature": False,
+                    "key_size": 2048, "key_type": "rsa", "cert_scts": 2,
+                }
+                self._install({
+                    "_check_internal": lambda hostname: False,
+                    "_check_binary": fake_check_binary,
+                    "_run_openssl": fake_run_openssl,
+                    "_check_dns_record": fake_check_dns_record,
+                    "_get_cert_der": lambda hostname, port: b"dummy-der",
+                    "_analyze_cert": lambda der, hostname: dict(_cert),
+                    "_verify_chain_via_ssl_connect": lambda hostname, port: (None, None),
+                    "_get_stapled_ocsp_response": lambda hostname, port: None,  # not stapled
+                    "_get_scts_count_tls_ext": lambda hostname, port: 2,
+                })
+
+                ctx = ScannerContext(
+                    url="https://no-caa-no-ocsp.example",
+                    session=None,
+                    config={},
+                    page_is_representative=True,
+                    waf_challenge_detected=None,
+                    sensitive_paths=[],
+                    main_page_cache={},
+                )
+                return await run(ctx)
+
+            def _tier_of(self, finding):
+                return (finding.get("tier")
+                        or finding.get("raw_data", {}).get("tier", ""))
+
+            async def test_ocsp_and_caa_absence_are_tier_hardening(self):
+                result = await self._run_scout()
+                by_title = {f["title"]: f for f in result["findings"]}
+
+                self.assertIn("OCSP Stapling Not Enabled", by_title,
+                              "Expected the OCSP-stapling-absent finding to fire.")
+                self.assertIn("Missing DNS CAA Record", by_title,
+                              "Expected the CAA-absent finding to fire.")
+
+                self.assertEqual(self._tier_of(by_title["OCSP Stapling Not Enabled"]), "hardening")
+                self.assertEqual(self._tier_of(by_title["Missing DNS CAA Record"]), "hardening")
+
+            def test_make_finding_untagged_by_default(self):
+                # The untagged path is unchanged: no tier arg -> no raw_data key.
+                f = _make_finding(
+                    title="x", severity="high", confidence="verified-live", cwe="",
+                    owasp="", location="", evidence="", poc="", remediation="",
+                    detection_method="",
+                )
+                self.assertNotIn("raw_data", f)
 
         sys.argv = [sys.argv[0]]
         unittest.main()
