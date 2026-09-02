@@ -4,7 +4,7 @@
 
 AI-assisted development has collapsed the time it takes to ship an application from weeks to hours — but the security layer hasn't kept pace. Secrets get hardcoded into auto-generated code, dependencies get pulled from stale training data, and API responses go out with missing headers and misconfigured CORS policies that look fine until someone exploits them. This gap is what Bravo6 was built to close.
 
-Bravo6 performs stealth reconnaissance against live targets: 7 concurrent, passive security checks that behave exactly like a browser — no payloads, no brute-forcing, no intrusion attempts, no alarms triggered. It reads what's already publicly exposed and reports what an attacker would see, before they see it.
+Bravo6 performs stealth reconnaissance against live targets: 10 concurrent, passive security checks that behave exactly like a browser — no payloads, no brute-forcing, no intrusion attempts, no alarms triggered. It reads what's already publicly exposed and reports what an attacker would see, before they see it.
 
 This is not a weekend script. It's a production-grade, cloud-native system, architected end-to-end with the same rigor expected of a real platform in production: serverless and event-driven for cost efficiency, fully async for throughput, and secured with a zero-trust network model on Azure.
 
@@ -12,18 +12,18 @@ This is not a weekend script. It's a production-grade, cloud-native system, arch
 
 ## Capabilities
 
-- **7 passive security checks, executed concurrently** — secrets exposure, vulnerable frontend libraries, cookie security, SSL/TLS posture, security headers, information disclosure, and email security (SPF/DMARC/DKIM). See [`src/worker/README.md`](src/worker/README.md) for what each check covers and how to run a scan.
+- **10 passive security checks, executed concurrently** — secrets exposure, vulnerable frontend libraries, cookie security, SSL/TLS posture, security headers, information disclosure, email security (SPF/DMARC/DKIM), CORS misconfiguration, Subresource Integrity, and hallucinated (slopsquattable) dependencies. See [`src/worker/README.md`](src/worker/README.md) for what each check covers and how to run a scan.
 - **Read-only reconnaissance** — no exploitation, no destructive traffic, safe to run against production and inside CI/CD pipelines
 - **Serverless, event-driven architecture** — scales to zero at idle, scales out automatically under load
 - **Reproducible evaluation harness** (`src/worker/evaluation/`) — samples a citable Tranco snapshot with a fixed random seed and batch-runs the scanner across it for the project's evaluation dataset
 
-Additional checks (subdomain takeover, robots.txt analysis, CORS, HTTP methods, CMS fingerprinting, and others) are prototyped but not yet wired into the live scanner — see `future-work/`.
+Additional checks (subdomain takeover, HTTP methods, mixed-content scanning, AI-exposure probing, and others) are prototyped but not yet wired into the live scanner — see `future-work/`.
 
 ## Project Structure
 
 ```
 src/
-  worker/       # the scanner itself: main_scanner.py + 7 scout plugins (test_0N_*.py) + evaluation/
+  worker/       # the scanner itself: main_scanner.py + 10 scout plugins (test_NN_*.py) + evaluation/
   api/          # API function app (not yet implemented)
   report/       # report generation function app
   cve-pipeline/ # offline OSV.dev -> cve_database_v2.csv ETL, run separately from the live scanner

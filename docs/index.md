@@ -35,7 +35,7 @@ Traditional scanners attack this problem by attacking the target — sending pay
 
 BRAVO6 is different. It is a **passive, read‑only security scanner**. It behaves exactly like a browser, sends no payloads, and triggers no alarms. It reads what is publicly visible and reports what an attacker would see, before the attacker ever sees it.
 
-- **13 specialised tests** run in full concurrency.
+- **10 specialised tests** run in full concurrency.
 - A **complete scan** of any live target finishes in approximately **30 seconds**.
 - **AI‑powered remediation** provides developer‑friendly, actionable fixes (available on the Developer tier).
 - **Fully serverless**, costing nothing at idle and scaling automatically to thousands of simultaneous scans.
@@ -71,12 +71,12 @@ The diagram below shows the journey of a single scan, from the moment a develope
 sequenceDiagram
     participant VibeCoder as Vibe Coder<br>Developer
     participant BRAVO6 as BRAVO6<br>Silent Scanner
-    participant Scouts as 13 Scouts<br>Passive Tests
+    participant Scouts as 10 Scouts<br>Passive Tests
     participant Report as Security Report<br>with AI Remediation
 
     VibeCoder->>BRAVO6: Submits URL
-    BRAVO6->>Scouts: Runs all 13 tests concurrently
-    Note over Scouts: Secrets Hunter, SSL/TLS,<br>Security Headers, CORS,<br>Subdomain Takeover...
+    BRAVO6->>Scouts: Runs all 10 tests concurrently
+    Note over Scouts: Secrets Hunter, SSL/TLS,<br>Security Headers, CORS,<br>Email Security, SRI, Hallucinated Deps...
     Scouts-->>BRAVO6: Findings aggregated
     BRAVO6->>Report: Generates AI-powered report
     Report-->>VibeCoder: Actionable remediation
@@ -88,7 +88,7 @@ BRAVO6 is designed to democratise cybersecurity. It is accessible to students, f
 
 | Feature | Free Tier | Developer Tier ($10/mo) |
 |---|---|---|
-| **Scouts available** | 8 scouts | **13 scouts** (full suite) |
+| **Scouts available** | 10 scouts (full suite) | **10 scouts** (full suite) |
 | **Daily scan limit** | 3 scans per day | **10 scans per day** |
 | **AI remediation** | Not included | ✅ Included (GPT‑4o mini) |
 | **Analytics dashboard** | Not included | ✅ Included |
