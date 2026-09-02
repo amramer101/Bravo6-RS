@@ -325,6 +325,10 @@ async def run(ctx: ScannerContext) -> dict:
     if not soup:
         return {"fatal_error": "Failed to parse main page HTML."}
 
+    _m = getattr(ctx, "metrics", None)
+    if isinstance(_m, dict):
+        _m["cache_reads"] = _m.get("cache_reads", 0) + 1
+
     # 2. Extract scripts & process URLs
     script_urls = []
     for tag in soup.find_all("script"):

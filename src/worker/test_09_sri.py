@@ -369,6 +369,10 @@ async def run(ctx: Any) -> dict:
     if not soup:
         return {"fatal_error": "Failed to parse main page HTML."}
 
+    _m = getattr(ctx, "metrics", None)
+    if isinstance(_m, dict):
+        _m["cache_reads"] = _m.get("cache_reads", 0) + 1
+
     targets = _extract_targets(soup, url)
     cross_origin = [t for t in targets if not _is_same_origin(url, t["url"])]
     same_origin_skipped = len(targets) - len(cross_origin)

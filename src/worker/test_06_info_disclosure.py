@@ -596,6 +596,10 @@ async def run(ctx: Any) -> dict:
     findings = []
     requests_made = [0]
 
+    _m = getattr(ctx, "metrics", None)
+    if isinstance(_m, dict):
+        _m["cache_reads"] = _m.get("cache_reads", 0) + 1
+
     # Run sync/local phases
     for phase_func in [
         lambda: phase_tech_detection(ctx),

@@ -401,7 +401,10 @@ async def run(ctx: Any) -> Dict[str, Any]:
         if status == 200:
             html = shared_page.get("html", "")
             soup_obj = shared_page.get("soup") or BeautifulSoup(html, "html.parser")
-        
+            _m = getattr(ctx, "metrics", None)
+            if isinstance(_m, dict):
+                _m["cache_reads"] = _m.get("cache_reads", 0) + 1
+
         if not html:
             return {"fatal_error": "Empty response body from target."}
 

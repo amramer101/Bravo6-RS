@@ -122,7 +122,15 @@ class ScannerContext:
         "http_requests": 0,
         "cache_hits": 0,
         "modules_executed": 0,
-        "errors": []
+        "errors": [],
+        # Additive instrumentation only (no scoring/detection impact):
+        # base_url_gets  -- actual HTTP GETs issued against ctx.url itself
+        #                   (expected: exactly 1, the pre-flight fetch).
+        # cache_reads    -- number of cache-consuming scouts (test_01/02/03/
+        #                   05/06/09) that served their main-page needs from
+        #                   ctx.main_page_cache instead of issuing a fetch.
+        "base_url_gets": 0,
+        "cache_reads": 0
     })
     
     main_page_cache: Dict[str, Any] = field(default_factory=dict)
@@ -213,6 +221,7 @@ async def fetch_main_page_and_analyze(ctx: ScannerContext):
 
     try:
         ctx.metrics["http_requests"] += 1
+        ctx.metrics["base_url_gets"] = ctx.metrics.get("base_url_gets", 0) + 1
         async with ctx.session.get(url) as resp:
             status = resp.status
             headers = dict(resp.headers)

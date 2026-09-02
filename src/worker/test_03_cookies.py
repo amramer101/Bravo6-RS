@@ -329,6 +329,9 @@ async def run(ctx: Any) -> dict:
 
     url = getattr(ctx, "url", "https://example.com")
     main_cache = getattr(ctx, "main_page_cache", {}) or {}
+    _m = getattr(ctx, "metrics", None)
+    if isinstance(_m, dict):
+        _m["cache_reads"] = _m.get("cache_reads", 0) + 1
     is_https = url.lower().startswith("https://")
 
     # Prefer the full multi-value list (main_scanner.py's

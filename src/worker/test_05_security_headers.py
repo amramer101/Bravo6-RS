@@ -576,6 +576,10 @@ async def run(ctx: Any) -> dict:
         if is_rep and any(x in html for x in ["cf-chl", "cf-mitigated", "Just a moment..."]):
             is_rep = False
             
+    _m = getattr(ctx, "metrics", None)
+    if is_rep and isinstance(_m, dict):
+        _m["cache_reads"] = _m.get("cache_reads", 0) + 1
+
     if not is_rep:
         # Cross-scout consistency fix: test_01/02/03/06 all report a
         # non-representative page via {"fatal_error": ...}, which
