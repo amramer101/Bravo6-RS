@@ -30,6 +30,14 @@ Checks, per cross-origin resource:
   - <link rel=stylesheet>   with no integrity attribute   -> low
     (real -- CSS attribute-selector data exfiltration is documented --
     but a smaller blast radius than arbitrary JS execution)
+  - cross-origin resource whose host is a SUBDOMAIN of the same
+    registrable domain (eTLD+1) as the page (e.g. c.mql5.com vs
+    mql5.com), with no integrity attribute -> low (script OR stylesheet),
+    a distinct finding ("Cross-Origin Subresource (Same-Domain Subdomain)
+    Missing SRI"). Still flagged, still tier=hardening -- but a lower
+    severity/priority call than a genuine third-party CDN reference,
+    because the asset sub-host is almost certainly operated by the same
+    party as the site.
   - integrity present but crossorigin missing/invalid     -> medium,
     a distinct finding ("SRI Present But Not Enforced"). Browsers
     silently DO NOT perform the integrity check without a valid
@@ -45,6 +53,7 @@ Checks, per cross-origin resource:
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
+import tldextract
 from bs4 import BeautifulSoup
 
 # Per the HTML spec the crossorigin (CORS-settings) attribute is valid as
@@ -54,6 +63,13 @@ from bs4 import BeautifulSoup
 VALID_CROSSORIGIN = {"", "anonymous", "use-credentials"}
 
 DETECTION_METHOD = "Cached-HTML Subresource Integrity Analysis"
+
+# Registrable-domain (eTLD+1) extraction via the real Public Suffix List,
+# same pattern/rationale as test_07_email_security.py: constructed once at
+# module scope with suffix_list_urls=() so it relies purely on the PSL
+# snapshot bundled with the tldextract package and never makes a live
+# network call at scan time (this scout is strictly zero-request).
+_TLD_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
 
 
 # ------------------------------------------------------------------------------
@@ -90,6 +106,25 @@ def _port(parsed) -> Optional[int]:
     if parsed.port:
         return parsed.port
     return {"https": 443, "http": 80}.get((parsed.scheme or "").lower())
+
+
+def _registrable_domain(host: str) -> str:
+    """eTLD+1 for a hostname (e.g. 'c.mql5.com' -> 'mql5.com'), lowercased.
+    Falls back to the bare host if the PSL yields no registrable domain
+    (e.g. a bare IP or an unknown suffix)."""
+    # .top_domain_under_public_suffix is tldextract's current name for what
+    # used to be .registered_domain (matches test_07_email_security.py).
+    return (_TLD_EXTRACTOR(host or "").top_domain_under_public_suffix or host or "").lower()
+
+
+def _same_registrable_domain(base_url: str, resource_url: str) -> bool:
+    """True when the resource host and the page host share the same
+    registrable domain (eTLD+1) -- i.e. the resource is a sibling/child
+    subdomain (c.mql5.com vs www.mql5.com), not a genuine third party.
+    Only meaningful for hosts already known to be cross-origin."""
+    b = _registrable_domain(urlparse(base_url).hostname or "")
+    r = _registrable_domain(urlparse(resource_url).hostname or "")
+    return bool(b) and b == r
 
 
 def _is_same_origin(base_url: str, resource_url: str) -> bool:
@@ -183,7 +218,7 @@ def _describe(tag, kind: str, resolved_url: str, raw_ref: str) -> Dict[str, Any]
 # Per-resource evaluation -- severity scoped strictly to what is observed
 # for THIS resource; nothing here influences any other finding.
 # ------------------------------------------------------------------------------
-def _evaluate(t: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _evaluate(t: Dict[str, Any], base_url: str) -> Optional[Dict[str, Any]]:
     kind = t["kind"]
     loc = t["url"]
     tag = t["tag"]
@@ -194,6 +229,37 @@ def _evaluate(t: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     host = urlparse(loc).hostname or "the third-party host"
 
     if not integrity:
+        if _same_registrable_domain(base_url, loc):
+            reg = _registrable_domain(urlparse(loc).hostname or "")
+            return _make_finding(
+                title="Cross-Origin Subresource (Same-Domain Subdomain) Missing SRI",
+                severity="low",
+                confidence="verified-static",
+                cwe="CWE-353",
+                owasp="A08:2021-Software and Data Integrity Failures",
+                location=loc,
+                evidence=(
+                    f"The page loads a {kind} from {host} -- a different origin than the page, "
+                    f"but the same registrable domain ({reg}), i.e. a sibling/child subdomain "
+                    "rather than a genuine third party. It has no integrity attribute. Because "
+                    "the asset sub-host is almost certainly operated by the same party as the "
+                    "site, this is a lower-priority defense-in-depth gap than an un-pinned "
+                    "third-party CDN reference: SRI would only matter here if this specific "
+                    "sub-host had a separate deployment/trust boundary (e.g. a shared object "
+                    f"store) and were independently compromised. Tag: {tag}"
+                ),
+                poc=(
+                    "# Compute the hash to pin, then add it to the tag:\n"
+                    f"curl -sL {loc} | openssl dgst -sha384 -binary | openssl base64 -A"
+                ),
+                remediation=(
+                    'Add integrity="sha384-<hash>" and crossorigin="anonymous" to the tag, or '
+                    "serve the asset from the page's own host. Lower priority than pinning "
+                    "genuine third-party / external-CDN resources."
+                ),
+                detection_method=DETECTION_METHOD,
+                tier="hardening",
+            )
         if kind == "script":
             return _make_finding(
                 title="Cross-origin <script> loaded without Subresource Integrity",
@@ -348,7 +414,7 @@ async def run(ctx: Any) -> dict:
 
     findings: List[Dict[str, Any]] = []
     for t in cross_origin:
-        f = _evaluate(t)
+        f = _evaluate(t, url)
         if f:
             findings.append(f)
 
@@ -514,10 +580,62 @@ if __name__ == "__main__":
                 self.assertEqual(result["findings"][0]["title"], "Subresource Integrity not applicable to this page")
 
             def test_subdomain_is_treated_as_cross_origin(self):
+                # Still detected as cross-origin (still flagged, still
+                # tier=hardening) -- but a subdomain of the same registrable
+                # domain gets the distinct, lower-severity finding, not the
+                # genuine-third-party one.
                 html = '<html><head><script src="https://cdn.example.com/a.js"></script></head></html>'
                 result = _run(html, url="https://example.com")
                 self.assertEqual(result["details"]["cross_origin_resources"], 1)
-                self.assertEqual(result["findings"][0]["title"], "Cross-origin <script> loaded without Subresource Integrity")
+                f = result["findings"][0]
+                self.assertEqual(f["title"], "Cross-Origin Subresource (Same-Domain Subdomain) Missing SRI")
+                self.assertEqual(f["severity"], "low")
+                self.assertEqual(f["raw_data"]["tier"], "hardening")
+
+            def test_same_registrable_domain_subdomain_script_is_low_with_distinct_title(self):
+                # The exact real-world case from the n=20 batch: c.mql5.com
+                # serving all of www.mql5.com's scripts. Same eTLD+1, different
+                # sub-host -> flagged, but low + distinct title, NOT the
+                # medium "Cross-origin <script> ... without Subresource Integrity".
+                html = '<html><head><script src="https://c.mql5.com/js/all.5ee082fb.js"></script></head></html>'
+                result = _run(html, url="https://www.mql5.com")
+                self.assertEqual(len(result["findings"]), 1)
+                f = result["findings"][0]
+                self.assertEqual(f["title"], "Cross-Origin Subresource (Same-Domain Subdomain) Missing SRI")
+                self.assertEqual(f["severity"], "low")
+                self.assertEqual(f["confidence"], "verified-static")
+                self.assertEqual(f["raw_data"]["tier"], "hardening")
+                self.assertEqual(result["details"]["cross_origin_resources"], 1)
+                self.assertNotIn("without Subresource Integrity", f["title"])
+                self.assertIn("mql5.com", f["evidence"])
+
+            def test_same_registrable_domain_subdomain_stylesheet_is_also_low_same_title(self):
+                # Stylesheet path takes the SAME distinct low finding
+                # (severity is low regardless of script/stylesheet here).
+                html = '<html><head><link rel="stylesheet" href="https://assets.example.com/a.css"></head></html>'
+                result = _run(html, url="https://example.com")
+                self.assertEqual(len(result["findings"]), 1)
+                f = result["findings"][0]
+                self.assertEqual(f["title"], "Cross-Origin Subresource (Same-Domain Subdomain) Missing SRI")
+                self.assertEqual(f["severity"], "low")
+                self.assertEqual(f["raw_data"]["tier"], "hardening")
+
+            def test_genuine_third_party_still_uses_third_party_titles(self):
+                # Guard: a real third party (different eTLD+1) is unaffected by
+                # the same-domain refinement -- script still medium, stylesheet
+                # still low, with the original titles.
+                html = (
+                    '<html><head>'
+                    '<script src="https://cdn.jsdelivr.net/npm/foo/foo.js"></script>'
+                    '<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=X">'
+                    '</head></html>'
+                )
+                result = _run(html, url="https://example.com")
+                by_title = {f["title"]: f for f in result["findings"]}
+                self.assertEqual(
+                    by_title["Cross-origin <script> loaded without Subresource Integrity"]["severity"], "medium")
+                self.assertEqual(
+                    by_title["Cross-origin stylesheet loaded without Subresource Integrity"]["severity"], "low")
 
             def test_protocol_relative_cross_origin_url_handled(self):
                 html = '<html><head><script src="//cdn.jsdelivr.net/npm/foo/foo.js"></script></head></html>'
