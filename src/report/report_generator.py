@@ -331,7 +331,14 @@ def _tls_details_section(test_04: Optional[Dict]) -> str:
     ct_cert = details.get("ct_scts_cert", 0)
     chain_valid = details.get("chain_valid")
     
-    ocsp_html = "✅ Supported" if ocsp_stapling else "❌ Not supported"
+    # test_04_ssl_tls now reports ocsp_stapling as a tri-state: True (stapled),
+    # False (server sent none), or None (could not be determined).
+    if ocsp_stapling is True:
+        ocsp_html = "✅ Supported"
+    elif ocsp_stapling is False:
+        ocsp_html = "❌ Not supported"
+    else:
+        ocsp_html = "— Not determined"
     ct_html = f"{ct_total} total (TLS extension: {ct_tls_ext}, embedded in cert: {ct_cert})" if ct_total > 0 else "—"
     chain_html = '✅ <span class="badge bg-success">Valid</span>' if chain_valid else '❌ <span class="badge bg-danger">Invalid</span>'
 

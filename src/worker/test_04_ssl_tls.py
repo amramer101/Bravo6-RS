@@ -201,34 +201,38 @@ def _verify_chain_via_ssl_connect(hostname: str, port: int) -> Tuple[Optional[bo
     except Exception:
         return None, None
 
-def _get_stapled_ocsp_response(hostname: str, port: int) -> Optional[bytes]:
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((hostname, port), timeout=7) as sock:
-            with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
-                if hasattr(tls_sock, "get_ocsp_response"):
-                    ocsp_resp = tls_sock.get_ocsp_response()
-                    if ocsp_resp:
-                        return ocsp_resp
-    except Exception:
-        pass
-    return None
+async def _probe_ocsp_stapling(hostname: str, port: int) -> Optional[bool]:
+    """Determine whether the server staples an OCSP response into the TLS
+    handshake, using ``openssl s_client -status`` (the same subprocess tool
+    the protocol/cipher probes below already use).
 
-def _get_scts_count_tls_ext(hostname: str, port: int) -> int:
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((hostname, port), timeout=7) as sock:
-            with ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
-                if hasattr(tls_sock, "get_scts"):
-                    scts = tls_sock.get_scts()
-                    return len(scts) if scts else 0
-    except Exception:
-        pass
-    return 0
+    Returns:
+      * True  -- a stapled OCSP response was observed
+                 ("OCSP Response Status: successful").
+      * False -- the server explicitly sent none
+                 ("OCSP response: no response sent").
+      * None  -- the probe could not be completed or the output was
+                 ambiguous (openssl missing, timeout, CDN/edge quirk).
+                 None must NEVER be reported as "not stapled".
+
+    Rationale for the rewrite: the previous implementation gated on
+    ``hasattr(ssl_socket, "get_ocsp_response")``, an API that does not exist
+    on CPython's ``ssl.SSLSocket``. It therefore always returned None and the
+    "OCSP Stapling Not Enabled" finding fired unconditionally on every
+    TLS-reachable host regardless of the server's real configuration.
+    """
+    out, err, timed_out = await _run_openssl(
+        ["s_client", "-connect", f"{hostname}:{port}", "-status", "-servername", hostname],
+        timeout=5,
+    )
+    if timed_out:
+        return None
+    combined = out + err
+    if b"OCSP Response Status: successful" in combined:
+        return True
+    if b"OCSP response: no response sent" in combined:
+        return False
+    return None
 
 def _analyze_cert(der: bytes, hostname: str) -> dict:
     if not HAS_CRYPTO:
@@ -609,30 +613,69 @@ async def run(ctx: ScannerContext) -> dict:
             detection_method="Local Trust Verification"
         ))
 
-    stapled_ocsp = await asyncio.get_running_loop().run_in_executor(None, _get_stapled_ocsp_response, hostname, port)
-    details["ocsp_stapling"] = stapled_ocsp is not None
-    if not stapled_ocsp:
-        evidence_msg = "No OCSP response was provided during the TLS handshake."
+    # OCSP stapling: a genuine three-state result (mirrors test_10's
+    # PRESENT/ABSENT/INCONCLUSIVE pattern for the same reason -- misreading a
+    # failed/ambiguous probe as a confirmed negative is a bug this project
+    # has already hit, in this same file, more than once).
+    #   True  -- server staples a valid response ("OCSP Response Status:
+    #            successful"). No finding.
+    #   False -- server explicitly sent none ("OCSP response: no response
+    #            sent"). Confirmed-absent -> the "Not Enabled" finding, now
+    #            with a real positive-negative observation behind it.
+    #   None  -- probe did not complete or produced ambiguous output
+    #            (openssl missing/timeout/edge quirk). NOT reported as "not
+    #            enabled" -- reported as its own explicit inconclusive
+    #            finding instead, confidence "informational" (reserved for
+    #            exactly this "couldn't check" case, never for a confirmed
+    #            result). Previously this probe always returned None (it
+    #            used a non-existent ssl.SSLSocket API) and the finding
+    #            fired unconditionally on 100% of TLS-reachable hosts.
+    stapled_ocsp = await _probe_ocsp_stapling(hostname, port) if openssl_available else None
+    details["ocsp_stapling"] = stapled_ocsp  # True / False / None
+    if stapled_ocsp is False:
+        evidence_msg = "The server sent no stapled OCSP response during the TLS handshake (openssl s_client -status reported 'no response sent')."
         if ctx.waf_challenge_detected:
             evidence_msg += f" (Note: CDN/WAF detected ({ctx.waf_challenge_detected}); OCSP stapling may be managed at the edge layer.)"
 
         findings.append(_make_finding(
             title="OCSP Stapling Not Enabled",
             severity="low",
-            confidence="informational",
+            confidence="verified-live",
             cwe="CWE-299",
             owasp="A02:2021-Cryptographic Failures",
             location=f"TLS Handshake {hostname}:{port}",
             evidence=evidence_msg,
             poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -status < /dev/null 2>/dev/null | grep -A5 'OCSP Response'",
             remediation="Enable OCSP stapling on the web server to improve performance and privacy of revocation checks.",
-            detection_method="TLS Handshake OCSP Extension Check",
+            detection_method="TLS Handshake OCSP Status Probe (openssl -status)",
+            tier="hardening"
+        ))
+    elif stapled_ocsp is None and openssl_available:
+        findings.append(_make_finding(
+            title="OCSP Stapling Status Could Not Be Determined",
+            severity="info",
+            confidence="informational",
+            cwe="",
+            owasp="",
+            location=f"TLS Handshake {hostname}:{port}",
+            evidence=(
+                "The openssl -status probe did not complete or produced ambiguous output "
+                "(timeout, subprocess contention, or an edge/CDN quirk). This is NOT evidence "
+                "that OCSP stapling is disabled -- only that it could not be confirmed either "
+                "way from here."
+            ),
+            poc=f"openssl s_client -connect {hostname}:{port} -servername {hostname} -status < /dev/null 2>/dev/null | grep -A5 'OCSP Response'",
+            remediation="Re-run this check; if it consistently fails, verify the scanner's outbound path or re-run with lower concurrency.",
+            detection_method="TLS Handshake OCSP Status Probe (inconclusive)",
             tier="hardening"
         ))
 
-    tls_scts = await asyncio.get_running_loop().run_in_executor(None, _get_scts_count_tls_ext, hostname, port)
-    cert_scts = cert_info.get("cert_scts", 0) if cert_info else 0
-    total_scts = tls_scts + cert_scts
+    # Certificate Transparency: the only working signal here is the count of
+    # SCTs embedded in the certificate itself (parsed via `cryptography` in
+    # _analyze_cert). The former TLS-extension SCT probe used a non-existent
+    # ssl.SSLSocket API and always returned 0, so removing it changes no
+    # observed behaviour.
+    total_scts = cert_info.get("cert_scts", 0) if cert_info else 0
     details["ct_scts_total"] = total_scts
     if total_scts == 0:
         sev = "high" if details["context"] == "external" else "medium"
@@ -1157,6 +1200,47 @@ if __name__ == "__main__":
                     globals()["_run_openssl"] = orig
                 self.assertEqual(res, ("protocol", "TLSv1.1", False, True))
 
+        class TestOcspStaplingProbe(unittest.IsolatedAsyncioTestCase):
+            """Regression tests for _probe_ocsp_stapling. The previous
+            implementation gated on ssl.SSLSocket.get_ocsp_response -- an API
+            that does not exist on CPython -- so it always returned None and
+            the "OCSP Stapling Not Enabled" finding fired on 100% of
+            TLS-reachable hosts. The rewrite shells `openssl s_client -status`
+            and returns a genuine tri-state (True/False/None); only False may
+            produce the finding."""
+
+            def _with_openssl(self, fake):
+                orig = globals()["_run_openssl"]
+                globals()["_run_openssl"] = fake
+                self.addCleanup(lambda: globals().__setitem__("_run_openssl", orig))
+
+            async def test_stapled_response_returns_true(self):
+                async def fake(args, timeout=5):
+                    self.assertIn("-status", args)
+                    return (b"CONNECTED(00000003)\nOCSP Response Status: successful (0x0)\n"
+                            b"OCSP Response Data:\n"), b"", False
+                self._with_openssl(fake)
+                self.assertIs(await _probe_ocsp_stapling("example.com", 443), True)
+
+            async def test_no_response_sent_returns_false(self):
+                async def fake(args, timeout=5):
+                    return b"CONNECTED(00000003)\nOCSP response: no response sent\n", b"", False
+                self._with_openssl(fake)
+                self.assertIs(await _probe_ocsp_stapling("example.com", 443), False)
+
+            async def test_timeout_returns_none_not_false(self):
+                async def fake(args, timeout=5):
+                    return b"", b"", True
+                self._with_openssl(fake)
+                result = await _probe_ocsp_stapling("example.com", 443)
+                self.assertIsNone(result, "A timed-out probe must be 'unknown', never 'not stapled'.")
+
+            async def test_ambiguous_output_returns_none(self):
+                async def fake(args, timeout=5):
+                    return b"CONNECTED(00000003)\n(nothing about OCSP here)\n", b"", False
+                self._with_openssl(fake)
+                self.assertIsNone(await _probe_ocsp_stapling("example.com", 443))
+
         class TestModernProbeCompletedRequiresBothProbes(unittest.IsolatedAsyncioTestCase):
             """Regression test for the guard-tightening: `modern_probe_completed`
             must require BOTH the TLS 1.2 AND the TLS 1.3 probe to have actually
@@ -1197,8 +1281,6 @@ if __name__ == "__main__":
                     "_get_cert_der": lambda hostname, port: b"dummy-der",
                     "_analyze_cert": lambda der, hostname: dict(_cert),
                     "_verify_chain_via_ssl_connect": lambda hostname, port: (None, None),
-                    "_get_stapled_ocsp_response": lambda hostname, port: b"stapled",
-                    "_get_scts_count_tls_ext": lambda hostname, port: 2,
                 })
 
                 ctx = ScannerContext(
@@ -1246,6 +1328,11 @@ if __name__ == "__main__":
                     return cmd in ("openssl", "dig")
 
                 async def fake_run_openssl(args, timeout=5):
+                    # The `-status` probe reports the server sent no stapled
+                    # OCSP response, so the OCSP-stapling finding must fire.
+                    if "-status" in args:
+                        return (b"CONNECTED(00000003)\nOCSP response: no response sent\n"
+                                b"no peer certificate available\n"), b"", False
                     # Every protocol probe completes with a clean refusal --
                     # keeps this test focused on the two DNS/OCSP findings.
                     return b"CONNECTED(00000003)\nno peer certificate available\n", b"", False
@@ -1266,8 +1353,6 @@ if __name__ == "__main__":
                     "_get_cert_der": lambda hostname, port: b"dummy-der",
                     "_analyze_cert": lambda der, hostname: dict(_cert),
                     "_verify_chain_via_ssl_connect": lambda hostname, port: (None, None),
-                    "_get_stapled_ocsp_response": lambda hostname, port: None,  # not stapled
-                    "_get_scts_count_tls_ext": lambda hostname, port: 2,
                 })
 
                 ctx = ScannerContext(
@@ -1297,6 +1382,16 @@ if __name__ == "__main__":
                 self.assertEqual(self._tier_of(by_title["OCSP Stapling Not Enabled"]), "hardening")
                 self.assertEqual(self._tier_of(by_title["Missing DNS CAA Record"]), "hardening")
 
+            async def test_confirmed_absent_ocsp_is_no_longer_informational(self):
+                # The confirmed-absent case is now a real positive-negative
+                # observation (a completed openssl -status probe explicitly
+                # reporting "no response sent"), not a "couldn't check"
+                # default -- confidence must reflect that.
+                result = await self._run_scout()
+                finding = next(f for f in result["findings"] if f["title"] == "OCSP Stapling Not Enabled")
+                self.assertEqual(finding["confidence"], "verified-live")
+                self.assertNotEqual(finding["confidence"], "informational")
+
             def test_make_finding_untagged_by_default(self):
                 # The untagged path is unchanged: no tier arg -> no raw_data key.
                 f = _make_finding(
@@ -1305,6 +1400,87 @@ if __name__ == "__main__":
                     detection_method="",
                 )
                 self.assertNotIn("raw_data", f)
+
+        class TestOcspStaplingRunLevelThreeStates(unittest.IsolatedAsyncioTestCase):
+            """run()-level regression covering all three OCSP outcomes end to
+            end: stapled -> no finding; confirmed-absent -> the "Not Enabled"
+            finding (verified-live, hardening); probe inconclusive -> a
+            distinct, separately-titled finding (informational, hardening),
+            never conflated with a confirmed-absent result."""
+
+            def _install(self, mapping):
+                saved = {k: globals()[k] for k in mapping}
+                globals().update(mapping)
+                self.addCleanup(lambda: globals().update(saved))
+
+            async def _run_scout(self, ocsp_openssl_output: bytes):
+                async def fake_check_binary(cmd, arg):
+                    return cmd in ("openssl", "dig")
+
+                async def fake_run_openssl(args, timeout=5):
+                    if "-status" in args:
+                        return ocsp_openssl_output, b"", False
+                    return b"CONNECTED(00000003)\nno peer certificate available\n", b"", False
+
+                async def fake_check_dns_record(hostname, record_type):
+                    return "0 issue \"letsencrypt.org\""  # CAA present -> keep this test focused on OCSP
+
+                _cert = {
+                    "days_until_expiry": 200, "not_after": "2030-01-01T00:00:00+00:00",
+                    "hostname_match": True, "self_signed": False, "weak_signature": False,
+                    "key_size": 2048, "key_type": "rsa", "cert_scts": 2,
+                }
+                self._install({
+                    "_check_internal": lambda hostname: False,
+                    "_check_binary": fake_check_binary,
+                    "_run_openssl": fake_run_openssl,
+                    "_check_dns_record": fake_check_dns_record,
+                    "_get_cert_der": lambda hostname, port: b"dummy-der",
+                    "_analyze_cert": lambda der, hostname: dict(_cert),
+                    "_verify_chain_via_ssl_connect": lambda hostname, port: (None, None),
+                })
+                ctx = ScannerContext(
+                    url="https://ocsp-three-state.example",
+                    session=None, config={}, page_is_representative=True,
+                    waf_challenge_detected=None, sensitive_paths=[], main_page_cache={},
+                )
+                return await run(ctx)
+
+            def _titles(self, result):
+                return [f["title"] for f in result["findings"]]
+
+            async def test_stapled_success_produces_no_ocsp_finding(self):
+                result = await self._run_scout(
+                    b"CONNECTED(00000003)\nOCSP Response Status: successful (0x0)\n"
+                    b"Cert Status: good\nno peer certificate available\n"
+                )
+                titles = self._titles(result)
+                self.assertNotIn("OCSP Stapling Not Enabled", titles)
+                self.assertNotIn("OCSP Stapling Status Could Not Be Determined", titles)
+
+            async def test_confirmed_no_response_produces_the_not_enabled_finding(self):
+                result = await self._run_scout(
+                    b"CONNECTED(00000003)\nOCSP response: no response sent\n"
+                )
+                by_title = {f["title"]: f for f in result["findings"]}
+                self.assertIn("OCSP Stapling Not Enabled", by_title)
+                f = by_title["OCSP Stapling Not Enabled"]
+                self.assertEqual(f["confidence"], "verified-live")
+                self.assertEqual(f["severity"], "low")
+                self.assertEqual(f.get("raw_data", {}).get("tier"), "hardening")
+
+            async def test_ambiguous_probe_output_produces_a_distinct_inconclusive_finding(self):
+                result = await self._run_scout(
+                    b"CONNECTED(00000003)\n(nothing about OCSP in this output)\n"
+                )
+                by_title = {f["title"]: f for f in result["findings"]}
+                self.assertNotIn("OCSP Stapling Not Enabled", by_title,
+                                  "An inconclusive probe must never be reported as confirmed-absent.")
+                self.assertIn("OCSP Stapling Status Could Not Be Determined", by_title)
+                f = by_title["OCSP Stapling Status Could Not Be Determined"]
+                self.assertEqual(f["confidence"], "informational")
+                self.assertEqual(f["severity"], "info")
+                self.assertEqual(f.get("raw_data", {}).get("tier"), "hardening")
 
         sys.argv = [sys.argv[0]]
         unittest.main()
