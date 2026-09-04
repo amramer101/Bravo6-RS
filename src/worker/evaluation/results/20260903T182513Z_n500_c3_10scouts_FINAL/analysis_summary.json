@@ -1,0 +1,376 @@
+{
+  "batch_id": "20260903T182513Z_n500_c3_10scouts_FINAL",
+  "coverage": {
+    "total_sites": 500,
+    "reliable": {
+      "count": 290,
+      "pct_of_total": 58.0
+    },
+    "unreliable": {
+      "count": 210,
+      "pct_of_total": 42.0
+    },
+    "scan_failed_entirely": {
+      "count": 0,
+      "pct_of_total": 0.0
+    },
+    "unreliable_subcategories": {
+      "WAF/anti-bot block on a real web server": {
+        "count": 106,
+        "pct_of_unreliable": 50.5,
+        "sites": [
+          "https://marketwatch.com",
+          "https://pnas.org",
+          "https://rumble.com",
+          "https://vkuseraudio.net",
+          "https://cdn-cookieyes.com",
+          "https://dmcdn.net",
+          "https://elcorteingles.es",
+          "https://intercars.eu",
+          "https://becdn.net",
+          "https://sikayetvar.com",
+          "https://sultantotop5.com",
+          "https://cybera.net",
+          "https://lidl.es",
+          "https://usp-vpn.store",
+          "https://nightcafe.studio",
+          "https://usercontent.one",
+          "https://dindadisini.space",
+          "https://ebay.ie",
+          "https://skwstat.ru",
+          "https://yummly.com",
+          "https://aswatson.com",
+          "https://spellknight.com",
+          "https://cosmotown.com",
+          "https://newarab.com",
+          "https://canlii.org",
+          "https://ahcgyy120.com",
+          "https://sonetel.net",
+          "https://asanausercontent.com",
+          "https://bupa.com.au",
+          "https://ahgora.com.br",
+          "https://apteka-april.ru",
+          "https://securitybank.com",
+          "https://x10.mx",
+          "https://bristol.ru",
+          "https://consumercellular.com",
+          "https://litebox.ru",
+          "https://zuihuo.net",
+          "https://umatex.com",
+          "https://swiftinternet.co.uk",
+          "https://xo.gr",
+          "https://bmw.it",
+          "https://zaxbys.com",
+          "https://looksmax.org",
+          "https://373soft.ru",
+          "https://ottvs.com.br",
+          "https://home.net",
+          "https://gome.com.cn",
+          "https://kurs.com.ua",
+          "https://contanuity.com",
+          "https://swamp.net.au",
+          "https://exisport.com",
+          "https://toonippo.co.jp",
+          "https://anibis.ch",
+          "https://readcomicsonline.ru",
+          "https://rochendns.com",
+          "https://empa.ch",
+          "https://nfu.edu.tw",
+          "https://i-teka.kz",
+          "https://aramisauto.com",
+          "https://lululemon.com.au",
+          "https://alouissupply.com",
+          "https://bx024.vip",
+          "https://xxxvideo.blog",
+          "https://84302764.xyz",
+          "https://bitcoin-supply.com",
+          "https://softwareheritage.org",
+          "https://reserver.ru",
+          "https://cognex.com",
+          "https://crazydomains.com.au",
+          "https://ruh.ac.lk",
+          "https://diziwatch.ac",
+          "https://rtrsupport.de",
+          "https://ipgp.fr",
+          "https://peapod.com",
+          "https://superestagios.com.br",
+          "https://goldbrantech.com",
+          "https://pgcps.org",
+          "https://zoritolerimol.com",
+          "https://firmenabc.at",
+          "https://premiumbonus.su",
+          "https://brwsrfrm.com",
+          "https://duroflexworld.com",
+          "https://locateconference.com",
+          "https://pcpro.co.uk",
+          "https://lively.com",
+          "https://nhanow.com",
+          "https://domestico24.es",
+          "https://goboult.co.in",
+          "https://cpaaustralia.com.au",
+          "https://huddleboard.net",
+          "https://lespompeurs.com",
+          "https://moodfabrics.com",
+          "https://azgard.top",
+          "https://bananatag.com",
+          "https://e-raj.in",
+          "https://kilat77.lc",
+          "https://member2you.com",
+          "https://carolina.com",
+          "https://brockport.edu",
+          "https://diariolasamericas.com",
+          "https://divainparfums.com",
+          "https://comicshubingestion.goog",
+          "https://fcgov.com",
+          "https://cenpac.net.nr",
+          "https://lightnews.app",
+          "https://thespicehouse.com"
+        ]
+      },
+      "No resolvable web server at all (DNS/connection failure)": {
+        "count": 97,
+        "pct_of_unreliable": 46.2,
+        "sites": [
+          "https://applvn.com",
+          "https://domainnamedns.com",
+          "https://awsdns-44.com",
+          "https://openweathermap.org",
+          "https://kunlunaq.com",
+          "https://bilivideo.com",
+          "https://52.in-addr.arpa",
+          "https://webthing.com",
+          "https://lgdacom.net",
+          "https://novotelecom.ru",
+          "https://infomart.co.jp",
+          "https://tatasteel.co.in",
+          "https://gprocurement.go.th",
+          "https://mangolibreria.com",
+          "https://xyyh.com.cn",
+          "https://nordcdn.com",
+          "https://publicdnsservice.com",
+          "https://aaronweintraubwantstobecyberpolice.com",
+          "https://cprapid.com",
+          "https://donutsmp.org",
+          "https://staticvaultcdn.xyz",
+          "https://tepco.co.jp",
+          "https://nit.ro",
+          "https://anycast.me",
+          "https://alkame7awx6p.com",
+          "https://farfetch.net",
+          "https://adlooxtracking.ru",
+          "https://collegehumor.com",
+          "https://covatic.io",
+          "https://remirepo.net",
+          "https://personio-internal.de",
+          "https://xtrivdfw.com",
+          "https://q-bid.ru",
+          "https://zrouteofficial.com",
+          "https://nothing-sus.com",
+          "https://sipgate.cloud",
+          "https://mp3.com",
+          "https://lejia114.com",
+          "https://comcel.com.co",
+          "https://infralab.net",
+          "https://eascdn.net",
+          "https://yourchain.info",
+          "https://monsanto.com",
+          "https://limbuscompanyapi.com",
+          "https://giacom.net",
+          "https://cdns.su",
+          "https://edgedns.co",
+          "https://grooveshark.com",
+          "https://webfaction.com",
+          "https://veronap.republican",
+          "https://archeofuturae.com",
+          "https://ns-tech-ns.com",
+          "https://dealercenter.net",
+          "https://phdns22.es",
+          "https://mgsreops.com",
+          "https://appboy.eu",
+          "https://bizmoto-pay.com",
+          "https://una.ac.cr",
+          "https://elasticnet.co",
+          "https://light.com.br",
+          "https://aebc.com",
+          "https://earth.li",
+          "https://bdc-services.net",
+          "https://harbor.systems",
+          "https://livehwc3.cn",
+          "https://osse.io",
+          "https://aelwynvel.com",
+          "https://namitraco.top",
+          "https://lithiumdns.net",
+          "https://this-dns.net",
+          "https://aalqhky.pics",
+          "https://republic.ru",
+          "https://awsdns-cn-48.net",
+          "https://quick-tv.com",
+          "https://pld-linux.org",
+          "https://unnychat.com",
+          "https://bpdbali.id",
+          "https://aaa200.rocks",
+          "https://chaco.gov.ar",
+          "https://365rm.us",
+          "https://supremebox.com",
+          "https://vpnunlimitedapp.com",
+          "https://4991415.xyz",
+          "https://asianetcom.net",
+          "https://my-nameservers.com",
+          "https://ums.edu.my",
+          "https://poromacrusted.shop",
+          "https://apnconnect.com",
+          "https://dpanufdfdt.net",
+          "https://jrkyushu-timetable.jp",
+          "https://i-now.com",
+          "https://imon.co.jp",
+          "https://geo-company.net",
+          "https://saude.rn.gov.br",
+          "https://whs-saas.com",
+          "https://nulled-ns.com",
+          "https://bloomreach.cloud"
+        ]
+      },
+      "Partial module completion despite a representative page": {
+        "count": 7,
+        "pct_of_unreliable": 3.3,
+        "sites": [
+          "https://line.biz",
+          "https://rp5.ru",
+          "https://mha.gov.in",
+          "https://icourse163.org",
+          "https://theclinic.cl",
+          "https://ucpa.com",
+          "https://ythestarsarequ.com"
+        ]
+      }
+    }
+  },
+  "score_stats": {
+    "n_reliable_sites": 290,
+    "mean_score": 20.95,
+    "median_score": 18.0,
+    "stdev_score": 20.65,
+    "grade_distribution": {
+      "B": {
+        "count": 2,
+        "pct": 0.7
+      },
+      "C": {
+        "count": 8,
+        "pct": 2.8
+      },
+      "D": {
+        "count": 11,
+        "pct": 3.8
+      },
+      "F": {
+        "count": 269,
+        "pct": 92.8
+      }
+    }
+  },
+  "findings_stats": {
+    "n_reliable_sites": 290,
+    "mean_total_findings": 37.42,
+    "mean_findings_by_severity": {
+      "critical": 0.22,
+      "high": 3.04,
+      "medium": 8.01,
+      "low": 14.37,
+      "info": 11.78
+    },
+    "top_finding_titles": [
+      {
+        "title": "OCSP Stapling Not Enabled",
+        "site_count": 290,
+        "pct_of_reliable_sites": 100.0
+      },
+      {
+        "title": "Missing Origin-Agent-Cluster",
+        "site_count": 289,
+        "pct_of_reliable_sites": 99.7
+      },
+      {
+        "title": "Missing Cross-Origin-Embedder-Policy",
+        "site_count": 289,
+        "pct_of_reliable_sites": 99.7
+      },
+      {
+        "title": "Missing Document-Policy",
+        "site_count": 287,
+        "pct_of_reliable_sites": 99.0
+      },
+      {
+        "title": "Missing Cross-Origin-Resource-Policy",
+        "site_count": 285,
+        "pct_of_reliable_sites": 98.3
+      },
+      {
+        "title": "No exposed dependency manifest found",
+        "site_count": 283,
+        "pct_of_reliable_sites": 97.6
+      },
+      {
+        "title": "TLS Server Fingerprint (JA3S)",
+        "site_count": 279,
+        "pct_of_reliable_sites": 96.2
+      },
+      {
+        "title": "Missing X-Permitted-Cross-Domain-Policies",
+        "site_count": 279,
+        "pct_of_reliable_sites": 96.2
+      },
+      {
+        "title": "Missing Cross-Origin-Opener-Policy",
+        "site_count": 278,
+        "pct_of_reliable_sites": 95.9
+      },
+      {
+        "title": "ALPN Negotiated",
+        "site_count": 267,
+        "pct_of_reliable_sites": 92.1
+      },
+      {
+        "title": "Missing Permissions-Policy",
+        "site_count": 263,
+        "pct_of_reliable_sites": 90.7
+      },
+      {
+        "title": "No CORS response headers observed",
+        "site_count": 254,
+        "pct_of_reliable_sites": 87.6
+      },
+      {
+        "title": "Technology stack identified",
+        "site_count": 245,
+        "pct_of_reliable_sites": 84.5
+      },
+      {
+        "title": "Missing DNS CAA Record",
+        "site_count": 240,
+        "pct_of_reliable_sites": 82.8
+      },
+      {
+        "title": "Missing Content-Security-Policy",
+        "site_count": 215,
+        "pct_of_reliable_sites": 74.1
+      }
+    ]
+  },
+  "waf_distribution": {
+    "total_sites": 500,
+    "vendor_counts": {
+      "Cloudflare": 165,
+      "AWS CloudFront": 24,
+      "Akamai": 10,
+      "Imperva/Incapsula": 2
+    },
+    "blocked_unattributed": 51
+  },
+  "runtime_stats": {
+    "mean_duration_seconds": 8.37,
+    "median_duration_seconds": 6.045,
+    "max_duration_seconds": 63.43,
+    "batch_wall_clock_seconds": 1400.67
+  }
+}

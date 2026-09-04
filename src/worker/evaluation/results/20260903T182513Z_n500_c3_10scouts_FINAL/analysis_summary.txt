@@ -1,0 +1,269 @@
+Bravo6 Evaluation Analysis — batch 20260903T182513Z_n500_c3_10scouts_FINAL
+============================================================
+
+COVERAGE (500 sites total)
+  grade_reliable=True  (assessable):   290 (58.0%)
+  grade_reliable=False (unreliable):   210 (42.0%)
+
+  Unreliable breakdown by cause:
+    - WAF/anti-bot block on a real web server: 106 (50.5% of unreliable)
+        · https://marketwatch.com
+        · https://pnas.org
+        · https://rumble.com
+        · https://vkuseraudio.net
+        · https://cdn-cookieyes.com
+        · https://dmcdn.net
+        · https://elcorteingles.es
+        · https://intercars.eu
+        · https://becdn.net
+        · https://sikayetvar.com
+        · https://sultantotop5.com
+        · https://cybera.net
+        · https://lidl.es
+        · https://usp-vpn.store
+        · https://nightcafe.studio
+        · https://usercontent.one
+        · https://dindadisini.space
+        · https://ebay.ie
+        · https://skwstat.ru
+        · https://yummly.com
+        · https://aswatson.com
+        · https://spellknight.com
+        · https://cosmotown.com
+        · https://newarab.com
+        · https://canlii.org
+        · https://ahcgyy120.com
+        · https://sonetel.net
+        · https://asanausercontent.com
+        · https://bupa.com.au
+        · https://ahgora.com.br
+        · https://apteka-april.ru
+        · https://securitybank.com
+        · https://x10.mx
+        · https://bristol.ru
+        · https://consumercellular.com
+        · https://litebox.ru
+        · https://zuihuo.net
+        · https://umatex.com
+        · https://swiftinternet.co.uk
+        · https://xo.gr
+        · https://bmw.it
+        · https://zaxbys.com
+        · https://looksmax.org
+        · https://373soft.ru
+        · https://ottvs.com.br
+        · https://home.net
+        · https://gome.com.cn
+        · https://kurs.com.ua
+        · https://contanuity.com
+        · https://swamp.net.au
+        · https://exisport.com
+        · https://toonippo.co.jp
+        · https://anibis.ch
+        · https://readcomicsonline.ru
+        · https://rochendns.com
+        · https://empa.ch
+        · https://nfu.edu.tw
+        · https://i-teka.kz
+        · https://aramisauto.com
+        · https://lululemon.com.au
+        · https://alouissupply.com
+        · https://bx024.vip
+        · https://xxxvideo.blog
+        · https://84302764.xyz
+        · https://bitcoin-supply.com
+        · https://softwareheritage.org
+        · https://reserver.ru
+        · https://cognex.com
+        · https://crazydomains.com.au
+        · https://ruh.ac.lk
+        · https://diziwatch.ac
+        · https://rtrsupport.de
+        · https://ipgp.fr
+        · https://peapod.com
+        · https://superestagios.com.br
+        · https://goldbrantech.com
+        · https://pgcps.org
+        · https://zoritolerimol.com
+        · https://firmenabc.at
+        · https://premiumbonus.su
+        · https://brwsrfrm.com
+        · https://duroflexworld.com
+        · https://locateconference.com
+        · https://pcpro.co.uk
+        · https://lively.com
+        · https://nhanow.com
+        · https://domestico24.es
+        · https://goboult.co.in
+        · https://cpaaustralia.com.au
+        · https://huddleboard.net
+        · https://lespompeurs.com
+        · https://moodfabrics.com
+        · https://azgard.top
+        · https://bananatag.com
+        · https://e-raj.in
+        · https://kilat77.lc
+        · https://member2you.com
+        · https://carolina.com
+        · https://brockport.edu
+        · https://diariolasamericas.com
+        · https://divainparfums.com
+        · https://comicshubingestion.goog
+        · https://fcgov.com
+        · https://cenpac.net.nr
+        · https://lightnews.app
+        · https://thespicehouse.com
+    - No resolvable web server at all (DNS/connection failure): 97 (46.2% of unreliable)
+        · https://applvn.com
+        · https://domainnamedns.com
+        · https://awsdns-44.com
+        · https://openweathermap.org
+        · https://kunlunaq.com
+        · https://bilivideo.com
+        · https://52.in-addr.arpa
+        · https://webthing.com
+        · https://lgdacom.net
+        · https://novotelecom.ru
+        · https://infomart.co.jp
+        · https://tatasteel.co.in
+        · https://gprocurement.go.th
+        · https://mangolibreria.com
+        · https://xyyh.com.cn
+        · https://nordcdn.com
+        · https://publicdnsservice.com
+        · https://aaronweintraubwantstobecyberpolice.com
+        · https://cprapid.com
+        · https://donutsmp.org
+        · https://staticvaultcdn.xyz
+        · https://tepco.co.jp
+        · https://nit.ro
+        · https://anycast.me
+        · https://alkame7awx6p.com
+        · https://farfetch.net
+        · https://adlooxtracking.ru
+        · https://collegehumor.com
+        · https://covatic.io
+        · https://remirepo.net
+        · https://personio-internal.de
+        · https://xtrivdfw.com
+        · https://q-bid.ru
+        · https://zrouteofficial.com
+        · https://nothing-sus.com
+        · https://sipgate.cloud
+        · https://mp3.com
+        · https://lejia114.com
+        · https://comcel.com.co
+        · https://infralab.net
+        · https://eascdn.net
+        · https://yourchain.info
+        · https://monsanto.com
+        · https://limbuscompanyapi.com
+        · https://giacom.net
+        · https://cdns.su
+        · https://edgedns.co
+        · https://grooveshark.com
+        · https://webfaction.com
+        · https://veronap.republican
+        · https://archeofuturae.com
+        · https://ns-tech-ns.com
+        · https://dealercenter.net
+        · https://phdns22.es
+        · https://mgsreops.com
+        · https://appboy.eu
+        · https://bizmoto-pay.com
+        · https://una.ac.cr
+        · https://elasticnet.co
+        · https://light.com.br
+        · https://aebc.com
+        · https://earth.li
+        · https://bdc-services.net
+        · https://harbor.systems
+        · https://livehwc3.cn
+        · https://osse.io
+        · https://aelwynvel.com
+        · https://namitraco.top
+        · https://lithiumdns.net
+        · https://this-dns.net
+        · https://aalqhky.pics
+        · https://republic.ru
+        · https://awsdns-cn-48.net
+        · https://quick-tv.com
+        · https://pld-linux.org
+        · https://unnychat.com
+        · https://bpdbali.id
+        · https://aaa200.rocks
+        · https://chaco.gov.ar
+        · https://365rm.us
+        · https://supremebox.com
+        · https://vpnunlimitedapp.com
+        · https://4991415.xyz
+        · https://asianetcom.net
+        · https://my-nameservers.com
+        · https://ums.edu.my
+        · https://poromacrusted.shop
+        · https://apnconnect.com
+        · https://dpanufdfdt.net
+        · https://jrkyushu-timetable.jp
+        · https://i-now.com
+        · https://imon.co.jp
+        · https://geo-company.net
+        · https://saude.rn.gov.br
+        · https://whs-saas.com
+        · https://nulled-ns.com
+        · https://bloomreach.cloud
+    - Partial module completion despite a representative page: 7 (3.3% of unreliable)
+        · https://line.biz
+        · https://rp5.ru
+        · https://mha.gov.in
+        · https://icourse163.org
+        · https://theclinic.cl
+        · https://ucpa.com
+        · https://ythestarsarequ.com
+
+SCORE STATISTICS (n=290 reliable sites only)
+  mean score:   20.95
+  median score: 18.0
+  stdev score:  20.65
+  grade distribution:
+    B: 2 (0.7%)
+    C: 8 (2.8%)
+    D: 11 (3.8%)
+    F: 269 (92.8%)
+
+FINDINGS BREAKDOWN (n=290 reliable sites only)
+  mean total findings per site: 37.42
+  mean findings per site by severity:
+    critical: 0.22
+    high: 3.04
+    medium: 8.01
+    low: 14.37
+    info: 11.78
+  top 15 most common finding titles:
+    290 sites (100.0%)  OCSP Stapling Not Enabled
+    289 sites ( 99.7%)  Missing Origin-Agent-Cluster
+    289 sites ( 99.7%)  Missing Cross-Origin-Embedder-Policy
+    287 sites ( 99.0%)  Missing Document-Policy
+    285 sites ( 98.3%)  Missing Cross-Origin-Resource-Policy
+    283 sites ( 97.6%)  No exposed dependency manifest found
+    279 sites ( 96.2%)  TLS Server Fingerprint (JA3S)
+    279 sites ( 96.2%)  Missing X-Permitted-Cross-Domain-Policies
+    278 sites ( 95.9%)  Missing Cross-Origin-Opener-Policy
+    267 sites ( 92.1%)  ALPN Negotiated
+    263 sites ( 90.7%)  Missing Permissions-Policy
+    254 sites ( 87.6%)  No CORS response headers observed
+    245 sites ( 84.5%)  Technology stack identified
+    240 sites ( 82.8%)  Missing DNS CAA Record
+    215 sites ( 74.1%)  Missing Content-Security-Policy
+
+WAF / VENDOR DISTRIBUTION (all 500 sites)
+  Cloudflare: 165
+  AWS CloudFront: 24
+  Akamai: 10
+  Imperva/Incapsula: 2
+  blocked but unattributed (unrecognized vendor): 51
+
+RUNTIME (all 500 sites)
+  mean duration:   8.37s
+  median duration: 6.045s
+  max duration:    63.43s
+  batch wall-clock total: 1400.67s

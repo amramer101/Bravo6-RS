@@ -20,6 +20,22 @@ derived as len(result["tests"]), since main_scanner.py populates one
 completed, errored, or timed out (see run_scout()'s dispatch loop). This
 is a read of an existing field's cardinality, not an invented value.
 
+Two more derived columns, added so a future per-scout or per-check
+question doesn't require re-opening every per-site JSON (or writing a new
+one-off script) the way this session had to for the n=500 FINAL batch:
+
+  - `findings_by_scout`: a compact JSON object string, {module_name:
+    finding_count}, built from result["findings"][*]["module"]. Answers
+    "how many sites had >=1 finding from scout X" or "mean findings per
+    scout" directly from aggregate.csv (e.g.
+    json.loads(row["findings_by_scout"]).get("test_09_sri", 0)).
+  - `ocsp_stapling`: the tri-state OCSP result from
+    tests.test_04_ssl_tls.details.ocsp_stapling ("true" / "false" /
+    "unknown" -- stapled / confirmed-not-stapled / could-not-be-determined,
+    per the openssl -status probe). Recorded directly rather than via the
+    finding's confidence string so "checked and confirmed absent" is
+    visible without re-deriving it from finding text.
+
 Usage:
     python3 aggregate_results.py results/20260829T214512Z
     python3 aggregate_results.py results/20260829T214512Z --output custom_name.csv
@@ -34,7 +50,35 @@ AGGREGATE_FIELDS = [
     "url", "rank", "score", "raw_score", "grade", "grade_reliable", "coverage_note",
     "total_findings", "critical", "high", "medium", "low", "info",
     "tests_run", "modules_discovered", "waf", "page_is_representative", "duration_seconds",
+    "findings_by_scout", "ocsp_stapling",
 ]
+
+
+def _findings_by_scout(result: Dict[str, Any]) -> str:
+    counts: Dict[str, int] = {}
+    for f in result.get("findings") or []:
+        module = f.get("module")
+        if module:
+            counts[module] = counts.get(module, 0) + 1
+    return json.dumps(counts, sort_keys=True)
+
+
+def _ocsp_stapling_status(result: Dict[str, Any]) -> Optional[str]:
+    """Tri-state OCSP result from test_04_ssl_tls's own `details` dict:
+    True (stapled) / False (server confirmed it sent none) / None (probe
+    could not be completed, or test_04 didn't run at all -- e.g. a
+    WAF-blocked scan still runs test_04, but a scan that predates the
+    openssl -status fix won't carry this key)."""
+    test_04 = (result.get("tests") or {}).get("test_04_ssl_tls") or {}
+    details = test_04.get("details") or {}
+    if "ocsp_stapling" not in details:
+        return None
+    value = details["ocsp_stapling"]
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "unknown"
 
 
 def _load_manifest(batch_dir: Path):
@@ -67,6 +111,8 @@ def _row_from_result(url: str, rank: Optional[str], result: Dict[str, Any]) -> D
         "waf": result.get("waf"),
         "page_is_representative": result.get("page_is_representative"),
         "duration_seconds": result.get("duration_seconds"),
+        "findings_by_scout": _findings_by_scout(result),
+        "ocsp_stapling": _ocsp_stapling_status(result),
     }
 
 

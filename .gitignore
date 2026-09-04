@@ -76,5 +76,25 @@ src/worker/**.json
 # drawn sample) stay tracked: small, human-readable, and the citable
 # record of exactly which domains a given evaluation run used. Per-batch
 # scan results are regenerable via run_evaluation.py against that sample.
+#
+# The canonical n=500 batch is the one exception: aggregate.csv, the
+# manifest/run-summary, and the derived-analysis JSONs (produced by the
+# committed analyze_evaluation.py / analyze_cache_efficiency.py /
+# tier_fix_counterfactual.py -- not one-off scratch scripts) are tracked so
+# the paper's evaluation numbers stay reproducible from what's in the repo.
+# The 500 individual per-site result JSONs stay out of git (large, and
+# reflect third-party sites' own response content) -- archive them
+# separately if needed.
 src/worker/evaluation/data/tranco_*.csv
-src/worker/evaluation/results/
+src/worker/evaluation/results/*
+!src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/
+src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/rank_*.json
+!src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/cache_efficiency.json
+!src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/tier_fix_counterfactual.json
+!src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/analysis_summary.json
+!src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/analysis_summary.txt
+# Superseded by the committed scripts' outputs above -- these were the
+# original un-reproducible one-off outputs (no source script in the repo).
+src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/cache_counter_n500.csv
+src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/cache_counter_n500_summary.json
+src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/fig1_fig6_data.json
