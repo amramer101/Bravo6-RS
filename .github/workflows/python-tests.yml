@@ -1,0 +1,42 @@
+name: Python Tests
+
+on:
+  push:
+    branches: [main]
+    paths: ['src/worker/**']
+  pull_request:
+    paths: ['src/worker/**']
+  workflow_dispatch:
+
+jobs:
+  scout-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Every scout doubles as its own plugin module and its own regression
+      # suite (`python3 test_NN_*.py --test`, unittest-based). Run each one
+      # individually rather than via a shared test runner so a failure names
+      # exactly which scout broke, matching how these suites are already run
+      # locally and cited in the paper (e.g. "test_04_ssl_tls.py --test").
+      - name: Run scout regression suites
+        run: |
+          set -e
+          for f in test_*.py; do
+            echo "::group::${f} --test"
+            python3 "${f}" --test
+            echo "::endgroup::"
+          done
+
+      - name: Run orchestrator regression suite
+        run: python3 main_scanner.py --test
