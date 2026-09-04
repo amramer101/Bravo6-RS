@@ -126,7 +126,12 @@ def _extract_context(text: str, start: int, end: int) -> str:
         line = lines[i].strip()
         if len(line) > 200:
             line = line[:200] + "..."
-        ctx_lines.append(f"{i + 1}: {line}")
+        # Redact anything on the surrounding lines that itself matches a
+        # secret pattern (the matched secret, or a *second* secret one line
+        # over) so the context window persisted into a finding's evidence --
+        # and thence into Cosmos DB / the result JSON -- never carries a
+        # live credential in the clear.
+        ctx_lines.append(f"{i + 1}: {_redact_secrets(line)}")
     return "\n".join(ctx_lines)
 
 # ────────────────────────────────────────────── Active Verification ──────────────────────────────────────────
@@ -184,6 +189,42 @@ SECRET_PATTERNS = [
     ("Database Connection",     re.compile(r'(?i)(mongodb(?:\+srv)?|mysql|postgresql|redis|amqp):\/\/[^:\/\s"\'<>]+:[^@\/\s"\'<>]+@[^\s"\'<>]+'), 0, True),
     ("Generic High-Entropy Secret", re.compile(r'["\'`]([A-Za-z0-9+/_\-=]{32,})["\'`]'), 1, False)
 ]
+
+
+def _redact_secrets(text: str) -> str:
+    """Replace every substring of `text` that matches a known secret pattern
+    with its masked form (`_mask`). Used to sanitise the context window and
+    any other free-text that gets persisted into a finding -- a scout must
+    never write a live credential in the clear into a result document.
+
+    Runs the same SECRET_PATTERNS used for detection (including the generic
+    high-entropy pattern), so a second credential sitting one line away from
+    the matched one is masked too.
+    """
+    if not text:
+        return text
+    spans = []
+    for _label, pattern, group_idx, _hc in SECRET_PATTERNS:
+        for m in pattern.finditer(text):
+            try:
+                s = m.start(group_idx) if group_idx else m.start()
+                e = m.end(group_idx) if group_idx else m.end()
+            except (IndexError, re.error):
+                continue
+            if e > s:
+                spans.append((s, e))
+    if not spans:
+        return text
+    spans.sort()
+    out, cursor = [], 0
+    for s, e in spans:
+        if s < cursor:            # overlapping / already-covered span
+            continue
+        out.append(text[cursor:s])
+        out.append(_mask(text[s:e]))
+        cursor = e
+    out.append(text[cursor:])
+    return "".join(out)
 
 # ────────────────────────────────────────────── Extraction / Deobfuscation ───────────────────────────────────
 def _extract_decoded_strings(content: str) -> Tuple[List[str], Optional[str]]:
@@ -347,7 +388,7 @@ async def _scan_content(
                     "owasp": "A07:2021",
                     "location": f"{source_url} (lines {ak_data['line']} and {sk_data['line']})",
                     "evidence": f"Access Key: {_mask(ak_val)}\nSecret Key: {_mask(sk_val)}\nContext:\n{_extract_context(content, ak_data['start'], sk_data['end'])}",
-                    "poc": f"aws sts get-caller-identity --access-key-id {ak_val} --secret-access-key <SECRET>",
+                    "poc": f"aws sts get-caller-identity --access-key-id {_mask(ak_val)} --secret-access-key <SECRET>  # values redacted; recover both from {source_url}",
                     "remediation": "Deactivate the AWS access key and secret key immediately.",
                     "detection_method": "Secret Correlation",
                 })
@@ -588,6 +629,236 @@ if __name__ == "__main__":
                 soup = BeautifulSoup(html, "html.parser")
                 external, _ = _extract_scripts(soup, "https://shop.example.com/")
                 self.assertEqual(external, ["https://shop.example.com/static/app.js"])
+
+        class TestSecretRedaction(unittest.IsolatedAsyncioTestCase):
+            """No finding a scout emits may carry a live credential in the
+            clear. _mask() covers the matched value; _redact_secrets() covers
+            the surrounding context window and any other free-text persisted
+            into the result document (and, in production, into Cosmos DB).
+            Regression for: _extract_context() previously echoed the raw
+            source line -- secret included -- straight into `evidence`, and
+            main_scanner.normalize_finding() then stored a second verbatim
+            copy under `raw_data`."""
+
+            OPENAI = "sk-" + "A1b2C3d4" * 5          # matches the OpenAI pattern
+            GH = "ghp_" + "B" * 40                   # matches the GitHub pattern
+            AKIA = "AKIA" + "ABCDEFGHIJKLMNOP"       # matches the AWS-access-key pattern
+
+            def test_redact_secrets_masks_each_pattern(self):
+                for raw in (self.OPENAI, self.GH, self.AKIA):
+                    red = _redact_secrets(f"const key = '{raw}'; // note")
+                    self.assertNotIn(raw, red)
+                    self.assertIn("...", red)
+
+            def test_redact_secrets_masks_a_second_secret_on_the_same_line(self):
+                red = _redact_secrets(f"a={self.OPENAI} b={self.GH}")
+                self.assertNotIn(self.OPENAI, red)
+                self.assertNotIn(self.GH, red)
+
+            def test_redact_secrets_noop_on_clean_text(self):
+                clean = "const timeout = 30000; // milliseconds"
+                self.assertEqual(_redact_secrets(clean), clean)
+
+            def test_extract_context_never_echoes_the_raw_secret(self):
+                content = "\n".join(
+                    ["const a = 1;", f"const OPENAI_API_KEY = '{self.OPENAI}';", "const b = 2;"]
+                )
+                start = content.index(self.OPENAI)
+                ctx = _extract_context(content, start, start + len(self.OPENAI))
+                self.assertNotIn(self.OPENAI, ctx)
+                self.assertIn("OPENAI_API_KEY", ctx)  # surrounding context still useful
+
+            async def test_scan_content_finding_has_no_unredacted_secret_anywhere(self):
+                content = (
+                    "// config\n"
+                    f'const OPENAI_API_KEY = "{self.OPENAI}";\n'
+                    f'const GITHUB_TOKEN = "{self.GH}";\n'
+                )
+                findings = await _scan_content(
+                    content, "app.js", "https://example.com/app.js",
+                    session=None, is_script=True,
+                    semaphore=asyncio.Semaphore(1), verify_live=False,
+                )
+                self.assertTrue(findings, "expected at least one secret finding")
+                for f in findings:
+                    blob = " ".join(str(f.get(k, "")) for k in
+                                    ("title", "evidence", "poc", "location", "remediation"))
+                    self.assertNotIn(self.OPENAI, blob, f["title"])
+                    self.assertNotIn(self.GH, blob, f["title"])
+
+        # ---- Fixtures for the run()-level coverage tests below --------------------
+        class _CoverageFakeContent:
+            def __init__(self, data: bytes):
+                self._data = data
+
+            async def read(self, n: int = -1) -> bytes:
+                return self._data
+
+        class _CoverageFakeResp:
+            def __init__(self, status: int = 200, body: str = ""):
+                self.status = status
+                self._body = body.encode() if isinstance(body, str) else body
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            @property
+            def content(self):
+                return _CoverageFakeContent(self._body)
+
+        class _CoverageFakeSession:
+            """Routes session.get(url) by substring; unmatched -> 404."""
+            def __init__(self, routes=None):
+                self._routes = routes or []
+
+            def get(self, url, timeout=None):
+                for substr, resp in self._routes:
+                    if substr in url:
+                        return resp
+                return _CoverageFakeResp(404)
+
+        class _CoverageCtx:
+            """Minimal stand-in for ScannerContext covering everything run()
+            touches: url, session, main_page_cache, js_cache, config,
+            page_is_representative, metrics, fetch_js()."""
+            def __init__(self, html, session=None, js_cache=None, config=None):
+                self.url = "https://example.com"
+                self.session = session or _CoverageFakeSession()
+                self.main_page_cache = {
+                    "status": 200, "html": html,
+                    "soup": BeautifulSoup(html, "html.parser"),
+                }
+                self.js_cache = js_cache or {}
+                self.config = config or {}
+                self.page_is_representative = True
+                self.metrics = {}
+
+            async def fetch_js(self, js_url: str) -> str:
+                if js_url in self.js_cache:
+                    return self.js_cache[js_url]
+                try:
+                    async with self.session.get(js_url, timeout=8) as resp:
+                        if resp.status == 200:
+                            return (await resp.content.read()).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                return ""
+
+        class TestRunEndToEndCoverage(unittest.IsolatedAsyncioTestCase):
+            """This scout previously had only 4 test methods / 7 assertions,
+            none of which exercised run() itself, the AWS access-key/secret-key
+            pair correlation, the entropy filter on the generic high-entropy
+            pattern, atob() deobfuscation, or the referenced-configuration-file
+            fetch path -- the highest-risk scout had the thinnest coverage.
+            These drive run() end-to-end (not just the individual helpers in
+            isolation) so a wiring regression between them is also caught."""
+
+            async def test_run_finds_inline_secret_and_records_cache_read(self):
+                secret = "sk-" + "E" * 40
+                html = f'<html><head><script>const OPENAI_API_KEY = "{secret}";</script></head></html>'
+                ctx = _CoverageCtx(html)
+                result = await run(ctx)
+                self.assertTrue(any("OpenAI" in f["title"] for f in result["findings"]))
+                self.assertEqual(ctx.metrics.get("cache_reads"), 1)
+
+            async def test_run_scans_external_script_served_from_js_cache(self):
+                secret = "ghp_" + "F" * 40
+                html = '<html><head><script src="https://example.com/app.js"></script></head></html>'
+                ctx = _CoverageCtx(html, js_cache={"https://example.com/app.js": f'const t = "{secret}";'})
+                result = await run(ctx)
+                self.assertTrue(any("GitHub" in f["title"] for f in result["findings"]))
+
+            async def test_aws_key_pair_within_range_is_correlated_into_one_finding(self):
+                content = (
+                    'const AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";\n'
+                    'const aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";\n'
+                )
+                findings = await _scan_content(
+                    content, "config.js", "https://example.com/config.js",
+                    session=None, is_script=True, semaphore=asyncio.Semaphore(1), verify_live=False,
+                )
+                titles = [f["title"] for f in findings]
+                self.assertEqual(sum("AWS Key Pair Exposed" in t for t in titles), 1)
+                self.assertFalse(any(t.startswith("AWS Access Key ID Exposed") for t in titles))
+                self.assertFalse(any(t.startswith("AWS Secret Access Key Exposed") for t in titles))
+
+            async def test_aws_keys_far_apart_are_reported_individually_not_paired(self):
+                padding = "// filler line to push the two matches apart\n" * 100  # > 3000 chars
+                content = (
+                    'const AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";\n'
+                    + padding +
+                    'const aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";\n'
+                )
+                findings = await _scan_content(
+                    content, "config.js", "https://example.com/config.js",
+                    session=None, is_script=True, semaphore=asyncio.Semaphore(1), verify_live=False,
+                )
+                titles = [f["title"] for f in findings]
+                self.assertFalse(any("AWS Key Pair Exposed" in t for t in titles))
+                self.assertTrue(any(t.startswith("AWS Access Key ID Exposed") for t in titles))
+                self.assertTrue(any(t.startswith("AWS Secret Access Key Exposed") for t in titles))
+
+            async def test_generic_secret_rejected_by_entropy_despite_credential_context(self):
+                low_entropy = ("abc" * 11)[:32]  # 3 distinct chars repeated -> ~1.6 bits/char
+                content = f'const api_key = "{low_entropy}";'
+                findings = await _scan_content(
+                    content, "config.js", "https://example.com/config.js",
+                    session=None, is_script=True, semaphore=asyncio.Semaphore(1), verify_live=False,
+                )
+                self.assertEqual(findings, [], "A low-entropy 'secret' must be filtered even with credential context.")
+
+            async def test_generic_secret_accepted_with_credential_context_and_high_entropy(self):
+                high_entropy = "Xk9mQ2pL7vT4wR8nB3jC6hF1sD5gA0yZ"
+                self.assertGreaterEqual(_shannon_entropy(high_entropy), 4.0)  # sanity-check the fixture
+                content = f'const api_key = "{high_entropy}";'
+                findings = await _scan_content(
+                    content, "config.js", "https://example.com/config.js",
+                    session=None, is_script=True, semaphore=asyncio.Semaphore(1), verify_live=False,
+                )
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0]["confidence"], "plausible-unconfirmed")
+
+            async def test_generic_secret_without_credential_context_is_never_flagged(self):
+                high_entropy = "Xk9mQ2pL7vT4wR8nB3jC6hF1sD5gA0yZ"
+                content = f'const some_value = "{high_entropy}";'
+                findings = await _scan_content(
+                    content, "config.js", "https://example.com/config.js",
+                    session=None, is_script=True, semaphore=asyncio.Semaphore(1), verify_live=False,
+                )
+                self.assertEqual(findings, [])
+
+            async def test_deobfuscation_finds_secret_hidden_behind_atob(self):
+                secret = "ghp_" + "G" * 40
+                hidden_js = f'const GITHUB_TOKEN = "{secret}";'
+                encoded = base64.b64encode(hidden_js.encode()).decode()
+                html = f"<html><head><script>eval(atob('{encoded}'))</script></head></html>"
+                ctx = _CoverageCtx(html)
+                result = await run(ctx)
+                self.assertTrue(
+                    any(f["title"].startswith("GitHub Token Exposed") for f in result["findings"]),
+                    "Expected the secret hidden behind atob() to be found via the deobfuscation pass.",
+                )
+
+            async def test_referenced_json_config_is_fetched_and_scanned(self):
+                secret = "sk-" + "H" * 40
+                html = '<html><head><link rel="manifest" href="/config.json"></head></html>'
+                session = _CoverageFakeSession(routes=[
+                    ("/config.json", _CoverageFakeResp(200, f'{{"OPENAI_API_KEY": "{secret}"}}')),
+                ])
+                ctx = _CoverageCtx(html, session=session)
+                result = await run(ctx)
+                self.assertTrue(any("config.json" in f["location"] for f in result["findings"]))
+
+            async def test_referenced_config_403_is_aggregated_not_reported_per_path(self):
+                html = '<html><head><link rel="stylesheet" href="/protected.env"></head></html>'
+                session = _CoverageFakeSession(routes=[("/protected.env", _CoverageFakeResp(403))])
+                ctx = _CoverageCtx(html, session=session)
+                result = await run(ctx)
+                titles = [f["title"] for f in result["findings"]]
+                self.assertTrue(any(t.startswith("Access restricted to") for t in titles))
 
         sys.argv = [sys.argv[0]]
         unittest.main()

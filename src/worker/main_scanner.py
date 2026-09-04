@@ -322,7 +322,15 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
     raw_tier = raw.get("tier")
     if not raw_tier and isinstance(raw.get("raw_data"), dict):
         raw_tier = raw.get("raw_data").get("tier")
-    
+
+    # NOTE: the scout's raw finding dict is deliberately NOT echoed back into
+    # the normalized finding. The 12 explicit fields above (plus `tier`) are
+    # the single source of truth; keeping a verbatim `raw_data` copy only
+    # duplicated every field, roughly doubled the persisted result size, and
+    # re-stored free-text evidence/context that a scout might have failed to
+    # redact (see test_01_secrets._redact_secrets). `tier` is preserved as a
+    # first-class field so compute_bravo6_score() still has everything it
+    # needs.
     return {
         "id": finding_id,
         "module": module_name,
@@ -337,7 +345,6 @@ def normalize_finding(raw: Dict[str, Any], module_name: str, index: int) -> Dict
         "remediation": str(remediation)[:500],
         "detection_method": str(detection_method)[:100],
         "tier": str(raw_tier)[:50] if raw_tier else "",
-        "raw_data": raw
     }
 
 # ------------------------------------------------------------------------------
@@ -411,11 +418,14 @@ def compute_bravo6_score(
         sev = f["severity"].lower()
         penalty = BASE_PENALTY.get(sev, 0)
         
-        # FIX 1: Read proper tier assigned natively by the scout
+        # Read the tier assigned natively by the scout. normalize_finding()
+        # flattens both the top-level and the nested raw_data["tier"] form
+        # into this single field; the nested-dict fallback is kept only for
+        # callers that pass un-normalized findings straight in (some tests).
         raw_tier = f.get("tier", "")
-        if not raw_tier:
-            raw_tier = f.get("raw_data", {}).get("tier", "")
-            
+        if not raw_tier and isinstance(f.get("raw_data"), dict):
+            raw_tier = f["raw_data"].get("tier", "")
+
         is_tier2 = (raw_tier == "hardening")
         
         if is_tier2:
