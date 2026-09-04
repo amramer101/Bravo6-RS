@@ -502,14 +502,23 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
             return {"error": "No test plugins found."}
             
         # FIX 2: Wrapper function to measure time precisely for each coroutine
+        #
+        # Deliberately does NOT catch asyncio.CancelledError: a caller
+        # cancelling this scan (e.g. run_evaluation.py's outer
+        # asyncio.wait_for(run_scout(...), OUTER_TIMEOUT_SECONDS) firing on a
+        # genuine hang) must actually be able to cancel it. Catching
+        # CancelledError here and returning it as an ordinary value made
+        # gather() below complete "normally" instead of propagating the
+        # cancellation, so run_scout() would return a partial result rather
+        # than actually stopping -- defeating the one mechanism meant to
+        # catch a hang above the per-module timeouts already enforced by
+        # asyncio.wait_for(coro, timeout=timeout_val) below.
         async def _timed(coro, mod_name):
             t0 = time.time()
             try:
                 result = await coro
                 return mod_name, result, round(time.time() - t0, 2)
             except Exception as e:
-                return mod_name, e, round(time.time() - t0, 2)
-            except asyncio.CancelledError as e:
                 return mod_name, e, round(time.time() - t0, 2)
 
         test_coroutines = []
