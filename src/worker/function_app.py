@@ -1,22 +1,20 @@
 import azure.functions as func
 import logging
-import asyncio
 import json
-import sys
-import os
 
-# Add the scanner folder to the Python path to ensure imports work correctly
-sys.path.append(os.path.join(os.path.dirname(__file__), 'scanner'))
-
-# Import the main orchestrator from main_scanner.py
+# main_scanner.py sits alongside this file at the Function App root.
 from main_scanner import run_scout
 
 app = func.FunctionApp()
 
+# queue_name must match terraform's var.service_bus_queue_name ("bravo6-queue").
+# connection="ServiceBusConnection" resolves to the
+# ServiceBusConnection__fullyQualifiedNamespace app setting (managed-identity
+# auth, no connection string) wired in terraform/modules/function_app/main.tf.
 @app.service_bus_queue_trigger(
     arg_name="msg",
-    queue_name="test",                     # The name of your Service Bus Queue
-    connection="ServiceBusConnection"      # The app setting key for the connection string
+    queue_name="bravo6-queue",
+    connection="ServiceBusConnection"
 )
 async def process_scan(msg: func.ServiceBusMessage):
     logging.info("📨 Service Bus message received")
@@ -32,15 +30,14 @@ async def process_scan(msg: func.ServiceBusMessage):
             logging.error("❌ Message does not contain a 'url' field")
             return  # Do not raise an exception for malformed messages
 
-        # 2. Execute the security scanner
+        # 2. Execute the security scanner.
+        # run_scout(url, config=None) is the sole public entry point in
+        # main_scanner.py -- it takes no verbose/min_confidence kwargs.
         logging.info(f"🚀 Starting scan for: {target_url}")
-        
-        result = await run_scout(
-            url=target_url,
-            verbose=False,        # Suppress console output
-            min_confidence=50
-        )
-        
+
+        config = data.get("config") if isinstance(data.get("config"), dict) else None
+        result = await run_scout(target_url, config=config)
+
         # 3. Log the scan summary
         logging.info(f"✅ Scan completed for {target_url}")
         logging.info(f"   - Total Findings: {result.get('total_findings', 0)}")
