@@ -34,11 +34,30 @@ jobs:
       - run: terraform validate
         working-directory: ./terraform
 
+      # soft_fail stays true, not as an unexamined blanket bypass: a local
+      # `checkov -d terraform` run (2026-09-04) reports 21 passed / 24
+      # failed. The large majority of the 24 are Premium/enterprise-tier or
+      # paid add-on features -- Cosmos/Service-Bus/Storage customer-managed
+      # keys, Service Bus double encryption + public-network-access-disabled
+      # + local-auth-disabled (VNet isolation and local-auth are
+      # Premium-tier-only, per ADR-001 in the paper), storage private
+      # endpoint, App Service Plan zone redundancy / minimum instance count
+      # -- that would require abandoning the cost-driven Standard-tier
+      # decisions already recorded in ADR-001/ADR-005 and the near-$0 cost
+      # model. ADR-001 already names its own revisit condition (real
+      # production traffic, or sensitive data entering message payloads).
+      # A smaller remainder (storage queue/blob logging, shared-key auth,
+      # SAS expiration policy, blob anonymous access, soft-delete) are NOT
+      # tier-locked and are real, unaddressed findings -- left for a
+      # follow-up pass rather than silently skipped or guessed at here,
+      # since several touch the storage account's auth surface for the Flex
+      # Consumption deployment-package pull and should be verified against
+      # a live deployment before being changed.
       - uses: bridgecrewio/checkov-action@master
         with:
           directory: ./terraform
           soft_fail: true
-          
+
       - run: terraform plan -out=tfplan.binary
         working-directory: ./terraform
 

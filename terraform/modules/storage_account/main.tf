@@ -5,6 +5,7 @@ resource "azurerm_storage_account" "functions_stg" {
   account_tier                  = var.storage_account_tier
   account_replication_type      = var.replication_type
   public_network_access_enabled = false
+  min_tls_version               = "TLS1_2"
 
   network_rules {
     default_action             = "Deny"
