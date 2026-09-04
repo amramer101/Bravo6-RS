@@ -27,6 +27,10 @@ resource "azurerm_function_app_flex_consumption" "report_function" {
     vnet_route_all_enabled = true
   }
 
+  app_settings = {
+    "APPLICATIONINSIGHTS_CONNECTION_STRING" = var.app_insights_connection_string
+  }
+
   tags = {
     source = "terraform"
   }

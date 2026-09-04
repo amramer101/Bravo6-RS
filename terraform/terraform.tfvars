@@ -34,3 +34,6 @@ static_web_app_size = "Free"
 
 external_tenant_id = "34f39b7a-e19b-4bdb-926e-fe4b0bd735e0"
 app_display_name   = "bravo6-frontend-spa"
+
+log_analytics_workspace_name = "bravo6-law"
+app_insights_name            = "bravo6-appi"

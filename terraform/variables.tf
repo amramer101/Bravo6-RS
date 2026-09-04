@@ -145,3 +145,15 @@ variable "external_tenant_id" {
 variable "app_display_name" {
   type = string
 }
+
+# --------------------------------------------- Observability Variables
+
+variable "log_analytics_workspace_name" {
+  type        = string
+  description = "Name of the Log Analytics workspace backing Application Insights"
+}
+
+variable "app_insights_name" {
+  type        = string
+  description = "Name of the Application Insights resource"
+}

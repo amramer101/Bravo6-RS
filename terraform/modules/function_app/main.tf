@@ -28,6 +28,7 @@ resource "azurerm_function_app_flex_consumption" "worker_function" {
 
   app_settings = {
     "ServiceBusConnection__fullyQualifiedNamespace" = "${var.service_bus_namespace}.servicebus.windows.net"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING"         = var.app_insights_connection_string
   }
 
   tags = {

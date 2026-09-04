@@ -37,3 +37,9 @@ variable "report_deployment_container_name" {
   type        = string
   description = "Name of the blob container holding the deployed package"
 }
+
+variable "app_insights_connection_string" {
+  type        = string
+  sensitive   = true
+  description = "Application Insights connection string, set as APPLICATIONINSIGHTS_CONNECTION_STRING"
+}
