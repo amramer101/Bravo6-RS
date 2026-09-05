@@ -37,3 +37,15 @@ app_display_name   = "bravo6-frontend-spa"
 
 log_analytics_workspace_name = "bravo6-law"
 app_insights_name            = "bravo6-appi"
+
+# --- API Gateway / Entra External ID (CIAM) auth values ---
+# INFERRED, NOT LIVE-CONFIRMED: built from the standard Entra External ID
+# (CIAM) issuer/JWKS URL shape (https://<subdomain>.ciamlogin.com/<tenant-id>/...)
+# and the CIAM directory's known name ("bravo6ciam.onmicrosoft.com", confirmed
+# live via `az resource list` in the last hardening pass) plus external_tenant_id
+# above. Before deploying the API Gateway, confirm the actual subdomain against
+# the tenant (e.g. its own OIDC discovery document at
+# https://<subdomain>.ciamlogin.com/<tenant-id>/v2.0/.well-known/openid-configuration)
+# rather than trusting this guess.
+entra_issuer   = "https://bravo6ciam.ciamlogin.com/34f39b7a-e19b-4bdb-926e-fe4b0bd735e0/v2.0"
+entra_jwks_uri = "https://bravo6ciam.ciamlogin.com/34f39b7a-e19b-4bdb-926e-fe4b0bd735e0/discovery/v2.0/keys"

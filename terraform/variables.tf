@@ -157,3 +157,15 @@ variable "app_insights_name" {
   type        = string
   description = "Name of the Application Insights resource"
 }
+
+# --------------------------------------------- API Gateway / Entra Auth Variables
+
+variable "entra_issuer" {
+  type        = string
+  description = "Expected JWT 'iss' claim the API Gateway validates tokens against -- the Entra External ID (CIAM) tenant's v2.0 issuer URL."
+}
+
+variable "entra_jwks_uri" {
+  type        = string
+  description = "JWKS endpoint URL the API Gateway fetches Entra External ID (CIAM) signing keys from."
+}

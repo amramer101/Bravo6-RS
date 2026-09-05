@@ -93,6 +93,20 @@ module "api_function" {
   storage_primary_blob_endpoint  = module.storage_account.primary_blob_endpoint
   api_deployment_container_name  = var.api_deployment_container_name
   app_insights_connection_string = module.observability.connection_string
+
+  service_bus_queue_name = var.service_bus_queue_name
+
+  # Reuses the "scans" container already provisioned in
+  # modules/cosmos_db/main.tf (partition key /scanId) for scan-job
+  # records -- see src/api/scan_job.py for why no new container was
+  # added.
+  cosmosdb_endpoint       = module.cosmos_db.cosmosdb_endpoint
+  cosmosdb_database_name  = var.db_name
+  cosmosdb_container_name = "scans"
+
+  entra_issuer   = var.entra_issuer
+  entra_jwks_uri = var.entra_jwks_uri
+  entra_audience = module.entra_external_id.client_id
 }
 
 module "report_function" {

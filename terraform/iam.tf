@@ -1,10 +1,13 @@
 locals {
   # Report's identity is deliberately excluded here -- its application code
   # only ever reads Cosmos DB, so it gets the read-only role below instead
-  # of Data Contributor.
+  # of Data Contributor. API is also excluded -- see the custom
+  # gateway_scan_writer role below: it only ever needs to read (quota
+  # count query) and create (new scan-job record) documents, never
+  # replace or delete one, so blanket Data Contributor is broader than
+  # its application code (src/api/scan_job.py, src/api/quota.py) needs.
   function_identities = {
     "worker" = module.function_app.worker_principal_id
-    "api"    = module.api_function.api_principal_id
   }
 
   # Each identity's Storage Blob Data Contributor grant is scoped to ONLY
@@ -79,6 +82,47 @@ resource "azurerm_cosmosdb_sql_role_assignment" "report_db_read_access" {
   role_definition_id = "${module.cosmos_db.cosmosdb_id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000001"
 
   principal_id = module.report_function.report_principal_id
+  scope        = module.cosmos_db.cosmosdb_id
+}
+
+# ----------------------------------------------
+# API Gateway Custom Role For Database (Data Plane) -- read + create only.
+# The Gateway's application code (src/api/scan_job.py, src/api/quota.py)
+# only ever reads (quota count query via executeQuery) and creates (new
+# scan-job record) documents -- it never replaces or deletes one, so
+# neither built-in role fits: Data Reader (...001) can't write at all,
+# and Data Contributor (...002) also grants replace/upsert/delete/
+# container- and database-level management actions it has no legitimate
+# reason to hold. No built-in "reader + create-only" role exists, so this
+# defines one -- the same least-privilege reasoning already applied to
+# Report's identity above, extended to a case that needs a genuinely
+# custom role rather than picking the closer of the two built-ins.
+# ----------------------------------------------
+resource "azurerm_cosmosdb_sql_role_definition" "gateway_scan_writer" {
+  name                = "Bravo6 Gateway Scan Writer"
+  resource_group_name = module.resource_group.name
+  account_name        = module.cosmos_db.cosmosdb_name
+  type                = "CustomRole"
+  assignable_scopes   = [module.cosmos_db.cosmosdb_id]
+
+  permissions {
+    data_actions = [
+      "Microsoft.DocumentDB/databaseAccounts/readMetadata",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/read",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/create",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed",
+    ]
+  }
+}
+
+resource "azurerm_cosmosdb_sql_role_assignment" "api_db_scan_writer" {
+  resource_group_name = module.resource_group.name
+  account_name        = module.cosmos_db.cosmosdb_name
+
+  role_definition_id = azurerm_cosmosdb_sql_role_definition.gateway_scan_writer.id
+
+  principal_id = module.api_function.api_principal_id
   scope        = module.cosmos_db.cosmosdb_id
 }
 
