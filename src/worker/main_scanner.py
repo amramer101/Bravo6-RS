@@ -14,10 +14,12 @@ import hashlib
 import importlib.util
 import inspect
 import io
+import ipaddress
 import json
 import logging
 import math
 import os
+import socket
 import sys
 import time
 import traceback
@@ -28,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+from aiohttp.resolver import ThreadedResolver
 from bs4 import BeautifulSoup
 
 # Optional Cosmos DB integration
@@ -78,6 +81,114 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Bravo6-Orchestrator")
 
+# ------------------------------------------------------------------------------
+# SSRF / Target Safety
+# ------------------------------------------------------------------------------
+class SSRFBlockedError(Exception):
+    """Raised when a target hostname/IP resolves to (or is) a non-public
+    address -- private, loopback, link-local (which includes the cloud
+    metadata endpoint 169.254.169.254), reserved, or multicast."""
+
+    def __init__(self, host: str, address: str):
+        self.host = host
+        self.address = address
+        super().__init__(
+            f"Refusing to connect to '{host}' -- resolves to non-public address {address}"
+        )
+
+
+def _is_ip_safe(ip: "ipaddress._BaseAddress") -> bool:
+    """Stdlib classification only -- deliberately not hand-rolled CIDR
+    checks. is_private already subsumes loopback/link-local/reserved for
+    both address families in Python's ipaddress module, but each is listed
+    explicitly here so the intent (and the metadata-endpoint case
+    specifically) is legible without reading CPython's source."""
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def is_target_address_safe(hostname_or_ip: str) -> bool:
+    """True if it's safe to issue an outbound scan request to hostname_or_ip.
+
+    A bare IP literal is checked directly. A hostname is resolved (A and
+    AAAA) and EVERY returned address must be safe -- one unsafe answer
+    among several fails the whole lookup, since a scanning HTTP client has
+    no reliable way to force which of several returned addresses it will
+    actually connect to.
+
+    An unresolvable hostname returns True: nothing unsafe has been proven,
+    and the connection attempt will simply fail on its own right after.
+    """
+    try:
+        return _is_ip_safe(ipaddress.ip_address(hostname_or_ip))
+    except ValueError:
+        pass  # not a literal IP -- resolve it below
+
+    try:
+        infos = socket.getaddrinfo(hostname_or_ip, None)
+    except socket.gaierror:
+        return True
+
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        return True
+
+    return all(_is_ip_safe(ipaddress.ip_address(addr)) for addr in addresses)
+
+
+class SSRFSafeConnector(aiohttp.TCPConnector):
+    """Closes a gap SSRFSafeResolver alone can't cover: aiohttp's own
+    TCPConnector._resolve_host() special-cases a literal IP host and
+    returns it directly WITHOUT ever calling the resolver (verified against
+    aiohttp 3.14.1's source -- `if is_ip_address(host): return [...]`, no
+    resolver call at all on that branch). A target given as a bare IP, or
+    an HTTP redirect Location pointing at one, would sail straight past
+    SSRFSafeResolver on that path. _resolve_host() is called uniformly
+    for the initial connection and every redirect hop, so overriding it
+    here covers a literal-IP host the same way the resolver covers a
+    hostname. Hostnames are deliberately NOT re-checked here (left to
+    SSRFSafeResolver): checking them again with a second, independent
+    getaddrinfo() call here would open a TOCTOU/DNS-rebinding gap between
+    what this check saw and what the resolver actually connects to.
+    """
+
+    async def _resolve_host(self, host, port, traces=None):
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None and not _is_ip_safe(ip):
+            raise SSRFBlockedError(host, host)
+        return await super()._resolve_host(host, port, traces)
+
+
+class SSRFSafeResolver(ThreadedResolver):
+    """Drop-in replacement for aiohttp's default resolver that rejects any
+    DNS answer pointing at a non-public address, wired into the single
+    aiohttp.TCPConnector every scout's requests share (see run_scout()).
+
+    This is also what makes the check apply to redirects, not just the
+    initial hostname: aiohttp opens a fresh connection -- and therefore
+    performs a fresh resolve() through this same connector/resolver -- for
+    every redirect hop, including a hop to a different host. A publicly
+    resolving hostname that 302s to an internal address is blocked here,
+    at the redirect target, the same way the initial target would be.
+    """
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        hosts = await super().resolve(host, port, family)
+        for h in hosts:
+            if not _is_ip_safe(ipaddress.ip_address(h["host"])):
+                raise SSRFBlockedError(host, h["host"])
+        return hosts
+
+
 # Canonical, shared table of known sensitive paths, owned by Orchestrator
 # Expanded to be a superset including all test_06_info_disclosure targets
 COMMON_SENSITIVE_PATHS = [
@@ -114,6 +225,13 @@ class ScannerContext:
     # Shared signal telling scouts if response is representative
     page_is_representative: bool = True
     waf_challenge_detected: Optional[str] = None
+
+    # Set when the pre-flight fetch was refused by SSRFSafeResolver -- the
+    # target (or something it redirected to) resolved to a non-public
+    # address. run_scout() checks this immediately after the pre-flight
+    # fetch and aborts the scan before any scout runs.
+    ssrf_blocked: bool = False
+    ssrf_block_reason: Optional[str] = None
     
     # Path enumeration ownership belongs here
     sensitive_paths: List[str] = field(default_factory=lambda: COMMON_SENSITIVE_PATHS)
@@ -244,6 +362,11 @@ async def fetch_main_page_and_analyze(ctx: ScannerContext):
             ctx.waf_challenge_detected = waf
             ctx.page_is_representative = rep
 
+    except SSRFBlockedError as e:
+        ctx.main_page_cache["error"] = str(e)
+        ctx.page_is_representative = False
+        ctx.ssrf_blocked = True
+        ctx.ssrf_block_reason = str(e)
     except Exception as e:
         ctx.main_page_cache["error"] = str(e)
         ctx.page_is_representative = False
@@ -487,16 +610,49 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
     config = config or {}
     logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
     
-    connector = aiohttp.TCPConnector(ssl=True, limit=20, limit_per_host=10)
+    # SSRFSafeResolver is shared by every request this session makes --
+    # the pre-flight fetch below, every scout's ctx.session.get/head/
+    # options() call, and (critically) any redirect hop any of those
+    # requests follows -- since it's installed on the one connector the
+    # whole session uses, not called ad hoc per request.
+    connector = SSRFSafeConnector(ssl=True, limit=20, limit_per_host=10, resolver=SSRFSafeResolver())
     async with aiohttp.ClientSession(
         timeout=REQUEST_TIMEOUT,
         headers={"User-Agent": USER_AGENT},
         connector=connector
     ) as session:
-        
+
         ctx = ScannerContext(url=url, session=session, config=config)
         await fetch_main_page_and_analyze(ctx)
-        
+
+        if ctx.ssrf_blocked:
+            logger.warning(f"Blocked unsafe target {url}: {ctx.ssrf_block_reason}")
+            return {
+                "scanId": str(uuid.uuid4()),
+                "url": url,
+                "status": "blocked_ssrf",
+                "ssrf_block_reason": ctx.ssrf_block_reason,
+                "start_time": start_time_iso,
+                "end_time": datetime.now().isoformat(),
+                "duration_seconds": round(time.time() - start_time, 2),
+                "tests_run": 0,
+                "total_findings": 0,
+                "findings": [],
+                "tests": {},
+                "waf": None,
+                "page_is_representative": False,
+                "errors": [ctx.ssrf_block_reason],
+                "errors_count": 1,
+                "deduplicated_count": 0,
+                "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                "score": None,
+                "raw_score": None,
+                "grade": None,
+                "grade_reliable": False,
+                "coverage_note": "Scan aborted before any scout ran: target blocked by SSRF safety check.",
+                "metrics": ctx.metrics,
+            }
+
         plugins = discover_plugins()
         if not plugins:
             return {"error": "No test plugins found."}
@@ -886,6 +1042,71 @@ if __name__ == "__main__":
 
                 ctx = ScannerContext(url="https://example.com", session=None, config=config or {})
                 self.assertIsNone(ctx.config.get("cve_csv_url"))
+
+            def test_ssrf_public_ip_and_hostname_allowed(self):
+                self.assertTrue(is_target_address_safe("8.8.8.8"))
+                self.assertTrue(is_target_address_safe("1.1.1.1"))
+
+            def test_ssrf_rfc1918_ip_blocked(self):
+                self.assertFalse(is_target_address_safe("10.0.0.5"))
+                self.assertFalse(is_target_address_safe("172.16.0.1"))
+                self.assertFalse(is_target_address_safe("192.168.1.1"))
+
+            def test_ssrf_loopback_and_localhost_blocked(self):
+                self.assertFalse(is_target_address_safe("127.0.0.1"))
+                self.assertFalse(is_target_address_safe("localhost"))
+
+            def test_ssrf_cloud_metadata_endpoint_blocked(self):
+                """169.254.169.254 -- the Azure/AWS/GCP metadata endpoint --
+                falls under link-local, but is asserted by its literal
+                address specifically since this is the concrete target the
+                threat model names, not just the CIDR block it happens to
+                sit in."""
+                self.assertFalse(is_target_address_safe("169.254.169.254"))
+
+            def test_ssrf_unresolvable_hostname_not_blocked(self):
+                """Nothing unsafe is proven for a hostname that doesn't
+                resolve at all -- the connection attempt fails on its own
+                right after. This must not be conflated with a blocked
+                target in aggregate.csv/per-site JSON."""
+                self.assertTrue(is_target_address_safe("this-should-not-exist-bravo6-test.invalid"))
+
+            async def test_ssrf_resolver_blocks_unsafe_dns_answer(self):
+                import unittest.mock as mock
+                resolver = SSRFSafeResolver()
+                with mock.patch.object(
+                    ThreadedResolver, "resolve",
+                    new=mock.AsyncMock(return_value=[
+                        {"hostname": "evil.example.com", "host": "10.1.2.3", "port": 443,
+                         "family": socket.AF_INET, "proto": 0, "flags": 0}
+                    ]),
+                ):
+                    with self.assertRaises(SSRFBlockedError):
+                        await resolver.resolve("evil.example.com")
+
+            async def test_ssrf_resolver_blocks_redirect_target_not_only_initial_host(self):
+                """Simulates the classic SSRF bypass: a publicly-resolving
+                hostname's HTTP redirect target is a DIFFERENT host that
+                resolves internally. aiohttp performs a fresh resolve() per
+                redirect hop through this same connector/resolver, so two
+                calls to the same resolver instance with different
+                hostnames models exactly what happens at that second hop."""
+                import unittest.mock as mock
+
+                async def fake_resolve(self_, host, port=0, family=socket.AF_INET):
+                    if host == "public.example.com":
+                        return [{"hostname": host, "host": "93.184.216.34", "port": port,
+                                 "family": family, "proto": 0, "flags": 0}]
+                    return [{"hostname": host, "host": "127.0.0.1", "port": port,
+                             "family": family, "proto": 0, "flags": 0}]
+
+                resolver = SSRFSafeResolver()
+                with mock.patch.object(ThreadedResolver, "resolve", new=fake_resolve):
+                    hosts = await resolver.resolve("public.example.com")
+                    self.assertEqual(hosts[0]["host"], "93.184.216.34")
+
+                    with self.assertRaises(SSRFBlockedError):
+                        await resolver.resolve("internal.example.com")
 
         sys.argv = [sys.argv[0]]
         unittest.main()

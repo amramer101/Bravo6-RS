@@ -47,10 +47,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 AGGREGATE_FIELDS = [
-    "url", "rank", "score", "raw_score", "grade", "grade_reliable", "coverage_note",
+    "url", "rank", "status", "score", "raw_score", "grade", "grade_reliable", "coverage_note",
     "total_findings", "critical", "high", "medium", "low", "info",
     "tests_run", "modules_discovered", "waf", "page_is_representative", "duration_seconds",
-    "findings_by_scout", "ocsp_stapling",
+    "findings_by_scout", "ocsp_stapling", "ssrf_block_reason",
 ]
 
 
@@ -95,6 +95,12 @@ def _row_from_result(url: str, rank: Optional[str], result: Dict[str, Any]) -> D
     return {
         "url": result.get("url", url),
         "rank": rank,
+        # Every scan result predating this field (the entire existing n=500
+        # dataset) completed normally, so "success" is the correct default
+        # for a missing key here -- not an invented value, the same
+        # completed/incomplete distinction those scans already made per-test.
+        "status": result.get("status", "success"),
+        "ssrf_block_reason": result.get("ssrf_block_reason"),
         "score": result.get("score"),
         "raw_score": result.get("raw_score"),
         "grade": result.get("grade"),

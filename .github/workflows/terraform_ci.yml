@@ -13,6 +13,18 @@ permissions:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    env:
+      # azure/login@v2 below authenticates the CLI as a Service Principal
+      # via OIDC; the azurerm provider refuses to use CLI-based auth for a
+      # Service Principal session, so it must be told to use OIDC
+      # directly instead (see terraform/provider.tf for the full
+      # explanation). ARM_USE_OIDC lets terraform fetch its own federated
+      # token via GitHub's ACTIONS_ID_TOKEN_REQUEST_TOKEN/URL, which the
+      # `permissions: id-token: write` above already makes available.
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
 
       - uses: actions/checkout@v4

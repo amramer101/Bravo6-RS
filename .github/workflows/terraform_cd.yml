@@ -13,6 +13,15 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    env:
+      # See terraform_ci.yml / terraform/provider.tf: azure/login@v2 below
+      # leaves the CLI authenticated as a Service Principal, which the
+      # azurerm provider refuses to use via CLI-based auth. ARM_USE_OIDC
+      # switches it to fetch its own federated token instead.
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v4
         with:

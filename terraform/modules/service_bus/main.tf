@@ -15,6 +15,10 @@ resource "azurerm_servicebus_queue" "service_bus_queue" {
   namespace_id         = azurerm_servicebus_namespace.service_bus.id
   partitioning_enabled = false
 
+  # Design specifies 3 delivery attempts before dead-lettering. Left unset,
+  # the deployed queue silently takes Azure's platform default of 10.
+  max_delivery_count = 3
+
   # A message that exceeds max_delivery_count is already dead-lettered
   # automatically by the service regardless of this setting -- that part is
   # not this flag's job. This flag covers the OTHER way a message can stop

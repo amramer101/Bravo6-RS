@@ -1,8 +1,10 @@
 locals {
+  # Report's identity is deliberately excluded here -- its application code
+  # only ever reads Cosmos DB, so it gets the read-only role below instead
+  # of Data Contributor.
   function_identities = {
     "worker" = module.function_app.worker_principal_id
     "api"    = module.api_function.api_principal_id
-    "report" = module.report_function.report_principal_id
   }
 
   # Each identity's Storage Blob Data Contributor grant is scoped to ONLY
@@ -51,10 +53,32 @@ resource "azurerm_cosmosdb_sql_role_assignment" "functions_db_access" {
   resource_group_name = module.resource_group.name
   account_name        = module.cosmos_db.cosmosdb_name
 
-  # Built-in Data Contributor 
+  # Built-in Data Contributor (read+write) -- Worker and API both need to
+  # write scan results / enqueue-tracking data, not just read them.
   role_definition_id = "${module.cosmos_db.cosmosdb_id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"
 
   principal_id = each.value
+  scope        = module.cosmos_db.cosmosdb_id
+}
+
+# ----------------------------------------------
+# Report Function Role Assignment For Database (Data Plane) -- read-only.
+# Report's application code never writes to Cosmos DB, so it gets the
+# built-in Data Reader role instead of Data Contributor. These role
+# definition IDs are fixed, built-in Cosmos DB SQL API role definitions
+# (documented by Microsoft as 000...001 = Data Reader, 000...002 = Data
+# Contributor) -- the same well-known IDs already relied on above, not
+# something specific to this subscription that "az cosmosdb sql role
+# definition list" would show differently.
+# ----------------------------------------------
+resource "azurerm_cosmosdb_sql_role_assignment" "report_db_read_access" {
+  resource_group_name = module.resource_group.name
+  account_name        = module.cosmos_db.cosmosdb_name
+
+  # Built-in Data Reader
+  role_definition_id = "${module.cosmos_db.cosmosdb_id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000001"
+
+  principal_id = module.report_function.report_principal_id
   scope        = module.cosmos_db.cosmosdb_id
 }
 
