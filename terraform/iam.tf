@@ -1,8 +1,8 @@
 locals {
   # Report's identity is deliberately excluded here -- its application code
-  # only ever reads Cosmos DB, so it gets the read-only role below instead
-  # of Data Contributor. API is also excluded -- see the custom
-  # gateway_scan_writer role below: it only ever needs to read (quota
+  # only ever reads Cosmos DB, so it gets the custom read-only role below
+  # (report_reader) instead of Data Contributor. API is also excluded --
+  # see the custom gateway_scan_writer role below: it only ever needs to read (quota
   # count query) and create (new scan-job record) documents, never
   # replace or delete one, so blanket Data Contributor is broader than
   # its application code (src/api/scan_job.py, src/api/quota.py) needs.
@@ -56,8 +56,12 @@ resource "azurerm_cosmosdb_sql_role_assignment" "functions_db_access" {
   resource_group_name = module.resource_group.name
   account_name        = module.cosmos_db.cosmosdb_name
 
-  # Built-in Data Contributor (read+write) -- Worker and API both need to
-  # write scan results / enqueue-tracking data, not just read them.
+  # Built-in Data Contributor (read+write). Only the Worker is in this
+  # for_each now (see local.function_identities): it writes finished scan
+  # results into the "scans" container via main_scanner.py's
+  # persist_scan_result(). The API's narrower read+create needs are covered by
+  # the gateway_scan_writer custom role below, and Report's by report_reader
+  # above, so this block no longer applies to either of them.
   role_definition_id = "${module.cosmos_db.cosmosdb_id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002"
 
   principal_id = each.value
@@ -65,21 +69,45 @@ resource "azurerm_cosmosdb_sql_role_assignment" "functions_db_access" {
 }
 
 # ----------------------------------------------
-# Report Function Role Assignment For Database (Data Plane) -- read-only.
-# Report's application code never writes to Cosmos DB, so it gets the
-# built-in Data Reader role instead of Data Contributor. These role
-# definition IDs are fixed, built-in Cosmos DB SQL API role definitions
-# (documented by Microsoft as 000...001 = Data Reader, 000...002 = Data
-# Contributor) -- the same well-known IDs already relied on above, not
-# something specific to this subscription that "az cosmosdb sql role
-# definition list" would show differently.
+# Report Function Custom Role For Database (Data Plane) -- read-only.
+# Report's application code (src/report/report_generator.py) never writes to
+# Cosmos DB, so it must not hold Data Contributor. It was already moved off
+# Data Contributor onto the built-in Data Reader role (000...001) in an
+# earlier pass; this replaces that built-in with an explicit custom role,
+# following the same shape as gateway_scan_writer below.
+#
+# Honest note on what this does and does not change: the built-in Data Reader
+# role's data_actions are exactly the four listed here, so this grants no
+# fewer permissions than the line it replaces -- the privilege reduction
+# already happened. What it adds is that the permitted action set is now
+# written down in this repository instead of being whatever Microsoft ships
+# under that built-in ID, so it cannot widen underneath us, and a reviewer can
+# see the "no create, no replace, no upsert, no delete" claim in the same file
+# that makes it. Both custom roles in this file are now defined the same way,
+# which is the point of doing it in the same pass.
 # ----------------------------------------------
+resource "azurerm_cosmosdb_sql_role_definition" "report_reader" {
+  name                = "Bravo6 Report Reader"
+  resource_group_name = module.resource_group.name
+  account_name        = module.cosmos_db.cosmosdb_name
+  type                = "CustomRole"
+  assignable_scopes   = [module.cosmos_db.cosmosdb_id]
+
+  permissions {
+    data_actions = [
+      "Microsoft.DocumentDB/databaseAccounts/readMetadata",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/items/read",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/executeQuery",
+      "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers/readChangeFeed",
+    ]
+  }
+}
+
 resource "azurerm_cosmosdb_sql_role_assignment" "report_db_read_access" {
   resource_group_name = module.resource_group.name
   account_name        = module.cosmos_db.cosmosdb_name
 
-  # Built-in Data Reader
-  role_definition_id = "${module.cosmos_db.cosmosdb_id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000001"
+  role_definition_id = azurerm_cosmosdb_sql_role_definition.report_reader.id
 
   principal_id = module.report_function.report_principal_id
   scope        = module.cosmos_db.cosmosdb_id

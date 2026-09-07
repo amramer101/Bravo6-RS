@@ -6,5 +6,8 @@ certifi>=2024.0.0
 packaging>=24.0
 lxml>=5.0.0
 azure-cosmos>=4.5.0
+# Managed Identity auth for the Cosmos DB write path in main_scanner.py
+# (build_cosmos_container) -- same version floor as src/api/requirements.txt.
+azure-identity>=1.17.0
 dnspython>=2.6.0
 tldextract>=5.3.2

@@ -33,9 +33,18 @@ import aiohttp
 from aiohttp.resolver import ThreadedResolver
 from bs4 import BeautifulSoup
 
-# Optional Cosmos DB integration
+# Optional Cosmos DB integration.
+#
+# DefaultAzureCredential is imported inside the SAME guarded block on purpose:
+# the Worker now authenticates to Cosmos DB with its Function App's Managed
+# Identity (the identity block in terraform/modules/function_app/main.tf), not
+# an account key, so azure-identity is exactly as much a hard prerequisite of
+# the Cosmos path as azure-cosmos is. If either import fails, COSMOS_AVAILABLE
+# stays False and persistence goes straight to the local-JSON path -- the same
+# degraded-but-never-lossy behaviour as having no COSMOS_URL configured.
 try:
     from azure.cosmos import CosmosClient
+    from azure.identity import DefaultAzureCredential
     COSMOS_AVAILABLE = True
 except ImportError:
     COSMOS_AVAILABLE = False
@@ -597,6 +606,143 @@ def compute_bravo6_score(
     }
 
 # ------------------------------------------------------------------------------
+# Result Persistence (Cosmos DB first, local JSON as the never-lose-it fallback)
+# ------------------------------------------------------------------------------
+# Three attempts with exponential backoff, matching the API Gateway's write
+# path (src/api/scan_job.py's COSMOS_WRITE_MAX_ATTEMPTS) in retry COUNT but
+# deliberately NOT in failure semantics:
+#
+#   Gateway (write_scan_job): a scan-job record that never reaches Cosmos DB
+#   raises -- the caller must return 503. It has to, because quota enforcement
+#   counts a user's recent jobs by querying Cosmos DB, so a job recorded only
+#   in a local file would silently escape every future quota count.
+#
+#   Worker (persist_scan_result, below): a scan RESULT that never reaches
+#   Cosmos DB falls through to a local JSON file and the scan is still
+#   reported as a success. Nothing else in the system reads back a result to
+#   make a control decision, and the scan itself -- minutes of network work
+#   across ten scouts -- is far more expensive to redo than a Gateway
+#   submission. Losing it because the database blipped is the worse outcome.
+#
+# That difference is why these two retry loops are not factored into one
+# shared helper: the retry mechanics are ~8 lines, while what happens on
+# exhaustion (raise vs. fall through) is the entire point of each call site.
+# The two Function Apps are also separate deployment roots -- src/api/ and
+# src/worker/ are each packaged and deployed on their own, with no shared
+# importable package between them -- so a common helper would have to be
+# vendored into both anyway.
+COSMOS_WRITE_MAX_ATTEMPTS = 3
+COSMOS_WRITE_RETRY_BACKOFF_SECONDS = 1.0
+
+# Fallback values only -- COSMOS_DATABASE / COSMOS_CONTAINER are now set
+# explicitly on the Worker's Function App
+# (terraform/modules/function_app/main.tf). They match what Terraform actually
+# provisions (modules/cosmos_db/main.tf: database var.db_name = "bravo6-db",
+# container "scans") and what the Gateway already targets. The previous
+# defaults here, "Bravo6DB" and "ScanResults", named a database and a
+# container that exist nowhere in the Terraform, so even a correctly
+# authenticated client would have 404'd against them.
+COSMOS_DEFAULT_DATABASE = "bravo6-db"
+COSMOS_DEFAULT_CONTAINER = "scans"
+
+
+def build_cosmos_container():
+    """Build the Cosmos container client the Worker writes scan results to.
+
+    Managed Identity via DefaultAzureCredential, the platform-wide standard --
+    src/api/function_app.py._get_cosmos_container() constructs its client the
+    same way, and the Worker's Function App has a system-assigned identity with
+    a Cosmos SQL data-plane role assignment (terraform/iam.tf).
+
+    This replaces the previous account-key credential, read from a COSMOS_KEY
+    environment variable. No Terraform ever set COSMOS_KEY, so that lookup
+    resolved to None on every deployed invocation; combined with COSMOS_URL
+    also being unset, the Cosmos branch was unreachable in the deployed
+    configuration and every scan result went to local JSON on an ephemeral
+    Flex Consumption instance.
+    """
+    client = CosmosClient(os.environ["COSMOS_URL"], credential=DefaultAzureCredential())
+    db = client.get_database_client(os.environ.get("COSMOS_DATABASE", COSMOS_DEFAULT_DATABASE))
+    return db.get_container_client(os.environ.get("COSMOS_CONTAINER", COSMOS_DEFAULT_CONTAINER))
+
+
+def write_result_locally(final_result: Dict[str, Any], results_dir) -> Optional[Path]:
+    """Write final_result to results_dir as JSON. Returns the path written, or
+    None if even this failed (logged, never raised -- run_scout must still
+    return the result to its caller either way)."""
+    try:
+        results_dir = Path(results_dir)
+        results_dir.mkdir(parents=True, exist_ok=True)
+        result_path = results_dir / f"result_{final_result['scanId']}.json"
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(final_result, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved to {result_path}")
+        return result_path
+    except Exception as e:
+        logger.error(f"Failed to save results locally: {e}")
+        return None
+
+
+def persist_scan_result(
+    final_result: Dict[str, Any],
+    results_dir,
+    container_factory=None,
+    sleep=None,
+) -> str:
+    """Persist a finished scan result. Returns "cosmos", "local", or "none".
+
+    Cosmos DB is attempted only when it is both importable and configured;
+    otherwise this goes straight to local JSON, as before. A Cosmos write is
+    retried COSMOS_WRITE_MAX_ATTEMPTS times with exponential backoff, and if
+    every attempt fails the result STILL lands in local JSON. That last part
+    is the invariant this function exists to protect: a scan result must never
+    be lost because Cosmos DB was unavailable.
+
+    (Before this pass there was no such fallback: the Cosmos write and the
+    local write were the two arms of one if/else inside a single try, so an
+    exception from the Cosmos arm was caught, logged, and dropped -- the local
+    arm never ran. The design intent was already documented; the wiring wasn't
+    there.)
+
+    Exceptions are caught broadly rather than as CosmosHttpResponseError -- the
+    Gateway's narrower catch is right for a path that re-raises, but here
+    anything that escapes (auth failure, DNS, a client-construction error)
+    must end in the local-JSON fallback, not propagate out of run_scout.
+
+    container_factory and sleep are injection points for the regression suite;
+    production callers pass neither.
+    """
+    container_factory = container_factory or build_cosmos_container
+    sleep = sleep or time.sleep
+
+    if not (COSMOS_AVAILABLE and os.environ.get("COSMOS_URL")):
+        return "local" if write_result_locally(final_result, results_dir) else "none"
+
+    last_error = None
+    for attempt in range(1, COSMOS_WRITE_MAX_ATTEMPTS + 1):
+        try:
+            container = container_factory()
+            final_result["id"] = final_result["scanId"]
+            container.create_item(body=final_result)
+            logger.info(f"Saved to Cosmos DB: {final_result['scanId']}")
+            return "cosmos"
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                f"Cosmos DB write attempt {attempt}/{COSMOS_WRITE_MAX_ATTEMPTS} "
+                f"failed for scan {final_result.get('scanId')}: {e}"
+            )
+            if attempt < COSMOS_WRITE_MAX_ATTEMPTS:
+                sleep(COSMOS_WRITE_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+
+    logger.error(
+        f"Cosmos DB write failed after {COSMOS_WRITE_MAX_ATTEMPTS} attempts for scan "
+        f"{final_result.get('scanId')}; falling back to local JSON. Last error: {last_error}"
+    )
+    return "local" if write_result_locally(final_result, results_dir) else "none"
+
+
+# ------------------------------------------------------------------------------
 # Main Orchestrator Execution
 # ------------------------------------------------------------------------------
 async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -793,27 +939,13 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
             "metrics": ctx.metrics
         }
         
-        # Save results Logic
-        script_dir = Path(__file__).parent
-        results_dir = script_dir / "results"
-        os.makedirs(results_dir, exist_ok=True)
-        
-        try:
-            if COSMOS_AVAILABLE and os.environ.get("COSMOS_URL"):
-                client = CosmosClient(os.environ["COSMOS_URL"], credential=os.environ.get("COSMOS_KEY"))
-                db = client.get_database_client(os.environ.get("COSMOS_DATABASE", "Bravo6DB"))
-                container = db.get_container_client(os.environ.get("COSMOS_CONTAINER", "ScanResults"))
-                final_result["id"] = final_result["scanId"]
-                container.create_item(body=final_result)
-                logger.info(f"Saved to Cosmos DB: {final_result['scanId']}")
-            else:
-                result_path = results_dir / f"result_{final_result['scanId']}.json"
-                with open(result_path, "w", encoding="utf-8") as f:
-                    json.dump(final_result, f, ensure_ascii=False, indent=2)
-                logger.info(f"Saved to {result_path}")
-        except Exception as e:
-            logger.error(f"Failed to save results: {e}")
-            
+        # Save results Logic -- Cosmos DB (Managed Identity, 3 attempts with
+        # exponential backoff), then local JSON if that never succeeds. See
+        # persist_scan_result() for why the fallback is unconditional here and
+        # not in the Gateway's equivalent writer.
+        results_dir = Path(__file__).parent / "results"
+        persist_scan_result(final_result, results_dir)
+
         return final_result
 
 # ------------------------------------------------------------------------------
@@ -1107,6 +1239,282 @@ if __name__ == "__main__":
 
                     with self.assertRaises(SSRFBlockedError):
                         await resolver.resolve("internal.example.com")
+
+        class TestResultPersistence(unittest.TestCase):
+            """Regression suite for persist_scan_result() -- the Worker's
+            Cosmos-DB-then-local-JSON write path.
+
+            Three things are pinned here, in decreasing order of how bad it
+            would be to regress them:
+
+              1. A Cosmos failure that exhausts every retry STILL writes the
+                 result to local JSON. This is the Worker's whole design
+                 intent -- never lose a scan result -- and it is the one
+                 behaviour that must never regress, however the retry or auth
+                 code above it is rewritten.
+              2. The Cosmos client authenticates with Managed Identity
+                 (DefaultAzureCredential), never an account key.
+              3. A failing write is attempted exactly COSMOS_WRITE_MAX_ATTEMPTS
+                 times, with a growing (exponential) backoff between attempts.
+            """
+
+            def setUp(self):
+                import tempfile
+                import unittest.mock as mock
+                self.mock = mock
+                self.module = sys.modules[__name__]
+                self._tmp = tempfile.TemporaryDirectory()
+                self.results_dir = Path(self._tmp.name)
+                self.result = {"scanId": "scan-abc-123", "url": "https://example.com", "score": 90}
+                self.slept = []
+
+            def tearDown(self):
+                self._tmp.cleanup()
+
+            def _cosmos_env(self, **extra):
+                env = {
+                    "COSMOS_URL": "https://bravo6-cosmosdb-12345.documents.azure.com:443/",
+                    "COSMOS_DATABASE": "bravo6-db",
+                    "COSMOS_CONTAINER": "scans",
+                }
+                env.update(extra)
+                return self.mock.patch.dict(os.environ, env, clear=False)
+
+            def _local_files(self):
+                return sorted(pth.name for pth in self.results_dir.glob("*.json"))
+
+            def _persist(self, container_factory):
+                """Run persist_scan_result with Cosmos considered available,
+                capturing every backoff sleep instead of actually sleeping."""
+                with self.mock.patch.object(self.module, "COSMOS_AVAILABLE", True), self._cosmos_env():
+                    return persist_scan_result(
+                        self.result,
+                        self.results_dir,
+                        container_factory=container_factory,
+                        sleep=self.slept.append,
+                    )
+
+            # --- 2. Managed Identity, not an account key -------------------
+            def test_cosmos_client_uses_managed_identity_not_account_key(self):
+                """build_cosmos_container() must pass a DefaultAzureCredential
+                instance, not the value of a COSMOS_KEY account key. The
+                pre-fix code read that key straight out of the environment;
+                COSMOS_KEY is set by no Terraform anywhere, so it resolved to
+                None in every deployed invocation. COSMOS_KEY is deliberately
+                set to a sentinel value here: if it ever leaks back into the
+                credential, this test fails."""
+                sentinel_key = "SENTINEL-ACCOUNT-KEY-MUST-NOT-BE-USED"
+                captured = {}
+
+                class FakeCredential:
+                    pass
+
+                class FakeContainer:
+                    pass
+
+                class FakeDatabase:
+                    def get_container_client(self, name):
+                        captured["container"] = name
+                        return FakeContainer()
+
+                class FakeCosmosClient:
+                    def __init__(self, url, credential=None, **kwargs):
+                        captured["url"] = url
+                        captured["credential"] = credential
+
+                    def get_database_client(self, name):
+                        captured["database"] = name
+                        return FakeDatabase()
+
+                with self.mock.patch.object(self.module, "CosmosClient", FakeCosmosClient), \
+                     self.mock.patch.object(self.module, "DefaultAzureCredential", FakeCredential), \
+                     self._cosmos_env(COSMOS_KEY=sentinel_key):
+                    container = build_cosmos_container()
+
+                self.assertIsInstance(container, FakeContainer)
+                self.assertIsInstance(
+                    captured["credential"], FakeCredential,
+                    "Cosmos client must authenticate with DefaultAzureCredential (Managed Identity)."
+                )
+                self.assertNotEqual(
+                    captured["credential"], sentinel_key,
+                    "Cosmos client must NOT authenticate with an account key from COSMOS_KEY."
+                )
+                self.assertIsNotNone(
+                    captured["credential"],
+                    "credential=None was the real-world effect of the old COSMOS_KEY lookup."
+                )
+                self.assertEqual(captured["database"], "bravo6-db")
+                self.assertEqual(captured["container"], "scans")
+
+            def test_cosmos_key_is_not_read_anywhere_in_the_source(self):
+                """Belt-and-braces companion to the test above: no COSMOS_KEY
+                lookup may survive anywhere in this module, including in a code
+                path the unit tests happen not to exercise."""
+                import re
+                source = Path(__file__).read_text(encoding="utf-8")
+                lookups = re.findall(
+                    r"os\.environ(?:\.get)?\(\s*[\"']COSMOS\_KEY[\"']", source
+                )
+                self.assertEqual(
+                    lookups, [],
+                    "COSMOS_KEY must not be read anywhere: the Worker authenticates "
+                    "to Cosmos DB with Managed Identity, not an account key."
+                )
+
+            # --- 3. Retry count and backoff --------------------------------
+            def test_transient_cosmos_failure_is_retried_three_times(self):
+                attempts = {"n": 0}
+
+                class AlwaysFailingContainer:
+                    def create_item(self, body):
+                        attempts["n"] += 1
+                        raise RuntimeError("transient Cosmos DB failure")
+
+                outcome = self._persist(lambda: AlwaysFailingContainer())
+
+                self.assertEqual(
+                    attempts["n"], COSMOS_WRITE_MAX_ATTEMPTS,
+                    f"Cosmos write must be attempted {COSMOS_WRITE_MAX_ATTEMPTS} times before giving up."
+                )
+                self.assertEqual(attempts["n"], 3, "The agreed retry count is 3, matching the API Gateway's writer.")
+                self.assertEqual(outcome, "local")
+
+            def test_backoff_between_attempts_is_exponential(self):
+                class AlwaysFailingContainer:
+                    def create_item(self, body):
+                        raise RuntimeError("transient Cosmos DB failure")
+
+                self._persist(lambda: AlwaysFailingContainer())
+
+                self.assertEqual(
+                    len(self.slept), COSMOS_WRITE_MAX_ATTEMPTS - 1,
+                    "Backoff must be applied between attempts, not after the final one."
+                )
+                self.assertEqual(self.slept, [1.0, 2.0], "Backoff must double each attempt (1s, then 2s).")
+
+            def test_write_that_succeeds_on_second_attempt_does_not_fall_back(self):
+                """A retry that eventually works must land in Cosmos DB and
+                leave no local file behind -- the fallback is for genuine
+                unavailability, not for a single blip."""
+                attempts = {"n": 0}
+
+                class FlakyContainer:
+                    def create_item(self, body):
+                        attempts["n"] += 1
+                        if attempts["n"] < 2:
+                            raise RuntimeError("first attempt blip")
+
+                outcome = self._persist(lambda: FlakyContainer())
+
+                self.assertEqual(outcome, "cosmos")
+                self.assertEqual(attempts["n"], 2, "Should stop retrying as soon as a write succeeds.")
+                self.assertEqual(self._local_files(), [], "A successful Cosmos write must not also write local JSON.")
+                self.assertEqual(len(self.slept), 1, "Exactly one backoff between attempt 1 and attempt 2.")
+
+            def test_retry_also_covers_client_construction_failure(self):
+                """The retry wraps container construction too, so a credential
+                or DNS failure while building the client is retried rather than
+                skipping straight to the fallback."""
+                attempts = {"n": 0}
+
+                def failing_factory():
+                    attempts["n"] += 1
+                    raise RuntimeError("could not acquire Managed Identity token")
+
+                outcome = self._persist(failing_factory)
+
+                self.assertEqual(attempts["n"], COSMOS_WRITE_MAX_ATTEMPTS)
+                self.assertEqual(outcome, "local")
+
+            # --- 1. The invariant: never lose a scan result ----------------
+            def test_cosmos_failure_after_all_retries_still_writes_local_json(self):
+                """THE regression guard. Cosmos DB is configured and reachable
+                enough to try, every attempt fails, and the scan result must
+                still end up on disk. Before this pass the Cosmos write and
+                the local write were the two arms of a single if/else inside
+                one try block, so this case wrote nothing at all."""
+                class AlwaysFailingContainer:
+                    def create_item(self, body):
+                        raise RuntimeError("Cosmos DB is unavailable")
+
+                outcome = self._persist(lambda: AlwaysFailingContainer())
+
+                self.assertEqual(outcome, "local", "Exhausted retries must fall through to the local JSON write.")
+                self.assertEqual(self._local_files(), ["result_scan-abc-123.json"])
+
+                written = json.loads((self.results_dir / "result_scan-abc-123.json").read_text(encoding="utf-8"))
+                self.assertEqual(written["scanId"], "scan-abc-123")
+                self.assertEqual(written["url"], "https://example.com")
+                self.assertEqual(written["score"], 90, "The fallback copy must be the complete result, not a stub.")
+
+            def test_persist_never_raises_when_everything_fails(self):
+                """run_scout() must still return its result to the caller even
+                if BOTH Cosmos DB and the local write fail -- persistence is
+                never allowed to turn a completed scan into an exception."""
+                class AlwaysFailingContainer:
+                    def create_item(self, body):
+                        raise RuntimeError("Cosmos DB is unavailable")
+
+                unwritable = self.results_dir / "a-file-not-a-directory"
+                unwritable.write_text("blocks mkdir", encoding="utf-8")
+
+                with self.mock.patch.object(self.module, "COSMOS_AVAILABLE", True), self._cosmos_env():
+                    outcome = persist_scan_result(
+                        self.result,
+                        unwritable,
+                        container_factory=lambda: AlwaysFailingContainer(),
+                        sleep=self.slept.append,
+                    )
+                self.assertEqual(outcome, "none")
+
+            def test_unconfigured_cosmos_goes_straight_to_local_json(self):
+                """Unchanged pre-existing behaviour: with no COSMOS_URL the
+                Cosmos path is never attempted at all (no wasted retries, no
+                backoff) and the result is written locally."""
+                attempts = {"n": 0}
+
+                def factory():
+                    attempts["n"] += 1
+                    raise AssertionError("Cosmos must not be attempted without COSMOS_URL")
+
+                env = {k: v for k, v in os.environ.items() if k != "COSMOS_URL"}
+                with self.mock.patch.object(self.module, "COSMOS_AVAILABLE", True), \
+                     self.mock.patch.dict(os.environ, env, clear=True):
+                    outcome = persist_scan_result(
+                        self.result, self.results_dir, container_factory=factory, sleep=self.slept.append
+                    )
+
+                self.assertEqual(attempts["n"], 0)
+                self.assertEqual(self.slept, [])
+                self.assertEqual(outcome, "local")
+                self.assertEqual(self._local_files(), ["result_scan-abc-123.json"])
+
+            def test_missing_azure_sdk_goes_straight_to_local_json(self):
+                """Same for a deployment where azure-cosmos / azure-identity
+                aren't importable: COSMOS_AVAILABLE is False and persistence
+                degrades to local JSON rather than blowing up on a missing
+                DefaultAzureCredential symbol."""
+                with self.mock.patch.object(self.module, "COSMOS_AVAILABLE", False), self._cosmos_env():
+                    outcome = persist_scan_result(self.result, self.results_dir, sleep=self.slept.append)
+
+                self.assertEqual(outcome, "local")
+                self.assertEqual(self._local_files(), ["result_scan-abc-123.json"])
+
+            def test_cosmos_document_carries_id_matching_scan_id(self):
+                """The 'scans' container is partitioned on /scanId and Cosmos
+                requires an 'id' -- the written document must carry both."""
+                captured = {}
+
+                class RecordingContainer:
+                    def create_item(self, body):
+                        captured.update(body)
+
+                outcome = self._persist(lambda: RecordingContainer())
+
+                self.assertEqual(outcome, "cosmos")
+                self.assertEqual(captured["id"], "scan-abc-123")
+                self.assertEqual(captured["scanId"], captured["id"])
 
         sys.argv = [sys.argv[0]]
         unittest.main()

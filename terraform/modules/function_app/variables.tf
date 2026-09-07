@@ -43,3 +43,25 @@ variable "app_insights_connection_string" {
   sensitive   = true
   description = "Application Insights connection string, set as APPLICATIONINSIGHTS_CONNECTION_STRING"
 }
+
+# --- Cosmos DB target for the Worker's scan-result writes ---
+# Mirrors the same three variables already on the API Gateway module
+# (modules/api_function/variables.tf). The Worker's main_scanner.py has always
+# read COSMOS_URL / COSMOS_DATABASE / COSMOS_CONTAINER, but nothing in
+# Terraform ever set them, so its Cosmos write path was unreachable in the
+# deployed configuration and every scan result fell to a local JSON file on an
+# ephemeral Flex Consumption instance.
+variable "cosmosdb_endpoint" {
+  type        = string
+  description = "Cosmos DB account endpoint URL, set as COSMOS_URL"
+}
+
+variable "cosmosdb_database_name" {
+  type        = string
+  description = "Cosmos SQL database name, set as COSMOS_DATABASE"
+}
+
+variable "cosmosdb_container_name" {
+  type        = string
+  description = "Cosmos SQL container name for scan results, set as COSMOS_CONTAINER"
+}

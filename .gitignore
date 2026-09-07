@@ -64,6 +64,10 @@ node_modules/
 package-lock.json
 
 src/worker/results/*.json
+# Forensic fallback copies written by src/api/scan_job.py's write_scan_job()
+# when a Cosmos DB write fails -- the API Gateway regression suite exercises
+# that path, so running it locally leaves files here.
+src/api/results/*.json
 src/worker/**.html
 src/worker/**.json
 

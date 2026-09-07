@@ -29,6 +29,21 @@ resource "azurerm_function_app_flex_consumption" "worker_function" {
   app_settings = {
     "ServiceBusConnection__fullyQualifiedNamespace" = "${var.service_bus_namespace}.servicebus.windows.net"
     "APPLICATIONINSIGHTS_CONNECTION_STRING"         = var.app_insights_connection_string
+
+    # Cosmos DB target for main_scanner.py's persist_scan_result(). Same
+    # account / database / container the API Gateway already writes scan-job
+    # records to (see modules/api_function/main.tf) -- one "scans" container
+    # holds both the queued job and the finished result, keyed by the same
+    # scanId, so there is nothing to join across containers later.
+    #
+    # No COSMOS_KEY here, deliberately: the Worker authenticates with the
+    # system-assigned identity declared above (DefaultAzureCredential ->
+    # Managed Identity in Azure), backed by its Cosmos SQL data-plane role
+    # assignment in terraform/iam.tf. Only the endpoint URL is configuration;
+    # there is no secret to set.
+    "COSMOS_URL"       = var.cosmosdb_endpoint
+    "COSMOS_DATABASE"  = var.cosmosdb_database_name
+    "COSMOS_CONTAINER" = var.cosmosdb_container_name
   }
 
   tags = {

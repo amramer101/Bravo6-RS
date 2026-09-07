@@ -79,6 +79,14 @@ module "function_app" {
   storage_primary_blob_endpoint    = module.storage_account.primary_blob_endpoint
   worker_deployment_container_name = var.worker_deployment_container_name
   app_insights_connection_string   = module.observability.connection_string
+
+  # Same Cosmos account / database / container the API Gateway writes scan-job
+  # records to, above: the Worker writes the finished scan RESULT for the same
+  # scanId into that same "scans" container (partition key /scanId). See
+  # src/worker/main_scanner.py's persist_scan_result().
+  cosmosdb_endpoint       = module.cosmos_db.cosmosdb_endpoint
+  cosmosdb_database_name  = var.db_name
+  cosmosdb_container_name = "scans"
 }
 
 module "api_function" {
