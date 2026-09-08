@@ -28,8 +28,13 @@ local.settings.json
 .terraform.lock.hcl
 terraform.tfstate
 terraform.tfstate.backup
+# Real values (subscription/tenant IDs, resource names) live only in the
+# local, untracked terraform.tfvars -- terraform.tfvars.example is the
+# tracked, placeholder-only template a new deployer copies from.
+terraform.tfvars
+*.tfvars
+!*.tfvars.example
 *.tfvars.json
-!example.tfvars
 override.tf
 override.tf.json
 *_override.tf

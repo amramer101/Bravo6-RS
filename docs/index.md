@@ -1,48 +1,31 @@
-# BRAVO6 — The Silent Guardian of the AI Era
+# BRAVO6
 
-In the history of technology, every great leap in speed has demanded an equal leap in safety. Today, artificial intelligence is rewriting the rules of software creation, enabling a single developer to do the work of ten. We have entered the era of "vibe coding," where imagination is the only limit to production.
+**Passive, external security scanning for sites that can't safely take an active scan.**
 
-**BRAVO6 is the shield for the creators.**
+AI coding assistants have collapsed the time it takes to ship a working application from weeks to
+hours. The security review process that's supposed to catch what shipped with it hasn't kept pace —
+hardcoded secrets in auto-generated JavaScript, dependency versions pulled from stale training data,
+missing security headers, CORS policies that look fine until someone exploits them. Traditional
+scanners (OWASP ZAP, Burp Suite, Nikto) close that gap by attacking the target directly: injecting
+payloads, brute-forcing paths, throwing thousands of signature probes at known-dangerous files. That
+assumes an operator with standing authorization to test aggressively — an assumption that doesn't
+hold for someone who shipped a site outside a formal security review process, or for a third party
+checking a site they don't operate.
 
-It is a stealth, passive security scanner that uncovers vulnerabilities hidden in AI-generated code, without triggering alarms or sending malicious payloads.
+## The name
 
----
+"Bravo Six, Going Dark" is the military call sign this project borrows its name from — reconnaissance
+without engagement. BRAVO6 performs the same kind of pass against a web target: it gathers what's
+observable without ever triggering the target's defenses, because it never sends anything a normal
+browser page load wouldn't already send.
 
-## The Name: Bravo Six, Going Dark
+## What it actually does
 
-The name is inspired by the iconic military call sign for special reconnaissance units. It represents the platform's core capability: **stealth reconnaissance**.
-
-Just as a scout team gathers intelligence without engaging the enemy, BRAVO6 performs silent, passive scanning to uncover vulnerabilities without alerting target defences or triggering firewalls. We operate in the dark to serve the light.
-
----
-
-## The Problem We Solve
-
-The rise of AI‑assisted coding — Copilot, ChatGPT, Claude — has made developers dramatically faster. Entire applications are now scaffolded in minutes. What these tools do not solve is the security layer.
-
-This creates a new class of vulnerability we call **AI Security Debt**:
-
-- Hardcoded secrets embedded in auto‑generated JavaScript.
-- Outdated library versions suggested from stale training data.
-- Missing security headers on generated API responses.
-- Misconfigured CORS policies that feel correct until an attacker exploits them.
-
-Traditional scanners attack this problem by attacking the target — sending payloads, brute‑forcing paths, and triggering intrusion detection systems. That approach is noisy, destructive in CI/CD environments, and illegal without explicit permission.
-
----
-
-## The Solution — What BRAVO6 Does
-
-BRAVO6 is different. It is a **passive, read‑only security scanner**. It behaves exactly like a browser, sends no payloads, and triggers no alarms. It reads what is publicly visible and reports what an attacker would see, before the attacker ever sees it.
-
-- **10 specialised tests** run in full concurrency.
-- A **complete scan** of any live target finishes in approximately **30 seconds**.
-- **AI‑powered remediation** provides developer‑friendly, actionable fixes (available on the Developer tier).
-- **Fully serverless**, costing nothing at idle and scaling automatically to thousands of simultaneous scans.
-
-### How a Scan Works
-
-The diagram below shows the journey of a single scan, from the moment a developer submits a target to the moment they receive a report they can act on.
+Ten scouts run concurrently against a target, covering TLS/certificate health, HTTP security
+headers, cookie security, CORS misconfiguration, exposed secrets, vulnerable frontend libraries,
+information disclosure, email-authentication hygiene, Subresource Integrity, and a supply-chain
+check for hallucinated dependencies. Every scout is read-only: `GET`, `HEAD`, `OPTIONS`, and DNS
+lookups only — never a payload, never an auth-bypass attempt.
 
 ```mermaid
 %%{init: {
@@ -69,59 +52,45 @@ The diagram below shows the journey of a single scan, from the moment a develope
   }
 }}%%
 sequenceDiagram
-    participant VibeCoder as Vibe Coder<br>Developer
-    participant BRAVO6 as BRAVO6<br>Silent Scanner
-    participant Scouts as 10 Scouts<br>Passive Tests
-    participant Report as Security Report<br>with AI Remediation
+    participant User as User
+    participant GW as API Gateway
+    participant SB as Service Bus
+    participant W as Worker (10 scouts)
+    participant DB as Cosmos DB
 
-    VibeCoder->>BRAVO6: Submits URL
-    BRAVO6->>Scouts: Runs all 10 tests concurrently
-    Note over Scouts: Secrets Hunter, SSL/TLS,<br>Security Headers, CORS,<br>Email Security, SRI, Hallucinated Deps...
-    Scouts-->>BRAVO6: Findings aggregated
-    BRAVO6->>Report: Generates AI-powered report
-    Report-->>VibeCoder: Actionable remediation
+    User->>GW: POST /api/scan (JWT, target URL)
+    GW->>SB: enqueue scan job
+    GW-->>User: 202 Accepted (scan id)
+    SB->>W: trigger
+    Note over W: all 10 scouts run concurrently,<br/>passive GET/HEAD/DNS only
+    W->>DB: write results
+    User->>DB: poll for result (separate read path)
 ```
 
-## Subscription Plans
+Submission and background scanning are decoupled by a Service Bus queue: the user-facing request
+returns as soon as the job is durably enqueued, independent of how long the scan itself takes. See
+[Software Architecture & Scouts](software-architecture.md) for how the pipeline and each scout
+actually work, and the project [README](https://github.com/amramer101/Graduation-Project-Bravo6#implementation-status)
+for exactly which of these components are deployed versus code-complete-but-idle versus
+design-only — that status varies by component and is worth reading before assuming any of this is
+live.
 
-BRAVO6 is designed to democratise cybersecurity. It is accessible to students, freelancers, and small teams, not just corporations with million‑dollar budgets.
+## Access control
 
-| Feature | Free Tier | Developer Tier ($10/mo) |
-|---|---|---|
-| **Scouts available** | 10 scouts (full suite) | **10 scouts** (full suite) |
-| **Daily scan limit** | 3 scans per day | **10 scans per day** |
-| **AI remediation** | Not included | ✅ Included (GPT‑4o mini) |
-| **Analytics dashboard** | Not included | ✅ Included |
-| **Terms of use** | Required at sign‑up | Required at sign‑up |
+Submissions targeting government, military, financial-regulator, and similar sensitive-category
+domains are blocked at the API Gateway before a scan is ever queued (see
+`src/api/blocklist.py`) — a representative, illustrative blocklist, not an exhaustive registry.
 
-> **Domain awareness:** The platform maintains awareness of which domains are being targeted. Government, military, and internationally sanctioned entities are automatically blocked at the API Function's entry point before a scan is ever queued, regardless of tier.
+## Why serverless
 
----
-
-## Why Serverless? The Industry Standard
-
-The combination of serverless compute and event‑driven messaging is not a passing trend; it is the architecture that powers Netflix, Meta, Uber, and every modern cloud‑native platform at scale.
-
-- **Zero idle cost:** BRAVO6 costs nothing when idle. Traditional servers would pay for 24 hours of computation to serve only a few hours of real work.
-- **The asynchronous wall:** a security scan takes roughly 30 seconds. Instead of holding a browser connection open, the API responds in under 200ms with a tracking ID, processes the scan in the background, and the user checks back for results.
-- **Infinite scale:** autoscaling spins up workers based on demand — one scan or one thousand scans, the architecture remains identical.
+Every compute component is consumption-billed: zero cost at idle, scales out automatically under
+load, no capacity planning. See [Cost & FinOps](cost-finops.md) for the actual resource-by-resource
+cost model, and [Architecture Decisions](architecture-decisions.md) for the trade-offs recorded
+along the way — including a Service Bus pricing correction that's as much evidence of this project's
+verification discipline as it is a design footnote.
 
 ---
 
-## Built to Scale Efficiently
-
-Every component of BRAVO6 is serverless and consumption‑billed, meaning the platform incurs no cost while idle and grows cost only in proportion to real usage.
-
-| Service Category | Used For | Cost Behaviour |
-|---|---|---|
-| **Static hosting** | Frontend delivery | Near‑zero; pay for storage and bandwidth only |
-| **Serverless compute** | API, scanning worker, reporting | Pay‑per‑execution; zero cost when idle |
-| **Message queue** | Decoupling requests from scan execution | Fixed cost, isolated from the public internet |
-| **Serverless database** | Scan results storage | Pay‑per‑request; zero idle cost |
-| **Secrets management** | Credentials and keys | Negligible cost |
-| **Identity** | Authentication | Free for standard usage volumes |
-| **Observability** | Monitoring and diagnostics | Free ingestion allowance at this scale |
-
----
-
-BRAVO6 exists for one reason: the faster software gets built, the faster its blind spots get built in with it. BRAVO6 finds those blind spots before anyone else does — silently, passively, and in under thirty seconds.
+This documentation site, the [README](https://github.com/amramer101/Graduation-Project-Bravo6), and
+the accompanying paper (`main.pdf` at the repository root) are three views of the same honestly-reported
+project: what's built, what's tested, what's deployed, and what's still just a design.

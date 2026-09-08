@@ -1,8 +1,8 @@
 site_name: Bravo6 Platform
-site_description: Production-ready Azure Security Scanning Platform
-site_url: https://your-username.github.io/bravo6-docs
-repo_url: https://github.com/your-username/bravo6
-repo_name: bravo6
+site_description: Passive, external security scanning for AI-generated web applications
+site_url: https://amramer101.github.io/Graduation-Project-Bravo6/
+repo_url: https://github.com/amramer101/Graduation-Project-Bravo6
+repo_name: Graduation-Project-Bravo6
 
 extra_css:
   - stylesheets/extra.css
@@ -79,9 +79,10 @@ nav:
   - Infrastructure as Code: infrastructure.md
   - Architecture Overview: architecture-overview.md
   - Architecture Decisions: architecture-decisions.md
-  - Software Architecture: software-architecture.md
+  - Software Architecture & Scouts: software-architecture.md
   - Security & Identity: security-identity.md
   - Data Flow: data-flow.md
   - Cost & FinOps: cost-finops.md
   - CI/CD Pipeline: cicd.md
   - Deployment Guide: deployment.md
+  - Contributing & Testing: contributing.md
