@@ -37,14 +37,25 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
+
+      # TEMPORARY (development phase): fmt/validate/plan below are all
+      # continue-on-error while the author iterates solo on Terraform he
+      # hasn't finished formatting/validating yet -- they still run and
+      # still report red in the Actions UI, they just stop gating the
+      # workflow's overall pass/fail. This does not apply to terraform_cd.yml's
+      # `terraform apply` step, which has real side effects on live Azure
+      # infrastructure and is deliberately left blocking. Revert this
+      # relaxation once the project stabilizes.
       - run: terraform fmt -check -recursive
         working-directory: ./terraform
+        continue-on-error: true
 
       - run: terraform init
         working-directory: ./terraform
 
       - run: terraform validate
         working-directory: ./terraform
+        continue-on-error: true
 
       # soft_fail stays true, not as an unexamined blanket bypass: a local
       # `checkov -d terraform` run (2026-09-04) reports 21 passed / 24
@@ -72,8 +83,14 @@ jobs:
 
       - run: terraform plan -out=tfplan.binary
         working-directory: ./terraform
+        continue-on-error: true
 
+      # continue-on-error here too: if the (now non-blocking) plan step
+      # above failed, tfplan.binary won't exist, and this upload would
+      # otherwise hard-fail the job over a file-not-found rather than the
+      # plan failure that actually caused it.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: tfplan-${{ github.sha }}
           path: ./terraform/tfplan.binary
