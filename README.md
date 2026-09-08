@@ -67,8 +67,8 @@ Each scout is a standalone, runnable module — you don't need the full Azure st
 locally.
 
 ```bash
-git clone https://github.com/amramer101/Graduation-Project-Bravo6.git
-cd Graduation-Project-Bravo6/src/worker
+git clone https://github.com/amramer101/Bravo6-RS.git
+cd Bravo6-RS/src/worker
 pip install -r requirements.txt
 
 # Run every scout's own regression suite
@@ -117,7 +117,7 @@ Architecture Decision Records, is in the [docs site](#documentation) and in `mai
 ## Documentation
 
 Full architecture, infrastructure-as-code reference, security/identity model, cost model, and
-CI/CD documentation: **[docs site link — filled in once GitHub Pages deploys, see below]**
+CI/CD documentation: **[Bravo6 docs site](https://amramer101.github.io/Bravo6-RS/)**
 
 The full paper (`main.pdf` at the repo root) covers the empirical evaluation (n=500 live domains),
 related-work comparison against existing passive scanners, and the Architecture Decision Records in
@@ -134,10 +134,9 @@ set. There's no `CONTRIBUTING.md` yet; open an issue or PR and it'll get a respo
 
 ## License
 
-**No license file exists in this repository yet.** Until one is added, default copyright applies —
-nobody else has permission to reuse, modify, or redistribute this code, even though the repository
-is publicly visible. Choosing a license (MIT, Apache-2.0, or otherwise) is an open decision for the
-author, not something this pass invents on your behalf.
+**All rights reserved.** See [`LICENSE`](LICENSE) — this repository is publicly viewable for
+portfolio/demonstration purposes, but no permission is granted to use, copy, modify, or redistribute
+it without the copyright holder's express written permission.
 
 ## Author
 

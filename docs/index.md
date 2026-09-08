@@ -70,7 +70,7 @@ sequenceDiagram
 Submission and background scanning are decoupled by a Service Bus queue: the user-facing request
 returns as soon as the job is durably enqueued, independent of how long the scan itself takes. See
 [Software Architecture & Scouts](software-architecture.md) for how the pipeline and each scout
-actually work, and the project [README](https://github.com/amramer101/Graduation-Project-Bravo6#implementation-status)
+actually work, and the project [README](https://github.com/amramer101/Bravo6-RS#implementation-status)
 for exactly which of these components are deployed versus code-complete-but-idle versus
 design-only — that status varies by component and is worth reading before assuming any of this is
 live.
@@ -91,6 +91,6 @@ verification discipline as it is a design footnote.
 
 ---
 
-This documentation site, the [README](https://github.com/amramer101/Graduation-Project-Bravo6), and
+This documentation site, the [README](https://github.com/amramer101/Bravo6-RS), and
 the accompanying paper (`main.pdf` at the repository root) are three views of the same honestly-reported
 project: what's built, what's tested, what's deployed, and what's still just a design.

@@ -1,8 +1,8 @@
 site_name: Bravo6 Platform
 site_description: Passive, external security scanning for AI-generated web applications
-site_url: https://amramer101.github.io/Graduation-Project-Bravo6/
-repo_url: https://github.com/amramer101/Graduation-Project-Bravo6
-repo_name: Graduation-Project-Bravo6
+site_url: https://amramer101.github.io/Bravo6-RS/
+repo_url: https://github.com/amramer101/Bravo6-RS
+repo_name: Bravo6-RS
 
 extra_css:
   - stylesheets/extra.css
