@@ -30,13 +30,12 @@ resource "azurerm_function_app_flex_consumption" "api_function" {
     "ServiceBusConnection__fullyQualifiedNamespace" = "${var.service_bus_namespace}.servicebus.windows.net"
     "APPLICATIONINSIGHTS_CONNECTION_STRING"         = var.app_insights_connection_string
 
-    # Identity-based AzureWebJobsStorage (host-internal storage) -- see the
-    # matching block in modules/function_app/main.tf for why this is needed
-    # and what it fixes. RBAC granted in terraform/iam.tf.
-    "AzureWebJobsStorage__blobServiceUri"  = "https://${var.storage_account_name}.blob.core.windows.net"
-    "AzureWebJobsStorage__queueServiceUri" = "https://${var.storage_account_name}.queue.core.windows.net"
-    "AzureWebJobsStorage__tableServiceUri" = "https://${var.storage_account_name}.table.core.windows.net"
-    "AzureWebJobsStorage__credential"      = "managedidentity"
+    # DELIBERATELY no AzureWebJobsStorage__* app settings -- see the
+    # matching comment in modules/function_app/main.tf for the sourced
+    # reason (Flex Consumption derives AzureWebJobsStorage automatically
+    # from storage_container_endpoint/storage_authentication_type above;
+    # manually setting it too was the confirmed root cause of the
+    # crash-restart-loop documented in DEPLOYMENT_NOTES.md's Gap 2).
 
     # Wired for the API Gateway's own code (src/api/function_app.py),
     # which authenticates to both via the identity block above

@@ -32,6 +32,23 @@ provider "azurerm" {
   # the Azure CLI is only supported as a User, not a Service Principal"),
   # which is why every CI run's plan/apply failed before this fix.
   features {
+    # Application Insights auto-creates an "Application Insights Smart
+    # Detection" action group as a side effect the instant the AI resource
+    # is created -- Azure does this itself, it's never in Terraform's
+    # state, and Terraform never asked for it. The default
+    # (prevent_deletion_if_contains_resources = true) live-checks the
+    # resource group for ANY resource still inside it before deleting it
+    # directly, specifically to stop an accidental destroy of something
+    # unrelated -- but that default also means `terraform destroy` fails
+    # on the final resource-group deletion step every single time,
+    # because this auto-created action group is always still there. Given
+    # this project is deliberately destroy/redeploy cycled to control
+    # cost, that would mean a manual `az group delete` workaround on every
+    # cycle -- so this is turned off here, deliberately, not an
+    # accidental safety bypass.
+    resource_group {
+      prevent_deletion_if_contains_resources = false
+    }
   }
 }
 

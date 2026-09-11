@@ -236,13 +236,25 @@ graph TD
 
 ---
 
+## Budget Alert
+
+Previously undefined in this document -- "alert when approaching limits" named a policy with no
+concrete number behind it. That's now set: an Azure Cost Management budget
+(`terraform/budget/main.tf`, its own isolated Terraform root/state -- see that file's header
+comment for why) watches the subscription at a **$25/month** threshold, with notification emails
+firing at **80%** and **100%** of actual monthly spend, both to `amrmedhatamer1@gmail.com`. It's
+subscription-scoped, not resource-group-scoped, specifically so it survives every future
+destroy/redeploy cycle of the app stack (`bravo6-rg`) rather than being torn down along with it.
+
+---
+
 ## Ownership and Responsibility
 
 | Area | Responsible Party | Responsibility |
 |---|---|---|
 | Infrastructure cost | DevOps / Platform Team | Monitor monthly spend and identify further optimisation opportunities |
 | Usage optimisation | Development Team | Write efficient code to minimise function execution time |
-| Budget management | Engineering Lead / FinOps | Track spend against student credits; alert when approaching limits |
+| Budget management | Engineering Lead / FinOps | Track spend against the $25/month budget alert (see above); investigate on the 80% notification, act on the 100% one |
 | Security cost | DevSecOps Team | Justify the cost of premium services (Service Bus) against security requirements |
 
 ---

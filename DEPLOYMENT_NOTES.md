@@ -10,6 +10,22 @@ reconstructed afterward — every claim below was directly observed (a command's
 **Terraform state**: `terraform-rg` / `terraformstateeprofile` storage account (pre-existing backend,
 not managed by this repo's Terraform)
 
+## Current live status (2026-09-11, latest): fully torn down, cost-safe
+
+The app stack was fully destroyed after Gap 2's identity-based `AzureWebJobsStorage` fix was
+confirmed to make things *worse* (see Gap 2 below: a crash-restart loop / `503`s on API Gateway and
+Report Function, not just Worker's queue trigger silently failing as before) — rather than leave a
+broken, partially-functional deployment running and accruing cost. Confirmed empty two ways, not
+one: `terraform state list` (empty) **and** `az group exists --name bravo6-rg` → **`false`**
+(`bravo6-rg` itself no longer exists at all). **Do not redeploy the app stack** (`terraform/` root)
+until Gap 2 has an actual, verified fix — redeploying as-is will reproduce the same crash loop.
+
+A **subscription-scoped** budget alert now exists independently of this app stack, in its own
+Terraform root (`terraform/budget/`, separate state) specifically so it survives future
+destroy/redeploy cycles: **$25/month**, notifications at **80%** and **100%** of actual spend, both
+to `amrmedhatamer1@gmail.com`. Confirmed live via `az consumption budget list` (not just trusted from
+`apply`'s exit code) — see `docs/cost-finops.md` for the same figure documented there.
+
 ## Status summary
 
 | Component | Infra deployed | Code deployed | Functionally verified |
@@ -261,10 +277,36 @@ recurred in Application Insights since the fix — but there's also been zero po
   at all), **Storage Queue Data Contributor was deliberately not added speculatively**, per explicit
   instruction not to guess at further roles without log evidence.
 
-**Net**: the fix matches Microsoft's current documented contract exactly, but is **not confirmed
-working**. Next diagnostic step would need either Portal-based Application Insights Live Metrics
-access (a human, in a browser) during a forced restart, or a support case — both outside what this
-environment can drive.
+**Update (2026-09-11, full destroy/redeploy pass) — CONFIRMED BROKEN, not just unconfirmed.**
+A later pass fully destroyed `bravo6-rg` and redeployed from scratch, then re-tested this fix
+directly against the fresh deployment. Result: **worse than the pre-fix state**, not fixed.
+
+- Sent a fresh test message to `bravo6-queue`: unconsumed after 5+ minutes, same as before the fix.
+- Worker's Application Insights traces on the fresh deployment show the **identical**
+  `AuthenticationFailed` / MAC-signature-mismatch / `SyncTriggers operation failed` errors as the
+  original diagnosis — the identity-based `AzureWebJobsStorage__*` settings did not change the
+  outcome, even though the app_settings and RBAC are confirmed live on this fresh deployment too.
+- **New, worse symptom found this pass**: the API Gateway's own trace log shows it entering a
+  crash-restart loop — `Job host started` → repeated `An unhandled host error has occurred` (the
+  same storage-auth failure) → `Job host stopped` → reinitialize → repeat. This is why the live API
+  endpoint returned `503 The service is unavailable` on the fresh deployment, instead of the flat
+  `500` the pre-fix/first deployment returned. The pre-fix state at least kept the host running and
+  serving requests (HTTP routing doesn't depend on `SyncTriggers`); applying this fix appears to
+  have pushed the host into repeated failure/restart instead. Report Function showed the same 503
+  pattern.
+- **This is now the single blocking item before any next deploy attempt** — redeploying the current
+  Terraform as-is will reproduce this same crash loop on the API Gateway and Report Function, not
+  just leave Worker's queue trigger silently unregistered as before.
+- Given this regression, the live (fresh) deployment was fully destroyed again rather than left
+  running broken and accruing cost (confirmed via `terraform state list` empty and `az group exists
+  --name bravo6-rg` → `false`) — see the "Current live status" note at the top of this document, and
+  the new subscription-scoped budget alert (`terraform/budget/`) put in place specifically because
+  of this incident.
+
+Root cause of *why* Microsoft's documented identity-based approach isn't behaving as documented
+here is still unknown — this needs its own dedicated diagnostic pass (with, ideally, Portal-based
+Application Insights Live Metrics access from a human), not a fix bolted onto a cost-control pass.
+Do not attempt to redeploy the app stack until this has an actual, verified fix.
 
 ## Gap 3: the API's `scanId` and the Worker's `scanId` are never the same value
 

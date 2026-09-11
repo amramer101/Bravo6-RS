@@ -112,3 +112,5 @@ src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/rank_*.jso
 src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/cache_counter_n500.csv
 src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/cache_counter_n500_summary.json
 src/worker/evaluation/results/20260903T182513Z_n500_c3_10scouts_FINAL/fig1_fig6_data.json
+
+CLAUDE.md
