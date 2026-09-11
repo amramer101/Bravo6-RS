@@ -1,0 +1,5 @@
+azure-functions>=1.18.0
+azure-cosmos>=4.5.0
+azure-identity>=1.17.0
+PyJWT>=2.8.0
+cryptography>=42.0.0

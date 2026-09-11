@@ -41,6 +41,11 @@ override.tf.json
 *_override.tf.json
 .terraformrc
 terraform.rc
+# Saved plan files from `terraform plan -out=...` -- binary, ephemeral,
+# environment/state-specific (can also embed resolved values), never
+# meant to be committed.
+*.tfplan
+tfplan*.out
 
 # IDE
 .vscode/

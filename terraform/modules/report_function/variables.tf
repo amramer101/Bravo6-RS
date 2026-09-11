@@ -43,3 +43,38 @@ variable "app_insights_connection_string" {
   sensitive   = true
   description = "Application Insights connection string, set as APPLICATIONINSIGHTS_CONNECTION_STRING"
 }
+
+# --- Cosmos DB target for the Report Function's read-only status/result
+# routes (src/report/function_app.py) ---
+variable "cosmosdb_endpoint" {
+  type        = string
+  description = "Cosmos DB account endpoint URL, set as COSMOS_URL"
+}
+
+variable "cosmosdb_database_name" {
+  type        = string
+  description = "Cosmos SQL database name, set as COSMOS_DATABASE"
+}
+
+variable "cosmosdb_container_name" {
+  type        = string
+  description = "Cosmos SQL container name holding scan job/result documents, set as COSMOS_CONTAINER"
+}
+
+# --- API Gateway / Entra External ID (CIAM) auth values -- same tenant
+# and audience the API Gateway validates against, so a token issued for
+# the frontend SPA works against both. ---
+variable "entra_issuer" {
+  type        = string
+  description = "Expected JWT 'iss' claim the Report Function validates tokens against, set as ENTRA_ISSUER"
+}
+
+variable "entra_jwks_uri" {
+  type        = string
+  description = "JWKS endpoint URL the Report Function fetches Entra External ID (CIAM) signing keys from, set as ENTRA_JWKS_URI"
+}
+
+variable "entra_audience" {
+  type        = string
+  description = "Expected JWT 'aud' claim (the SPA app registration's client ID), set as ENTRA_AUDIENCE"
+}

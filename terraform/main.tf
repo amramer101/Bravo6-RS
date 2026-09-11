@@ -59,8 +59,12 @@ module "observability" {
 }
 
 module "functions_plan" {
+  # Flex Consumption (FC1) allows exactly one Function App per service plan,
+  # so each of the three Function Apps below needs its own plan instance
+  # instead of sharing one.
+  for_each            = toset(["worker", "api", "report"])
   source              = "./modules/functions_plan"
-  plan_name           = var.plan_name
+  plan_name           = "${var.plan_name}-${each.key}"
   sku_name            = var.sku_name
   os_type             = var.os_type
   resource_group_name = module.resource_group.name
@@ -72,7 +76,7 @@ module "function_app" {
   function_app_name                = "${var.function_app_name}-${random_string.random_suffix.result}"
   resource_group_name              = module.resource_group.name
   location                         = module.resource_group.location
-  service_plan_id                  = module.functions_plan.plan_id
+  service_plan_id                  = module.functions_plan["worker"].plan_id
   storage_account_name             = module.storage_account.stg_name
   service_bus_namespace            = module.service_bus.service_bus_namespace
   service_endpoint_subnet_id       = module.network.functions_subnet_id
@@ -94,7 +98,7 @@ module "api_function" {
   function_api_name              = "${var.function_api_name}-${random_string.random_suffix.result}"
   resource_group_name            = module.resource_group.name
   location                       = module.resource_group.location
-  service_plan_id                = module.functions_plan.plan_id
+  service_plan_id                = module.functions_plan["api"].plan_id
   storage_account_name           = module.storage_account.stg_name
   service_endpoint_subnet_id     = module.network.functions_subnet_id
   service_bus_namespace          = module.service_bus.service_bus_namespace
@@ -122,13 +126,24 @@ module "report_function" {
   function_report_name             = "${var.function_report_name}-${random_string.random_suffix.result}"
   resource_group_name              = module.resource_group.name
   location                         = module.resource_group.location
-  service_plan_id                  = module.functions_plan.plan_id
+  service_plan_id                  = module.functions_plan["report"].plan_id
   storage_account_name             = module.storage_account.stg_name
   service_endpoint_subnet_id       = module.network.functions_subnet_id
   service_bus_namespace            = module.service_bus.service_bus_namespace
   storage_primary_blob_endpoint    = module.storage_account.primary_blob_endpoint
   report_deployment_container_name = var.report_deployment_container_name
   app_insights_connection_string   = module.observability.connection_string
+
+  # Same Cosmos account / database / container the API Gateway and Worker
+  # already read/write -- Report only ever reads from it (report_reader
+  # role in terraform/iam.tf), never writes.
+  cosmosdb_endpoint       = module.cosmos_db.cosmosdb_endpoint
+  cosmosdb_database_name  = var.db_name
+  cosmosdb_container_name = "scans"
+
+  entra_issuer   = var.entra_issuer
+  entra_jwks_uri = var.entra_jwks_uri
+  entra_audience = module.entra_external_id.client_id
 }
 
 module "network" {
@@ -155,7 +170,7 @@ module "entra_external_id" {
   }
   app_display_name = var.app_display_name
   redirect_uris = [
-    "https://${module.frontend_swa.static_web_app_default_hostname}",
-    "http://localhost:3000"
+    "https://${module.frontend_swa.static_web_app_default_hostname}/",
+    "http://localhost:3000/"
   ]
 }

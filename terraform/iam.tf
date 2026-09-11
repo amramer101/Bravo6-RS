@@ -34,6 +34,47 @@ locals {
       container_id = module.storage_account.report_deploy_container_id
     }
   }
+
+  # All three identities, for the account-scoped host-storage RBAC below.
+  # This is deliberately account-scoped, unlike function_deploy_containers
+  # above: AzureWebJobsStorage__* (see each function_app module's
+  # app_settings) is the Functions host's OWN internal storage connection
+  # (trigger sync, singleton locks, diagnostic events), not the deployment
+  # package pull -- it isn't scoped to any one container, so neither is this
+  # grant. Roles are Microsoft's documented minimum for this connection
+  # (https://learn.microsoft.com/en-us/azure/azure-functions/manage-connections):
+  # Storage Blob Data Owner is what the doc calls "the minimum storage
+  # account permissions for the host-required AzureWebJobsStorage
+  # connection"; Storage Table Data Contributor is what it says must also be
+  # added so the host can persist its own diagnostic events. Queue Data
+  # Contributor and Storage Account Contributor are NOT included here --
+  # the same doc lists those as binding-specific extras (e.g. the Blob
+  # trigger's poison-queue writes), not part of the base host connection,
+  # and none of the three apps here use a Blob trigger.
+  function_host_identities = {
+    "worker" = module.function_app.worker_principal_id
+    "api"    = module.api_function.api_principal_id
+    "report" = module.report_function.report_principal_id
+  }
+}
+
+# ----------------------------------------------
+# Function App Role Assignments For Host Storage (AzureWebJobsStorage)
+# ----------------------------------------------
+resource "azurerm_role_assignment" "functions_host_storage_blob" {
+  for_each = local.function_host_identities
+
+  scope                = module.storage_account.stg_id
+  role_definition_name = "Storage Blob Data Owner"
+  principal_id         = each.value
+}
+
+resource "azurerm_role_assignment" "functions_host_storage_table" {
+  for_each = local.function_host_identities
+
+  scope                = module.storage_account.stg_id
+  role_definition_name = "Storage Table Data Contributor"
+  principal_id         = each.value
 }
 
 # ----------------------------------------------
