@@ -1,0 +1,94 @@
+{
+  "cases": [
+    {
+      "name": "secrets-positive",
+      "url": "http://127.0.0.1:5001/secrets-positive",
+      "expected_present": ["OpenAI API Key", "secret", "token"],
+      "expected_absent": []
+    },
+    {
+      "name": "secrets-negative",
+      "url": "http://127.0.0.1:5001/secrets-negative",
+      "expected_present": [],
+      "expected_absent": ["OpenAI API Key", "secret", "token"]
+    },
+    {
+      "name": "libs-positive",
+      "url": "http://127.0.0.1:5001/libs-positive",
+      "expected_present": ["Vulnerable Jquery Component", "Vulnerable Bootstrap Component"],
+      "expected_absent": []
+    },
+    {
+      "name": "libs-negative",
+      "url": "http://127.0.0.1:5001/libs-negative",
+      "expected_present": [],
+      "expected_absent": ["Vulnerable Jquery Component", "jquery", "bootstrap"]
+    },
+    {
+      "name": "cookies-weak",
+      "url": "http://127.0.0.1:5001/cookies-weak",
+      "expected_present": ["Cookie 'session' missing", "Cookie 'tracker' missing", "SameSite"],
+      "expected_absent": []
+    },
+    {
+      "name": "cookies-strong",
+      "url": "http://127.0.0.1:5001/cookies-strong",
+      "expected_present": [],
+      "expected_absent": ["Cookie 'session' missing", "SameSite", "Secure attribute", "HttpOnly"]
+    },
+    {
+      "name": "headers-missing",
+      "url": "http://127.0.0.1:5001/headers-missing",
+      "expected_present": ["Missing Content-Security-Policy", "HSTS header missing"],
+      "expected_absent": []
+    },
+    {
+      "name": "headers-safe",
+      "url": "http://127.0.0.1:5001/headers-safe",
+      "expected_present": [],
+      "expected_absent": ["Content-Security-Policy", "HSTS"]
+    },
+    {
+      "name": "info-disclosure-positive",
+      "url": "http://127.0.0.1:5001/info-disclosure-positive",
+      "expected_present": ["Sensitive file exposure", ".env", "wp-config"],
+      "expected_absent": []
+    },
+    {
+      "name": "cors-open",
+      "url": "http://127.0.0.1:5001/cors-open",
+      "expected_present": ["CORS wildcard origin combined with credentials allowed", "Access-Control-Allow-Origin"],
+      "expected_absent": []
+    },
+    {
+      "name": "cors-closed",
+      "url": "http://127.0.0.1:5001/cors-closed",
+      "expected_present": [],
+      "expected_absent": ["CORS wildcard origin", "Access-Control-Allow-Origin"]
+    },
+    {
+      "name": "sri-missing",
+      "url": "http://127.0.0.1:5001/sri-missing",
+      "expected_present": ["Cross-origin <script> loaded without Subresource Integrity"],
+      "expected_absent": []
+    },
+    {
+      "name": "sri-safe",
+      "url": "http://127.0.0.1:5001/sri-safe",
+      "expected_present": [],
+      "expected_absent": ["Subresource Integrity", "Cross-origin <script>"]
+    },
+    {
+      "name": "hallucinated-dep-positive",
+      "url": "http://127.0.0.1:5001/hallucinated-dep-positive",
+      "expected_present": ["Hallucinated dependency", "imaginary-not-published-package"],
+      "expected_absent": []
+    },
+    {
+      "name": "hallucinated-dep-negative",
+      "url": "http://127.0.0.1:5001/hallucinated-dep-negative",
+      "expected_present": [],
+      "expected_absent": ["Hallucinated dependency", "imaginary-not-published-package"]
+    }
+  ]
+}

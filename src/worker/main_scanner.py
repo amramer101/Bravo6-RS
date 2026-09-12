@@ -110,7 +110,14 @@ def _is_ip_safe(ip: "ipaddress._BaseAddress") -> bool:
     checks. is_private already subsumes loopback/link-local/reserved for
     both address families in Python's ipaddress module, but each is listed
     explicitly here so the intent (and the metadata-endpoint case
-    specifically) is legible without reading CPython's source."""
+    specifically) is legible without reading CPython's source.
+
+    BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS is a local synthetic-benchmark flag
+    ONLY. It must NEVER be set in any deployed or production environment; the
+    default path remains strictly deny-private/loopback/reserved addresses.
+    """
+    if os.environ.get("BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     return not (
         ip.is_private
         or ip.is_loopback
@@ -1184,8 +1191,30 @@ if __name__ == "__main__":
                 self.assertFalse(is_target_address_safe("192.168.1.1"))
 
             def test_ssrf_loopback_and_localhost_blocked(self):
-                self.assertFalse(is_target_address_safe("127.0.0.1"))
-                self.assertFalse(is_target_address_safe("localhost"))
+                original = os.environ.get("BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS")
+                os.environ.pop("BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS", None)
+                try:
+                    self.assertFalse(is_target_address_safe("127.0.0.1"))
+                    self.assertFalse(is_target_address_safe("localhost"))
+                    self.assertFalse(is_target_address_safe("10.0.0.5"))
+                finally:
+                    if original is None:
+                        os.environ.pop("BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS", None)
+                    else:
+                        os.environ["BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS"] = original
+
+            def test_ssrf_benchmark_override_allows_private_targets_only_when_opt_in(self):
+                original = os.environ.get("BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS")
+                os.environ["BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS"] = "1"
+                try:
+                    self.assertTrue(is_target_address_safe("127.0.0.1"))
+                    self.assertTrue(is_target_address_safe("localhost"))
+                    self.assertTrue(is_target_address_safe("10.0.0.5"))
+                finally:
+                    if original is None:
+                        os.environ.pop("BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS", None)
+                    else:
+                        os.environ["BRAVO6_VALIDATION_ALLOW_PRIVATE_TARGETS"] = original
 
             def test_ssrf_cloud_metadata_endpoint_blocked(self):
                 """169.254.169.254 -- the Azure/AWS/GCP metadata endpoint --
