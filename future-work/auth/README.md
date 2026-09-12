@@ -1,9 +1,9 @@
-# Deferred: API Gateway authentication, quota, and per-user job persistence
+# Deferred: authentication, quota, and per-user job persistence
 
-Everything in this directory was **removed from the API Gateway's active code path**
-(`src/api/`) on 2026-09-12, not deleted. It's fully-written, previously-tested code — kept here
-so the work isn't lost, and so it can be dropped back into `src/api/` largely as-is once auth
-work resumes.
+Everything in this directory was **removed from the active code path** (`src/api/` on
+2026-09-12, `src/report/` in a follow-up cleanup pass the same day) — not deleted. It's
+fully-written, previously-tested code — kept here so the work isn't lost, and so it can be
+dropped back in largely as-is once auth work resumes across the platform.
 
 ## Why these three files specifically
 
@@ -39,28 +39,51 @@ status (there's no seed record for it to observe a Pending → Complete transiti
 but was decoupled from `ScanJob` — `build_scan_message()` now takes `url`/`job_id`/`config`
 directly instead of a `ScanJob` dataclass instance.
 
+## Report Function's auth (added in the follow-up cleanup pass, same day)
+
+`src/report/function_app.py`'s JWT validation and ownership check (JWT `sub` claim vs. a scan
+document's `user_id` field) were removed the same way, in a follow-up pass the same day —
+**not** left in place as originally planned in this pass's first draft (an earlier version of
+this README said Report Function's auth was out of scope and untouched; that's no longer true).
+
+| File | What it did |
+|---|---|
+| `report_auth.py` | Report's own copy of JWT validation (deliberately vendored, not imported, from `auth.py` above — see its own docstring) |
+| `report_function_auth_gate.py` | The JWT-validate → point-read → ownership-check gate that wrapped both `/report/status` and `/report/result`, plus both routes in their last auth-gated shape (including the HTML output `/report/result` still had at that moment — see `future-work/report-html/README.md`, a separate, independent decision) |
+
+`test_report_function.py`'s auth/ownership-specific test cases moved with them — see
+`test_report_function_auth_deferred.py` in this directory (6 tests, still pass unmodified
+except for import paths and the target module).
+
+**Consequence**: both routes are now genuinely anonymous — any caller who knows or guesses a
+scanId can read its status/result. This is the same read-path enumeration concern the original
+JWT-gating comment named explicitly; noted, not re-litigated, since restoring it is exactly
+what this directory is for.
+
 ## Terraform
 
 `terraform/modules/entra_external_id/` moved here wholesale (see `terraform/entra_external_id/`
 in this directory) — the Entra External ID (CIAM) app registration + service principal
-Terraform. The root module (`terraform/main.tf`) no longer references it.
-
-**Important, not fixed here**: `src/report/function_app.py` (a separate Function App, out of
-this task's stated scope) still validates JWTs against `ENTRA_ISSUER`/`ENTRA_JWKS_URI`/
-`ENTRA_AUDIENCE`. Those app settings are still wired in `terraform/modules/report_function/`
-from root variables `entra_issuer`/`entra_jwks_uri` — which still exist in
-`terraform/variables.tf` and `terraform.tfvars(.example)` for exactly this reason: Report
-Function's own auth was explicitly out of scope for this pass and was left untouched. If you
-ever remove those root variables too, Report Function's `/report/status` and `/report/result`
-routes will need their own explicit no-auth decision first, matching what happened to the
-Gateway here — don't just delete the variables and let it break silently.
+Terraform. The root module (`terraform/main.tf`) no longer references it. `entra_issuer`/
+`entra_jwks_uri`/`external_tenant_id`/`app_display_name` are gone from
+`terraform/variables.tf` and `terraform.tfvars(.example)` too, and from both `api_function`
+and `report_function` modules' `variables.tf`/`main.tf` — there's no Entra app registration
+left for either Function App to point at.
 
 ## Resuming this work
 
-1. Move these three `.py` files back into `src/api/`.
-2. Move `terraform/entra_external_id/` back into `terraform/modules/entra_external_id/` and
-   re-add the `module "entra_external_id"` block to `terraform/main.tf` (see git history around
-   2026-09-12 for the exact block that was removed).
-3. Re-wire `handle_scan_request()` back to the four-step version (see git history for the
-   pre-2026-09-12 shape), or design a new one informed by however the Gateway evolved meanwhile.
-4. Move `test_auth_deferred.py`'s classes back into `test_api_gateway.py`.
+1. Move `auth.py`/`quota.py`/`scan_job.py` back into `src/api/`, and `report_auth.py`/
+   `report_function_auth_gate.py` back into `src/report/` (the latter splits back into
+   `auth.py` and the gate logic inlined into `function_app.py`, matching how it was laid out
+   before — see git history around 2026-09-12 for the exact prior shape of each).
+2. Move `terraform/entra_external_id/` back into `terraform/modules/entra_external_id/`,
+   re-add the `module "entra_external_id"` block to `terraform/main.tf`, and restore
+   `entra_issuer`/`entra_jwks_uri`/`external_tenant_id`/`app_display_name` to
+   `terraform/variables.tf`, `terraform.tfvars(.example)`, and both function modules (see git
+   history for the exact blocks removed).
+3. Re-wire `src/api/function_app.py`'s `handle_scan_request()` back to the four-step version,
+   and `src/report/function_app.py`'s two routes back to auth-gated (see git history for the
+   pre-2026-09-12 / pre-cleanup-pass shapes), or design new ones informed by however each
+   Function App evolved meanwhile.
+4. Move `test_auth_deferred.py`'s classes back into `test_api_gateway.py`, and
+   `test_report_function_auth_deferred.py`'s classes back into `test_report_function.py`.

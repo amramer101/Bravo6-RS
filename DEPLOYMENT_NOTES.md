@@ -525,6 +525,14 @@ first, then a repeat of this same Service Bus test.
 
 ## Report Function — code now exists, live verification blocked (Gap 1 + Gap 3)
 
+**Update (2026-09-12, auth-removal cleanup pass):** the JWT validation and ownership check
+described below were removed from the active code entirely, in the same pass that removed the
+API Gateway's — see `future-work/auth/README.md`. `/report/result` also now returns the scan
+result as JSON instead of the rendered HTML `report_generator.py` used to build (moved to
+`future-work/report-html/`, an independent decision). Both routes are now genuinely
+unauthenticated and answer any caller who knows a scanId. The rest of this section describes the
+auth-gated design as it existed before this update — still useful history, not the live state.
+
 Originally (this document's first version): `src/report/` contained only `report_generator.py`, no
 Azure Functions app at all. A later pass in this same effort closed that gap: added
 `function_app.py` (two routes — `GET /report/status?scanId`, and `GET /report/result?scanId` per a

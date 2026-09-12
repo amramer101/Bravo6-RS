@@ -1,5 +1,6 @@
 azure-functions>=1.18.0
 azure-cosmos>=4.5.0
 azure-identity>=1.17.0
-PyJWT>=2.8.0
-cryptography>=42.0.0
+# PyJWT and cryptography were only needed by auth.py -- moved out of this
+# package to future-work/auth/report_auth.py (see its README.md). Not
+# needed by the active Report Function right now.

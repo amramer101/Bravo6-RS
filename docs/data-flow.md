@@ -6,7 +6,9 @@ This document describes the end-to-end request lifecycle for a security scan on 
 JWT and the API validating it, matching the target design — but the API Gateway's JWT
 validation, along with its Cosmos DB scan-job write, is currently deferred out of the active
 code path (see `future-work/auth/README.md`). Today, step 3 is just "check blocklist, generate
-job id, enqueue" with no validation step and no Cosmos write.
+job id, enqueue" with no validation step and no Cosmos write. The Report Function's polling
+steps (9-10) are similarly unauthenticated today — any caller who knows a scanId can poll it,
+not just its owner.
 
 ---
 

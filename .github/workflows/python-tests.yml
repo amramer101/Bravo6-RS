@@ -50,3 +50,11 @@ jobs:
       - name: Run orchestrator regression suite
         continue-on-error: true
         run: python3 main_scanner.py --test
+
+      # osv_cve_sync.py doesn't match test_*.py's glob above (it's the
+      # Timer Function's own OSV-parsing/Table-Storage-write module, not a
+      # scout) -- added 2026-09-12, needs its own explicit step or CI
+      # silently never runs its regression suite.
+      - name: Run OSV CVE sync regression suite
+        continue-on-error: true
+        run: python3 osv_cve_sync.py --test

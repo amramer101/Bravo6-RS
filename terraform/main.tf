@@ -157,15 +157,12 @@ module "report_function" {
 
   # DEFERRED-AUTH NOTE (2026-09-12, see future-work/auth/README.md):
   # entra_issuer/entra_jwks_uri/entra_audience wiring removed along with
-  # the entra_external_id module below (this task's scope was the API
-  # Gateway, but that module's removal takes this reference down with
-  # it -- there's no Entra app registration left to point at). NOT FIXED
-  # HERE: src/report/function_app.py's own JWT validation code is
-  # untouched and still runs -- with ENTRA_ISSUER/ENTRA_JWKS_URI/
-  # ENTRA_AUDIENCE now unset, every /report/status and /report/result
-  # request will 401. Report Function's own auth needs its own explicit
-  # decision (drop it to match the Gateway, or restore Entra) -- flagged,
-  # not silently left broken.
+  # the entra_external_id module below -- there's no Entra app
+  # registration left to point at. Report Function's own JWT validation
+  # code was ALSO removed (a follow-up cleanup pass, same day) rather
+  # than left reading now-unset env vars -- see
+  # future-work/auth/report_auth.py and
+  # future-work/auth/report_function_auth_gate.py.
 }
 
 module "network" {

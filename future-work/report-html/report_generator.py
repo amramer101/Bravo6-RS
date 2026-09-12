@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
 """
+DEFERRED (2026-09-12): moved out of src/report/ -- not part of the active
+Report Function. /report/result now returns the scan result as JSON
+directly (src/report/function_app.py), not this module's rendered HTML.
+No report frontend is planned now or later in this project's current
+scope, so there's no consumer for an HTML report document -- kept here,
+not deleted, in case that changes. To restore: import build_html() from
+here in src/report/function_app.py's handle_result_request() and switch
+its Content-Type/body back to ("text/html", build_html(doc)) instead of
+("application/json", json.dumps(doc)). Code below is unmodified from its
+last active version.
+=====================================================================
+
 Bravo6 Security Report Generator
 --------------------------------
 Generates a single, self-contained HTML security report from a Bravo6 scan result dict.

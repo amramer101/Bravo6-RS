@@ -199,12 +199,12 @@ graph TD
 ## Application Security — JWT Authentication
 
 **Status (2026-09-12): deferred, not currently active.** The design below is fully implemented
-and unit-tested, but the API Gateway's active code path currently has no authentication at all
-— see Future Work. This section describes the JWT design as written, for when it's restored; the
-Report Function's routes still run this exact validation logic today, but currently reject every
-request regardless of token validity, since the Entra tenant configuration they depend on was
-removed alongside the Gateway's. Treat everything below as the target design, not the live state,
-until Future Work closes this gap.
+and unit-tested, but neither the API Gateway's nor Report Function's active code path has any
+authentication at all right now — both were removed the same way (see Future Work,
+`future-work/auth/README.md`). Report Function's two routes (`/report/status`, `/report/result`)
+answer any caller who knows or guesses a scanId; there is no 401 or 403 outcome anywhere in the
+active code today. Treat everything below as the target design, not the live state, until
+Future Work closes this gap.
 
 All API endpoints were designed to be protected using JSON Web Token (JWT) authentication.
 
@@ -267,7 +267,7 @@ All changes to security-relevant configuration require a pull request and are su
 | Authorisation (RBAC) | Complete | Roles assigned in `iam.tf` following least privilege |
 | Network isolation | Complete | VNet and service endpoints; `default_action = Deny` |
 | Secrets management | Not applicable | No secrets required — all service-to-service auth uses Managed Identity + RBAC, not connection strings or keys |
-| JWT validation | **Deferred (2026-09-12)** | Implemented and tested, not wired into the active API Gateway path — see `future-work/auth/`. Report Function still runs this code but currently rejects everything (see above). |
+| JWT validation | **Deferred (2026-09-12)** | Implemented and tested, not wired into either the API Gateway or Report Function's active path — see `future-work/auth/`. Both are fully unauthenticated today (see above). |
 | HTTPS only | Complete | `https_only = true` on all Function Apps |
 | TLS 1.2 minimum | Complete | `minimum_tls_version = "1.2"` on all services |
 | No public access (backend) | Complete | `public_network_access = false` on Worker, Cosmos DB, and Service Bus |

@@ -50,12 +50,11 @@ resource "azurerm_function_app_flex_consumption" "report_function" {
 
     # ENTRA_ISSUER / ENTRA_JWKS_URI / ENTRA_AUDIENCE REMOVED (2026-09-12,
     # see future-work/auth/README.md and terraform/main.tf's
-    # report_function module block) -- NOT because Report Function's own
-    # JWT validation code was touched (it wasn't, out of this pass's
-    # scope), but because the entra_external_id module these values came
-    # from was removed along with the API Gateway's auth. Every request
-    # to this Function App's routes will now 401 until Report Function's
-    # own auth is explicitly addressed.
+    # report_function module block) -- Report Function's own JWT
+    # validation and ownership check were removed too, in a follow-up
+    # cleanup pass the same day (future-work/auth/report_auth.py,
+    # future-work/auth/report_function_auth_gate.py), not left reading
+    # these now-nonexistent env vars. Both routes are unauthenticated.
   }
 
   tags = {

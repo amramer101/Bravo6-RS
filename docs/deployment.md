@@ -11,10 +11,9 @@ Treat this page as "how to deploy it," not "confirmation that it's deployed."
 - An Azure subscription you control, and the Azure CLI (`az`) authenticated against it.
 - [Terraform](https://developer.hashicorp.com/terraform) 1.9.x (the CI/CD workflows pin `1.9.8`).
 
-**No Entra External ID (CIAM) tenant is needed as of 2026-09-12** — the API Gateway's JWT auth
-path was deferred out of the active deployment (see Future Work / `future-work/auth/README.md`).
-Report Function still contains JWT-validation code, but it's unreachable regardless of tenant
-setup right now (its Entra config was removed along with the Gateway's) — see
+**No Entra External ID (CIAM) tenant is needed as of 2026-09-12** — both the API Gateway's and
+Report Function's JWT auth were deferred out of the active deployment (see Future Work /
+`future-work/auth/README.md`). Both are currently fully unauthenticated — see
 [Security & Identity](security-identity.md).
 
 ## Local, manual deploy

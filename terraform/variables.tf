@@ -155,9 +155,7 @@ variable "app_insights_name" {
 # --------------------------------------------- API Gateway / Entra Auth Variables
 #
 # DEFERRED (2026-09-12, see future-work/auth/README.md): entra_issuer /
-# entra_jwks_uri / external_tenant_id / app_display_name removed -- the
-# API Gateway no longer validates JWTs, and the entra_external_id module
-# they configured moved to future-work/auth/terraform/. NOT FIXED HERE:
-# src/report/function_app.py still reads ENTRA_ISSUER/ENTRA_JWKS_URI/
-# ENTRA_AUDIENCE and will 401 every request now that nothing sets them --
-# see terraform/main.tf's report_function module block.
+# entra_jwks_uri / external_tenant_id / app_display_name removed -- neither
+# the API Gateway nor Report Function validates JWTs anymore, and the
+# entra_external_id module they configured moved to
+# future-work/auth/terraform/.

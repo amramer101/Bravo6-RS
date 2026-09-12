@@ -62,9 +62,10 @@ variable "cosmosdb_container_name" {
 }
 
 # entra_issuer / entra_jwks_uri / entra_audience variables REMOVED
-# (2026-09-12, see future-work/auth/README.md) -- the API Gateway's
-# entra_external_id module (the only source for these values) moved to
-# future-work/auth/terraform/. NOT FIXED HERE: src/report/function_app.py
-# still reads ENTRA_ISSUER/ENTRA_JWKS_URI/ENTRA_AUDIENCE and will 401
-# every request now that nothing sets them -- Report Function's own auth
-# is out of this pass's scope and needs its own explicit decision.
+# (2026-09-12, see future-work/auth/README.md) -- the entra_external_id
+# module (the only source for these values) moved to
+# future-work/auth/terraform/, and src/report/function_app.py's own JWT
+# validation was removed in the same cleanup pass (see
+# future-work/auth/report_auth.py and
+# future-work/auth/report_function_auth_gate.py) rather than left reading
+# now-unset env vars.

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 """
+DEFERRED (2026-09-12): moved out of src/report/ -- not part of the active
+Report Function. See future-work/auth/README.md for why and how to bring
+it back. This directory's report_function_auth_gate.py has the
+ownership-check logic that used to wrap handle_status_request()/
+handle_result_request() and call into this module. Code below is
+unmodified from its last active version.
+=====================================================================
+
 Bravo6 Report Function -- JWT Validation (Microsoft Entra External ID)
 =====================================================================
 Deliberate duplicate of src/api/auth.py, not an import from it: each
