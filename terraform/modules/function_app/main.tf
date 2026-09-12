@@ -70,6 +70,16 @@ resource "azurerm_function_app_flex_consumption" "worker_function" {
     "COSMOS_URL"       = var.cosmosdb_endpoint
     "COSMOS_DATABASE"  = var.cosmosdb_database_name
     "COSMOS_CONTAINER" = var.cosmosdb_container_name
+
+    # Task 2: OSV CVE cache (Table Storage). Read by
+    # sync_osv_cve_cache (Timer Function, writes) and
+    # fetch_cve_dataset_from_table() (per-scan, reads) -- both
+    # authenticate via the SystemAssigned identity above
+    # (DefaultAzureCredential), backed by the table-scoped "Storage
+    # Table Data Contributor" role assignment in terraform/iam.tf. No
+    # account key here, same zero-secrets pattern as COSMOS_URL above.
+    "CVE_TABLE_ENDPOINT" = var.cve_table_endpoint
+    "CVE_TABLE_NAME"     = var.cve_table_name
   }
 
   tags = {

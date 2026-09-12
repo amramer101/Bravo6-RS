@@ -48,13 +48,14 @@ resource "azurerm_function_app_flex_consumption" "report_function" {
     "COSMOS_DATABASE"  = var.cosmosdb_database_name
     "COSMOS_CONTAINER" = var.cosmosdb_container_name
 
-    # Microsoft Entra External ID (CIAM) values the JWT validator checks
-    # every token against -- same tenant/audience as the API Gateway
-    # (modules/api_function/main.tf), so a token issued for the frontend
-    # SPA is valid against both.
-    "ENTRA_ISSUER"   = var.entra_issuer
-    "ENTRA_JWKS_URI" = var.entra_jwks_uri
-    "ENTRA_AUDIENCE" = var.entra_audience
+    # ENTRA_ISSUER / ENTRA_JWKS_URI / ENTRA_AUDIENCE REMOVED (2026-09-12,
+    # see future-work/auth/README.md and terraform/main.tf's
+    # report_function module block) -- NOT because Report Function's own
+    # JWT validation code was touched (it wasn't, out of this pass's
+    # scope), but because the entra_external_id module these values came
+    # from was removed along with the API Gateway's auth. Every request
+    # to this Function App's routes will now 401 until Report Function's
+    # own auth is explicitly addressed.
   }
 
   tags = {

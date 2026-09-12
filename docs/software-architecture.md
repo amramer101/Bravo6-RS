@@ -106,6 +106,8 @@ python3 test_api_gateway.py                          # API Gateway suite (mocked
 ```
 
 As of this page's last update: 190 scout-level test methods across the ten scouts, 33 in the
-Worker's orchestration suite, and 44 in the API Gateway's suite covering every status-code path
-(401/403/429/202/503) — the API Gateway suite runs against mocked Azure clients only; it has not
-been exercised against a deployed Function App or real Entra tokens.
+Worker's orchestration suite, and 19 in the API Gateway's suite covering its current (no-auth)
+status-code paths (403/202/503) — the API Gateway suite runs against mocked Azure clients only;
+it has not been exercised against a deployed Function App. (JWT auth's 22 tests, covering
+401/429 among others, moved to `future-work/auth/test_auth_deferred.py` on 2026-09-12 along with
+the code they test -- see that directory's README.)

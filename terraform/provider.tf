@@ -10,10 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.0.0"
     }
-    azuread = {
-      source  = "hashicorp/azuread"
-      version = "~> 2.50"
-    }
+    # azuread REMOVED (2026-09-12, see future-work/auth/README.md) -- it
+    # only backed the entra_external_id module, which moved to
+    # future-work/auth/terraform/ along with the API Gateway's JWT
+    # validation it supported.
   }
 
 }
@@ -50,9 +50,4 @@ provider "azurerm" {
       prevent_deletion_if_contains_resources = false
     }
   }
-}
-
-provider "azuread" {
-  alias     = "external_tenant"
-  tenant_id = var.external_tenant_id
 }

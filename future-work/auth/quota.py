@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """
+DEFERRED (2026-09-12): moved out of src/api/ -- not part of the active API
+Gateway deployment package. See future-work/auth/README.md for why and how
+to bring it back. Code below is unmodified from its last active version.
+=====================================================================
+
 Bravo6 API Gateway -- Per-User Quota Enforcement
 =====================================================================
 This is the control that closes the paper's Threat Model / Limitations /

@@ -85,6 +85,11 @@ variable "report_deployment_container_name" {
   description = "Name of the blob container holding the deployed package"
 }
 
+variable "cve_cache_table_name" {
+  type        = string
+  description = "Name of the Table Storage table holding the OSV CVE cache (Task 2, src/worker/osv_cve_sync.py)"
+}
+
 variable "plan_name" {
   type        = string
   description = "The name of the App Service Plan"
@@ -135,17 +140,6 @@ variable "static_web_app_size" {
   description = "static web app size"
 }
 
-# --------------------------------------------- external tenant id Variables
-
-variable "external_tenant_id" {
-  type        = string
-  description = "Tenant ID of the Entra External ID (CIAM) tenant"
-}
-
-variable "app_display_name" {
-  type = string
-}
-
 # --------------------------------------------- Observability Variables
 
 variable "log_analytics_workspace_name" {
@@ -159,13 +153,11 @@ variable "app_insights_name" {
 }
 
 # --------------------------------------------- API Gateway / Entra Auth Variables
-
-variable "entra_issuer" {
-  type        = string
-  description = "Expected JWT 'iss' claim the API Gateway validates tokens against -- the Entra External ID (CIAM) tenant's v2.0 issuer URL."
-}
-
-variable "entra_jwks_uri" {
-  type        = string
-  description = "JWKS endpoint URL the API Gateway fetches Entra External ID (CIAM) signing keys from."
-}
+#
+# DEFERRED (2026-09-12, see future-work/auth/README.md): entra_issuer /
+# entra_jwks_uri / external_tenant_id / app_display_name removed -- the
+# API Gateway no longer validates JWTs, and the entra_external_id module
+# they configured moved to future-work/auth/terraform/. NOT FIXED HERE:
+# src/report/function_app.py still reads ENTRA_ISSUER/ENTRA_JWKS_URI/
+# ENTRA_AUDIENCE and will 401 every request now that nothing sets them --
+# see terraform/main.tf's report_function module block.

@@ -187,3 +187,23 @@ resource "azurerm_role_assignment" "worker_sb_receiver" {
   role_definition_name = "Azure Service Bus Data Receiver"
   principal_id         = module.function_app.worker_principal_id
 }
+
+# ----------------------------------------------
+# Worker Role Assignment For OSV CVE Cache (Table Storage) -- Task 2
+#
+# Scoped to ONLY this one table (resource_manager_id), not the whole
+# storage account -- same "narrowest useful scope" pattern as
+# functions_storage_access above (each identity's Blob container grant
+# is scoped to its own deployment container, not the account). "Storage
+# Table Data Contributor" is the standard, documented built-in role for
+# Table Storage data-plane read/write via Managed Identity
+# (DefaultAzureCredential) -- this is the SAME kind of grant as
+# functions_db_access's Cosmos DB role above, not a variant of the
+# AzureWebJobsStorage/Blob Storage Secret Repository mechanism that
+# DEPLOYMENT_NOTES.md's Gap 2 is about. Not live-tested (no terraform
+# apply run for this pass) and does not touch or depend on Gap 2.
+resource "azurerm_role_assignment" "worker_cve_cache_table_access" {
+  scope                = module.storage_account.cve_cache_table_resource_manager_id
+  role_definition_name = "Storage Table Data Contributor"
+  principal_id         = module.function_app.worker_principal_id
+}

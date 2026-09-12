@@ -2,6 +2,12 @@
 
 This document describes the end-to-end request lifecycle for a security scan on the Bravo6 platform. The sequence diagram below shows exactly which components talk to one another, in what order, and how the asynchronous processing model keeps the user interface responsive throughout a scan.
 
+**Status note (2026-09-12):** the diagram and steps below still show `POST /api/scan` carrying a
+JWT and the API validating it, matching the target design — but the API Gateway's JWT
+validation, along with its Cosmos DB scan-job write, is currently deferred out of the active
+code path (see `future-work/auth/README.md`). Today, step 3 is just "check blocklist, generate
+job id, enqueue" with no validation step and no Cosmos write.
+
 ---
 
 ## Table of Contents
@@ -126,7 +132,7 @@ sequenceDiagram
 
 | Security Control | Applied At | Details |
 |---|---|---|
-| JWT authentication | API Function | Every `POST /api/scan` request must carry a valid JWT. |
+| JWT authentication | API Function | **Deferred (2026-09-12)** — designed for every `POST /api/scan` request, not currently enforced; see `future-work/auth/README.md`. |
 | Managed identity | Worker to Cosmos DB | The Worker authenticates to Cosmos DB using its system-assigned managed identity. |
 | No secrets in code | All Functions | No connection strings or access keys appear in environment variables or code. |
 | VNet isolation | All backend services | Service Bus and Cosmos DB are not reachable from the public internet. |

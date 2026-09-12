@@ -58,7 +58,7 @@ sequenceDiagram
     participant W as Worker (10 scouts)
     participant DB as Cosmos DB
 
-    User->>GW: POST /api/scan (JWT, target URL)
+    User->>GW: POST /api/scan (target URL, no auth currently)
     GW->>SB: enqueue scan job
     GW-->>User: 202 Accepted (scan id)
     SB->>W: trigger

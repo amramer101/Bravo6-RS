@@ -64,17 +64,6 @@ variable "cosmosdb_container_name" {
   description = "Cosmos DB container the Gateway writes scan-job records to and queries for quota counts, set as COSMOS_CONTAINER"
 }
 
-variable "entra_issuer" {
-  type        = string
-  description = "Expected JWT 'iss' claim for the Entra External ID (CIAM) tenant, set as ENTRA_ISSUER"
-}
-
-variable "entra_jwks_uri" {
-  type        = string
-  description = "JWKS endpoint URL for the Entra External ID (CIAM) tenant, set as ENTRA_JWKS_URI"
-}
-
-variable "entra_audience" {
-  type        = string
-  description = "Expected JWT 'aud' claim (the SPA app registration's client ID), set as ENTRA_AUDIENCE"
-}
+# entra_issuer / entra_jwks_uri / entra_audience variables REMOVED
+# (2026-09-12, see future-work/auth/README.md) -- the API Gateway no
+# longer validates JWTs at all.

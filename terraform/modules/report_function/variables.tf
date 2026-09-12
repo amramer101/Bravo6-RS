@@ -61,20 +61,10 @@ variable "cosmosdb_container_name" {
   description = "Cosmos SQL container name holding scan job/result documents, set as COSMOS_CONTAINER"
 }
 
-# --- API Gateway / Entra External ID (CIAM) auth values -- same tenant
-# and audience the API Gateway validates against, so a token issued for
-# the frontend SPA works against both. ---
-variable "entra_issuer" {
-  type        = string
-  description = "Expected JWT 'iss' claim the Report Function validates tokens against, set as ENTRA_ISSUER"
-}
-
-variable "entra_jwks_uri" {
-  type        = string
-  description = "JWKS endpoint URL the Report Function fetches Entra External ID (CIAM) signing keys from, set as ENTRA_JWKS_URI"
-}
-
-variable "entra_audience" {
-  type        = string
-  description = "Expected JWT 'aud' claim (the SPA app registration's client ID), set as ENTRA_AUDIENCE"
-}
+# entra_issuer / entra_jwks_uri / entra_audience variables REMOVED
+# (2026-09-12, see future-work/auth/README.md) -- the API Gateway's
+# entra_external_id module (the only source for these values) moved to
+# future-work/auth/terraform/. NOT FIXED HERE: src/report/function_app.py
+# still reads ENTRA_ISSUER/ENTRA_JWKS_URI/ENTRA_AUDIENCE and will 401
+# every request now that nothing sets them -- Report Function's own auth
+# is out of this pass's scope and needs its own explicit decision.

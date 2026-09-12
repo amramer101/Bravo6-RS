@@ -41,18 +41,21 @@ The Gateway (`src/api/function_app.py`) currently implements exactly one HTTP ro
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/api/scan` | Bearer JWT (validated in-handler against the platform's Entra External ID tenant, not via the Azure Functions host-level key gate) | Submit a URL for scanning: validates the JWT, checks the category-based blocklist, enforces per-user quota, writes a scan-job record to Cosmos DB, and enqueues a message onto Service Bus for the Worker to pick up. |
+| `POST` | `/api/scan` | **None currently** (see Future Work below) | Submit a URL for scanning: checks the category-based blocklist, then enqueues a message onto Service Bus for the Worker to pick up. |
 
-Response status codes, all covered by the 44-assertion regression suite:
+Response status codes, all covered by the regression suite:
 
 | Status | Meaning |
 |---|---|
-| `202 Accepted` | Job accepted and enqueued; response body carries the scan ID |
+| `202 Accepted` | Job accepted and enqueued; response body carries the job ID |
 | `400 Bad Request` | Missing/invalid JSON body or missing `url` field |
-| `401 Unauthorized` | JWT missing, malformed, or fails signature/issuer/audience validation |
-| `403 Forbidden` | JWT valid but the target URL matches the category-based blocklist |
-| `429 Too Many Requests` | Per-user quota exceeded |
-| `503 Service Unavailable` | Cosmos DB write or Service Bus enqueue failed after retries |
+| `403 Forbidden` | The target URL matches the category-based blocklist |
+| `503 Service Unavailable` | Service Bus enqueue failed after retries |
+
+**Future Work — auth.** Bearer JWT validation (Entra External ID), per-user quota enforcement,
+and a Cosmos DB scan-job write were all implemented, tested, and previously wired into this
+route (`401`/`429` above were both real outcomes) — deferred out of the active path on
+2026-09-12, not deleted. See `future-work/auth/README.md`.
 
 **Gap worth naming explicitly:** the "Report Function" component described in the architecture
 (read-side, `GET /report/{id}`) has no Azure Function entry point implemented yet —
@@ -60,6 +63,6 @@ Response status codes, all covered by the 44-assertion regression suite:
 not a routed Function App. Someone picking this up next should treat wiring that route as a
 concrete, scoped next step, not assume it already exists because the architecture diagram shows it.
 
-None of this — the one real route included — has been exercised against a deployed Function App,
-real Entra tokens, or real Service Bus traffic. See [Deployment Guide](deployment.md) for what
-deploying it would take.
+None of this — the one real route included — has been exercised against a deployed Function App
+or real Service Bus traffic. See [Deployment Guide](deployment.md) for what deploying it would
+take.

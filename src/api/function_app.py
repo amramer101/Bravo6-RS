@@ -2,16 +2,39 @@
 """
 Bravo6 API Gateway
 =====================================================================
-The four responsibilities the paper commits to (component table,
-System Architecture; "API Gateway Resilience", Reliability) -- nothing
-broader:
-    1. JWT validation (Microsoft Entra External ID)          -> 401
-    2. Blocklist enforcement (immutable, in-code)             -> 403
-    3. Per-user quota enforcement (closes the Denial-of-Wallet
-       gap ONLY once this is deployed and observed working)   -> 429
-    4. Cosmos DB write, then Service Bus enqueue               -> 202
-       (transient Service Bus errors retry internally before   -> 503
+DEFERRED-AUTH NOTE (2026-09-12, see future-work/auth/README.md): this
+Gateway previously did JWT validation, per-user quota enforcement, and a
+Cosmos DB "scan-job" write, in that order, before enqueueing. All three
+came out together -- quota and the Cosmos record are both keyed on the
+JWT's `sub` claim, so neither has anything to key on without auth. The
+active pipeline is now three steps, not four:
+    1. Blocklist enforcement (immutable, in-code)               -> 403
+    2. (optional, secondary) SSRF defense-in-depth               -> 403
+    3. Service Bus enqueue                                        -> 202
+       (transient Service Bus errors retry internally before     -> 503
        falling back to an error response)
+There is currently NO authentication check on this endpoint at all --
+auth.py, quota.py, and scan_job.py are fully written and tested, just not
+wired in; see future-work/auth/ to bring them back.
+
+CONSEQUENCE FOR REPORT FUNCTION (not fixed here, src/report/ is a
+separate deployment unit and out of this pass's scope): src/report/
+still validates JWTs, and its ENTRA_ISSUER/ENTRA_JWKS_URI/ENTRA_AUDIENCE
+app settings depend on Terraform's entra_external_id module, which this
+pass also removed from the live stack (see terraform/main.tf). Report
+Function's /report/status and /report/result routes have no way to
+receive a valid token anymore and will 401 on every request until that's
+addressed on its own.
+
+ALSO NOT FIXED HERE: with no Cosmos write in this Gateway anymore, there
+is no "queued" record for Report Function to observe a Pending status
+against -- the Worker's own finished-result write (main_scanner.py's
+persist_scan_result()) is now the ONLY document that will ever exist in
+Cosmos DB for a given scanId. Gap 3's scanId correlation
+(DEPLOYMENT_NOTES.md) is unaffected by this -- job_id is still generated
+here and threaded through to the Worker via Service Bus -- but a caller
+polling Report Function before the Worker finishes would see "not found"
+where it previously would have seen "Pending".
 
 handle_scan_request() below is the entire decision path, deliberately
 decoupled from func.HttpRequest/HttpResponse so it's directly
@@ -24,28 +47,17 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+import uuid
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import azure.functions as func
-from azure.cosmos import CosmosClient
-from azure.cosmos.container import ContainerProxy
 from azure.identity import DefaultAzureCredential
 from azure.servicebus import ServiceBusClient, ServiceBusSender
-from jwt import PyJWKClient
 
-from auth import AuthError, build_jwks_client, extract_bearer_token, validate_jwt
 from blocklist import is_blocklisted
-from quota import check_quota
-from scan_job import (
-    ScanJobWriteError,
-    count_recent_scans_for_user,
-    new_scan_job,
-    write_scan_job,
-)
-from servicebus_queue import EnqueueError, enqueue_scan_job
+from servicebus_queue import EnqueueError, build_scan_message, enqueue_scan_job
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Bravo6-Gateway")
@@ -75,40 +87,25 @@ def _hostname_from_url(url: str) -> str:
 
 
 def handle_scan_request(
-    authorization_header: Optional[str],
     url: str,
-    jwks_client: PyJWKClient,
-    issuer: str,
-    audience: str,
-    cosmos_container: ContainerProxy,
     get_service_bus_sender: Callable[[], ContextManager[ServiceBusSender]],
     ssrf_check: Optional[Callable[[str], bool]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     """Returns (status_code, response_body). get_service_bus_sender is a
     zero-arg callable returning a context manager yielding a
-    ServiceBusSender -- called ONLY if a request reaches step 4, so a
-    401/403/429 never pays for opening an AMQP link. In tests this is
+    ServiceBusSender -- called ONLY if a request reaches the enqueue
+    step, so a 403 never pays for opening an AMQP link. In tests this is
     typically `lambda: contextlib.nullcontext(mock_sender)`.
     """
-    # Step 1 -- JWT validation. Any failure: 401, stop immediately.
-    try:
-        token = extract_bearer_token(authorization_header)
-        user = validate_jwt(token, jwks_client, issuer, audience)
-    except AuthError as e:
-        logger.info(f"401 unauthorized: {e}")
-        return 401, {"error": "unauthorized"}
-
     hostname = _hostname_from_url(url)
 
-    # Step 2 -- Blocklist enforcement. Runs before quota AND before any
-    # Cosmos DB write / Service Bus enqueue, exactly as specified: a
-    # blocked target must never consume quota or leave a trace in either
-    # downstream system.
+    # Step 1 -- Blocklist enforcement. Runs before anything else: a
+    # blocked target must never leave a trace downstream.
     if is_blocklisted(hostname):
         logger.info(f"403 blocklisted target: {hostname}")
         return 403, {"error": "target domain is not permitted"}
 
-    # Step 5 (optional, secondary) -- SSRF defense-in-depth. Not the
+    # Step 2 (optional, secondary) -- SSRF defense-in-depth. Not the
     # primary control (see module docstring). A failure IN the check
     # itself (e.g. the cross-package import above didn't resolve, or a
     # transient DNS hiccup) does not block the request -- only an actual
@@ -122,47 +119,23 @@ def handle_scan_request(
         except Exception as e:
             logger.warning(f"secondary SSRF check errored (not blocking on it): {e}")
 
-    # Step 3 -- Per-user quota enforcement.
-    def _count(uid: str, window_start: datetime) -> int:
-        return count_recent_scans_for_user(uid, window_start, cosmos_container)
-
-    decision = check_quota(user.subject, _count)
-    if not decision.allowed:
-        logger.info(
-            f"429 quota exceeded: user={user.subject} "
-            f"count={decision.count_in_window}/{decision.limit}"
-        )
-        return 429, {
-            "error": "quota exceeded",
-            "limit": decision.limit,
-            "count_in_window": decision.count_in_window,
-        }
-
-    # Step 4 -- Cosmos DB write, then Service Bus enqueue.
-    job = new_scan_job(user.subject, url)
-    try:
-        write_scan_job(job, cosmos_container)
-    except ScanJobWriteError as e:
-        logger.error(f"503 scan-job persistence failed: {e}")
-        return 503, {"error": "could not persist scan job"}
-
-    # NOTE (known limitation, not fixed here): the Cosmos write and the
-    # Service Bus enqueue are not atomic. If the enqueue below fails
-    # permanently after the write above succeeded, the scan-job record
-    # is left in Cosmos DB with status "queued" but nothing will ever
-    # process it -- an orphaned record, not a duplicate or lost request.
-    # A reconciliation job (e.g. sweep "queued" records older than N
-    # minutes with no matching result) would close this; out of this
-    # pass's scope (the paper doesn't currently claim this is handled).
+    # Step 3 -- Service Bus enqueue. job_id is the only identity this
+    # request gets: no authenticated user, no Cosmos DB record. Still
+    # threaded through to the Worker (Gap 3's correlation fix,
+    # DEPLOYMENT_NOTES.md) and returned to the caller so they have
+    # something to reference, even though nothing in Cosmos DB
+    # acknowledges it as "queued" the way it used to.
+    job_id = str(uuid.uuid4())
+    message = build_scan_message(url=url, job_id=job_id, config=None)
     try:
         with get_service_bus_sender() as sender:
-            enqueue_scan_job(job, sender)
+            enqueue_scan_job(message, sender, job_id)
     except EnqueueError as e:
         logger.error(f"503 enqueue failed: {e}")
         return 503, {"error": "could not enqueue scan job"}
 
-    logger.info(f"202 accepted: job_id={job.id} user={user.subject} url={job.url}")
-    return 202, {"job_id": job.id, "status": job.status}
+    logger.info(f"202 accepted: job_id={job_id} url={url}")
+    return 202, {"job_id": job_id, "status": "queued"}
 
 
 # ------------------------------------------------------------------------------
@@ -171,8 +144,6 @@ def handle_scan_request(
 app = func.FunctionApp()
 
 _credential = None
-_jwks_client = None
-_cosmos_container = None
 _sb_client = None
 
 
@@ -181,22 +152,6 @@ def _get_credential() -> DefaultAzureCredential:
     if _credential is None:
         _credential = DefaultAzureCredential()
     return _credential
-
-
-def _get_jwks_client() -> PyJWKClient:
-    global _jwks_client
-    if _jwks_client is None:
-        _jwks_client = build_jwks_client(os.environ["ENTRA_JWKS_URI"])
-    return _jwks_client
-
-
-def _get_cosmos_container() -> ContainerProxy:
-    global _cosmos_container
-    if _cosmos_container is None:
-        client = CosmosClient(os.environ["COSMOS_URL"], credential=_get_credential())
-        db = client.get_database_client(os.environ.get("COSMOS_DATABASE", "bravo6-db"))
-        _cosmos_container = db.get_container_client(os.environ.get("COSMOS_CONTAINER", "scans"))
-    return _cosmos_container
 
 
 def _get_service_bus_client() -> ServiceBusClient:
@@ -209,11 +164,10 @@ def _get_service_bus_client() -> ServiceBusClient:
 
 @app.route(route="scan", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def submit_scan(req: func.HttpRequest) -> func.HttpResponse:
-    # auth_level=ANONYMOUS is deliberate, not a bypass of Step 1: this
-    # disables the Azure Functions *host-level* function-key gate (a
-    # separate, coarser mechanism from the actual per-user JWT check
-    # this Gateway performs itself). The real authentication is Step 1
-    # inside handle_scan_request(), which runs unconditionally.
+    # auth_level=ANONYMOUS disables the Azure Functions *host-level*
+    # function-key gate (a separate, coarser mechanism from application
+    # auth). There is currently no application-level auth either -- see
+    # this module's docstring.
     try:
         body = req.get_json()
     except ValueError:
@@ -233,12 +187,7 @@ def submit_scan(req: func.HttpRequest) -> func.HttpResponse:
         return _get_service_bus_client().get_queue_sender(queue_name=queue_name)
 
     status_code, response_body = handle_scan_request(
-        authorization_header=req.headers.get("Authorization"),
         url=url,
-        jwks_client=_get_jwks_client(),
-        issuer=os.environ["ENTRA_ISSUER"],
-        audience=os.environ["ENTRA_AUDIENCE"],
-        cosmos_container=_get_cosmos_container(),
         get_service_bus_sender=_get_sender,
     )
     return func.HttpResponse(json.dumps(response_body), status_code=status_code, mimetype="application/json")

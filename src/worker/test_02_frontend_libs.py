@@ -17,6 +17,7 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Set
@@ -301,6 +302,70 @@ async def fetch_cve_dataset(ctx: ScannerContext, cve_csv_url: str) -> Tuple[List
     return cache, reqs
 
 
+async def fetch_cve_dataset_from_table(
+    table_endpoint: str,
+    table_name: str = "cveCache",
+    table_service_client_factory=None,
+) -> Tuple[List[Dict], int]:
+    """Reads the CVE/version-range dataset from the Table Storage cache
+    osv_cve_sync.py's Timer Function populates on a schedule, instead of
+    fetch_cve_dataset()'s CSV path. Returns the SAME List[Dict] shape
+    (library/min_affected/fixed_in/cve/cvss/cwe/summary/signature/
+    upgrade_rec) that fetch_cve_dataset() does, so every downstream CVE-
+    correlation line in run() below (the 7a/7b steps) is unchanged
+    regardless of which loader supplied cve_cache -- only run()'s "which
+    loader do I call" step differs.
+
+    table_service_client_factory is an injection point for tests (a
+    zero-arg callable returning an async context-manager-compatible fake
+    TableServiceClient) so this never needs real Azure Table Storage or
+    Managed Identity credentials to exercise in the regression suite --
+    the same injected-client pattern this project already uses for
+    Cosmos DB (main_scanner.py's persist_scan_result) and Service Bus
+    (src/api's handle_scan_request).
+
+    CACHE-READ-FAILURE DESIGN NOTE: any failure here (network, auth, the
+    table not existing yet on a fresh deployment before the Timer
+    Function's first run) returns an empty cache -- exactly the same
+    "no CVE data this run" outcome as fetch_cve_dataset() failing or
+    cve_csv_url being unset entirely. This scout already treats "no CVE
+    data" as fail-safe/skip, not fail the scan (see run()'s CVE
+    correlation step: a library with no cve_cache match simply falls
+    through to the existing informational/plausible-unconfirmed finding
+    instead of a vulnerability finding) -- so a cache miss or read
+    failure degrades gracefully to the same place, never blocks the scan
+    on a live OSV call, and never raises out of this function.
+    """
+    from azure.data.tables.aio import TableServiceClient
+    from azure.identity.aio import DefaultAzureCredential
+
+    def _default_factory():
+        return TableServiceClient(endpoint=table_endpoint, credential=DefaultAzureCredential())
+
+    factory = table_service_client_factory or _default_factory
+
+    cache: List[Dict] = []
+    try:
+        async with factory() as service:
+            table_client = service.get_table_client(table_name)
+            async for entity in table_client.list_entities():
+                cache.append({
+                    "library": entity.get("Library", ""),
+                    "min_affected": entity.get("MinAffected", ""),
+                    "fixed_in": entity.get("FixedIn", ""),
+                    "cve": entity.get("CveId", ""),
+                    "cvss": entity.get("Cvss", 0.0),
+                    "cwe": entity.get("Cwe", ""),
+                    "summary": entity.get("Summary", ""),
+                    "signature": entity.get("Signature", ""),
+                    "upgrade_rec": entity.get("UpgradeRec", ""),
+                })
+    except Exception as e:
+        logger.warning(f"[SCA] Failed to load CVE dataset from Table Storage cache: {e}")
+        return [], 1
+    return cache, 1
+
+
 # ------------------------------------------------------------------------------
 # Main Scout Entry Point
 # ------------------------------------------------------------------------------
@@ -414,10 +479,23 @@ async def run(ctx: ScannerContext) -> dict:
         "script_content_fingerprint": 3, "inline_fingerprint": 2, "fallback": 0
     }
 
-    # 6. Load CVE Dataset
+    # 6. Load CVE Dataset. Table Storage (osv_cve_sync.py's Timer
+    # Function keeps it fresh, see DEPLOYMENT_NOTES.md/README.md Future
+    # Work) is the production path, set via CVE_TABLE_ENDPOINT -- a
+    # deployment-level app setting, not per-request config, since which
+    # cache to read from doesn't vary per scan. cve_csv_url (per-request
+    # config) stays supported unchanged for local/CLI/evaluation-harness
+    # runs that don't set that env var. If both are absent, cve_cache
+    # stays empty -- the existing, unchanged fail-safe behavior.
+    cve_table_endpoint = os.environ.get("CVE_TABLE_ENDPOINT")
     cve_csv_url = ctx.config.get("cve_csv_url") if ctx.config else None
     cve_cache = []
-    if cve_csv_url:
+    if cve_table_endpoint:
+        cve_cache, reqs = await fetch_cve_dataset_from_table(
+            cve_table_endpoint, os.environ.get("CVE_TABLE_NAME", "cveCache")
+        )
+        requests_made += reqs
+    elif cve_csv_url:
         cve_cache, reqs = await fetch_cve_dataset(ctx, cve_csv_url)
         requests_made += reqs
 
@@ -781,6 +859,141 @@ if __name__ == "__main__":
             def test_fallback_returns_false_on_empty_content_or_version(self):
                 self.assertFalse(_general_pattern_confirms_version("jquery", "", "3.3.1"))
                 self.assertFalse(_general_pattern_confirms_version("jquery", "jQuery v3.3.1", None))
+
+        class TestCveTableStorageCache(unittest.IsolatedAsyncioTestCase):
+            """fetch_cve_dataset_from_table() -- the read side of the OSV
+            Table Storage cache osv_cve_sync.py's Timer Function
+            populates (see that file's own regression suite for the
+            write side). No real Azure Table Storage or Managed Identity
+            credential is ever touched here -- table_service_client_factory
+            injects a fake async context manager instead."""
+
+            def _fake_entity(self, **overrides):
+                entity = {
+                    "Library": "jquery", "MinAffected": "1.2.0", "FixedIn": "3.5.0",
+                    "CveId": "CVE-2020-11022", "Cvss": 6.1, "Cwe": "CWE-79",
+                    "Summary": "jQuery XSS", "Signature": r"jQuery\.fn\.jquery",
+                    "UpgradeRec": "3.5.0",
+                }
+                entity.update(overrides)
+                return entity
+
+            def _factory_returning(self, entities):
+                class _FakeTableClient:
+                    async def list_entities(_self):
+                        for e in entities:
+                            yield e
+
+                class _FakeService:
+                    async def __aenter__(_self):
+                        return _self
+
+                    async def __aexit__(_self, *a):
+                        return False
+
+                    def get_table_client(_self, name):
+                        return _FakeTableClient()
+
+                return lambda: _FakeService()
+
+            def _factory_raising(self, exc):
+                class _FakeService:
+                    async def __aenter__(_self):
+                        raise exc
+
+                    async def __aexit__(_self, *a):
+                        return False
+
+                return lambda: _FakeService()
+
+            async def test_reads_entities_into_the_same_shape_as_csv_loader(self):
+                factory = self._factory_returning([self._fake_entity()])
+                cache, reqs = await fetch_cve_dataset_from_table(
+                    "https://fake.table.core.windows.net", table_service_client_factory=factory
+                )
+                self.assertEqual(reqs, 1)
+                self.assertEqual(len(cache), 1)
+                row = cache[0]
+                # Exactly the keys fetch_cve_dataset() (the CSV loader)
+                # produces -- run()'s CVE-correlation code (7a/7b) reads
+                # these by name regardless of which loader supplied them.
+                for key in ["library", "min_affected", "fixed_in", "cve", "cvss", "cwe", "summary", "signature", "upgrade_rec"]:
+                    self.assertIn(key, row)
+                self.assertEqual(row["library"], "jquery")
+                self.assertEqual(row["cve"], "CVE-2020-11022")
+                self.assertEqual(row["cvss"], 6.1)
+
+            async def test_multiple_entities_all_returned(self):
+                factory = self._factory_returning([
+                    self._fake_entity(Library="jquery", CveId="CVE-1"),
+                    self._fake_entity(Library="lodash", CveId="CVE-2"),
+                ])
+                cache, _ = await fetch_cve_dataset_from_table("https://fake", table_service_client_factory=factory)
+                self.assertEqual(len(cache), 2)
+                self.assertEqual({r["library"] for r in cache}, {"jquery", "lodash"})
+
+            async def test_empty_table_returns_empty_cache_not_error(self):
+                """A freshly-provisioned table the Timer Function hasn't
+                populated yet must degrade to 'no CVE data', not crash."""
+                factory = self._factory_returning([])
+                cache, reqs = await fetch_cve_dataset_from_table("https://fake", table_service_client_factory=factory)
+                self.assertEqual(cache, [])
+                self.assertEqual(reqs, 1)
+
+            async def test_read_failure_returns_empty_cache_not_raise(self):
+                """Cache-miss/read-failure design (see this function's own
+                docstring): a Table Storage error must degrade to the
+                same 'no CVE data this run' outcome as a missing
+                cve_csv_url, never raise out of this function and never
+                fall back to a live per-scan OSV call."""
+                factory = self._factory_raising(RuntimeError("simulated auth failure"))
+                cache, reqs = await fetch_cve_dataset_from_table("https://fake", table_service_client_factory=factory)
+                self.assertEqual(cache, [])
+
+            async def test_run_prefers_table_cache_over_csv_when_both_configured(self):
+                """run()'s step 6: CVE_TABLE_ENDPOINT (deployment-level env
+                var, the production path) takes priority over cve_csv_url
+                (per-request config, the local/CLI/evaluation-harness
+                path) when both are present -- and reading from the table
+                cache actually feeds the same downstream CVE-correlation
+                logic (same pattern as the existing mock_fetch_cve_dataset
+                tests above, just patching the table loader instead)."""
+
+                async def mock_fetch_from_table(endpoint, table_name):
+                    return [{
+                        "library": "bootstrap", "min_affected": "2.0.0", "fixed_in": "3.4.0",
+                        "cve": "CVE-TABLE-1", "cvss": "7.0", "cwe": "CWE-79",
+                        "signature": r"Bootstrap\.VERSION\s*=\s*['\"]3\.0\.0['\"]",
+                        "summary": "Table-sourced CVE", "upgrade_rec": "3.4.0",
+                    }], 1
+
+                html = '<html><body><script>Bootstrap.VERSION = "3.0.0"</script></body></html>'
+                ctx = ScannerContext(
+                    url="https://example.com", session=None, config={"cve_csv_url": "should_not_be_used"},
+                    page_is_representative=True, waf_challenge_detected=None, sensitive_paths=[],
+                    main_page_cache={"html": html},
+                )
+
+                global fetch_cve_dataset_from_table
+                original_fetch = fetch_cve_dataset_from_table
+                globals()["fetch_cve_dataset_from_table"] = mock_fetch_from_table
+                os.environ["CVE_TABLE_ENDPOINT"] = "https://fake.table.core.windows.net"
+                try:
+                    result = await run(ctx)
+                finally:
+                    globals()["fetch_cve_dataset_from_table"] = original_fetch
+                    del os.environ["CVE_TABLE_ENDPOINT"]
+
+                bootstrap_finding = next(
+                    (f for f in result["findings"] if "bootstrap" in f["title"].lower() and "CVE-TABLE-1" in f["title"]), None
+                )
+                self.assertIsNotNone(
+                    bootstrap_finding,
+                    "CVE_TABLE_ENDPOINT being set must route CVE correlation through the "
+                    "table-cache loader, not the CSV loader -- the CSV path's mock CVE "
+                    "('should_not_be_used', which isn't a real file so fetch_cve_dataset "
+                    "would just log a warning and return an empty cache) must never run."
+                )
 
         sys.argv = [sys.argv[0]]
         unittest.main()  # exits the process on completion (default behavior)

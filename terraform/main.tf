@@ -29,6 +29,7 @@ module "storage_account" {
   worker_deployment_container_name = var.worker_deployment_container_name
   api_deployment_container_name    = var.api_deployment_container_name
   report_deployment_container_name = var.report_deployment_container_name
+  cve_cache_table_name             = var.cve_cache_table_name
 
 }
 
@@ -92,6 +93,13 @@ module "function_app" {
   cosmosdb_endpoint       = module.cosmos_db.cosmosdb_endpoint
   cosmosdb_database_name  = var.db_name
   cosmosdb_container_name = "scans"
+
+  # Task 2: the OSV CVE cache osv_cve_sync.py's Timer Function (this same
+  # Function App, see src/worker/function_app.py's sync_osv_cve_cache)
+  # writes to, and test_02_frontend_libs.py's fetch_cve_dataset_from_table()
+  # reads from -- both in this same deployment package.
+  cve_table_endpoint = module.storage_account.table_endpoint
+  cve_table_name     = var.cve_cache_table_name
 }
 
 module "api_function" {
@@ -113,13 +121,18 @@ module "api_function" {
   # modules/cosmos_db/main.tf (partition key /scanId) for scan-job
   # records -- see src/api/scan_job.py for why no new container was
   # added.
+  #
+  # DEFERRED-AUTH NOTE (2026-09-12, see future-work/auth/README.md):
+  # entra_issuer/entra_jwks_uri/entra_audience wiring removed -- the API
+  # Gateway no longer validates JWTs at all (src/api/function_app.py no
+  # longer even imports auth.py, which moved to future-work/auth/). This
+  # container is still passed through for parity with the Worker/Report
+  # modules, but note the Gateway's active code no longer writes to it
+  # either (see function_app.py's module docstring) -- it's currently
+  # unused by the deployed API Gateway.
   cosmosdb_endpoint       = module.cosmos_db.cosmosdb_endpoint
   cosmosdb_database_name  = var.db_name
   cosmosdb_container_name = "scans"
-
-  entra_issuer   = var.entra_issuer
-  entra_jwks_uri = var.entra_jwks_uri
-  entra_audience = module.entra_external_id.client_id
 }
 
 module "report_function" {
@@ -142,9 +155,17 @@ module "report_function" {
   cosmosdb_database_name  = var.db_name
   cosmosdb_container_name = "scans"
 
-  entra_issuer   = var.entra_issuer
-  entra_jwks_uri = var.entra_jwks_uri
-  entra_audience = module.entra_external_id.client_id
+  # DEFERRED-AUTH NOTE (2026-09-12, see future-work/auth/README.md):
+  # entra_issuer/entra_jwks_uri/entra_audience wiring removed along with
+  # the entra_external_id module below (this task's scope was the API
+  # Gateway, but that module's removal takes this reference down with
+  # it -- there's no Entra app registration left to point at). NOT FIXED
+  # HERE: src/report/function_app.py's own JWT validation code is
+  # untouched and still runs -- with ENTRA_ISSUER/ENTRA_JWKS_URI/
+  # ENTRA_AUDIENCE now unset, every /report/status and /report/result
+  # request will 401. Report Function's own auth needs its own explicit
+  # decision (drop it to match the Gateway, or restore Entra) -- flagged,
+  # not silently left broken.
 }
 
 module "network" {
@@ -164,14 +185,8 @@ module "frontend_swa" {
   static_web_app_tier = var.static_web_app_tier
 }
 
-module "entra_external_id" {
-  source = "./modules/entra_external_id"
-  providers = {
-    azuread = azuread.external_tenant
-  }
-  app_display_name = var.app_display_name
-  redirect_uris = [
-    "https://${module.frontend_swa.static_web_app_default_hostname}/",
-    "http://localhost:3000/"
-  ]
-}
+# DEFERRED-AUTH (2026-09-12, see future-work/auth/README.md): the
+# entra_external_id module moved to future-work/auth/terraform/ -- the
+# API Gateway no longer validates JWTs, so there's no app registration
+# to maintain. The frontend (untouched, out of this task's scope) is not
+# affected by this removal since it has no implementation yet.

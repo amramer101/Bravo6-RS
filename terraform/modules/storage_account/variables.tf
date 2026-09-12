@@ -43,3 +43,8 @@ variable "report_deployment_container_name" {
   type        = string
   description = "Name of the blob container holding the deployed package"
 }
+
+variable "cve_cache_table_name" {
+  type        = string
+  description = "Name of the Table Storage table osv_cve_sync.py's Timer Function writes the OSV CVE cache to"
+}

@@ -198,7 +198,15 @@ graph TD
 
 ## Application Security — JWT Authentication
 
-All API endpoints are protected using JSON Web Token (JWT) authentication.
+**Status (2026-09-12): deferred, not currently active.** The design below is fully implemented
+and unit-tested, but the API Gateway's active code path currently has no authentication at all
+— see Future Work. This section describes the JWT design as written, for when it's restored; the
+Report Function's routes still run this exact validation logic today, but currently reject every
+request regardless of token validity, since the Entra tenant configuration they depend on was
+removed alongside the Gateway's. Treat everything below as the target design, not the live state,
+until Future Work closes this gap.
+
+All API endpoints were designed to be protected using JSON Web Token (JWT) authentication.
 
 ### Flow
 
@@ -259,7 +267,7 @@ All changes to security-relevant configuration require a pull request and are su
 | Authorisation (RBAC) | Complete | Roles assigned in `iam.tf` following least privilege |
 | Network isolation | Complete | VNet and service endpoints; `default_action = Deny` |
 | Secrets management | Not applicable | No secrets required — all service-to-service auth uses Managed Identity + RBAC, not connection strings or keys |
-| JWT validation | Complete | API Function validates every incoming token |
+| JWT validation | **Deferred (2026-09-12)** | Implemented and tested, not wired into the active API Gateway path — see `future-work/auth/`. Report Function still runs this code but currently rejects everything (see above). |
 | HTTPS only | Complete | `https_only = true` on all Function Apps |
 | TLS 1.2 minimum | Complete | `minimum_tls_version = "1.2"` on all services |
 | No public access (backend) | Complete | `public_network_access = false` on Worker, Cosmos DB, and Service Bus |
@@ -287,7 +295,7 @@ The Bravo6 platform implements a defence-in-depth security model built entirely 
 - **Managed identities** remove the need for credentials in code.
 - **RBAC with least privilege** ensures every identity holds only the permissions it requires, with the Report Function explicitly denied any access to Service Bus.
 - **Network isolation** through VNet integration and service endpoints keeps all backend services out of reach of the public internet.
-- **JWT authentication** secures every API endpoint.
+- **JWT authentication** is designed to secure every API endpoint, but is currently deferred out of the active path (see Future Work / `future-work/auth/`) — the API Gateway accepts unauthenticated requests as of 2026-09-12.
 - **No secrets to manage** — every service-to-service call is authenticated via Managed Identity and RBAC, so there is nothing for Key Vault or any other secret store to hold.
 - **Auditability** is built in through version-controlled Infrastructure as Code and Azure-native monitoring.
 

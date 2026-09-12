@@ -65,3 +65,14 @@ variable "cosmosdb_container_name" {
   type        = string
   description = "Cosmos SQL container name for scan results, set as COSMOS_CONTAINER"
 }
+
+# --- OSV CVE cache (Task 2, see src/worker/osv_cve_sync.py) ---
+variable "cve_table_endpoint" {
+  type        = string
+  description = "Primary Table Storage endpoint, set as CVE_TABLE_ENDPOINT -- read by both the sync_osv_cve_cache Timer Function (write) and test_02_frontend_libs.py's fetch_cve_dataset_from_table() (read)"
+}
+
+variable "cve_table_name" {
+  type        = string
+  description = "Table Storage table name holding the OSV CVE cache, set as CVE_TABLE_NAME"
+}

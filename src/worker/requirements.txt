@@ -11,3 +11,10 @@ azure-cosmos>=4.5.0
 azure-identity>=1.17.0
 dnspython>=2.6.0
 tldextract>=5.3.2
+# osv_cve_sync.py's Timer Function: writes the OSV CVE cache to Table
+# Storage (Managed Identity, same DefaultAzureCredential as Cosmos DB
+# above) and fetches from OSV.dev via a plain synchronous POST -- the
+# Timer Function itself is sync, not async like the scan pipeline, so
+# this uses `requests` rather than aiohttp.
+azure-data-tables>=12.5.0
+requests>=2.31.0

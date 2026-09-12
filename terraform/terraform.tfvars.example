@@ -21,6 +21,7 @@ function_report_name             = "report-fun-app"
 report_deployment_container_name = "report-deploy"
 worker_deployment_container_name = "worker-deploy"
 api_deployment_container_name    = "api-deploy"
+cve_cache_table_name             = "cveCache"
 
 cosmosdb_name = "bravo6-db"
 db_name       = "bravo6-db"
@@ -31,23 +32,11 @@ static_web_app_name = "bravo6scaner"
 static_web_app_tier = "Free"
 static_web_app_size = "Free"
 
-
-# Copy this file to terraform.tfvars and replace the placeholder below with
-# the real tenant's ID (find it via `az account show --query tenantId` or
-# the Entra External ID portal blade). terraform.tfvars is gitignored --
-# never commit it with a real value.
-external_tenant_id = "00000000-0000-0000-0000-000000000000"
-app_display_name   = "bravo6-frontend-spa"
-
 log_analytics_workspace_name = "bravo6-law"
 app_insights_name            = "bravo6-appi"
 
-# --- API Gateway / Entra External ID (CIAM) auth values ---
-# Replace <your-ciam-subdomain> and the tenant ID below with the real
-# values for your own Entra External ID (CIAM) tenant. Confirm the actual
-# subdomain against the tenant's own OIDC discovery document
-# (https://<subdomain>.ciamlogin.com/<tenant-id>/v2.0/.well-known/openid-configuration)
-# before deploying the API Gateway -- do not assume the subdomain matches
-# the tenant's display name.
-entra_issuer   = "https://<your-ciam-subdomain>.ciamlogin.com/00000000-0000-0000-0000-000000000000/v2.0"
-entra_jwks_uri = "https://<your-ciam-subdomain>.ciamlogin.com/00000000-0000-0000-0000-000000000000/discovery/v2.0/keys"
+# external_tenant_id / app_display_name / entra_issuer / entra_jwks_uri
+# REMOVED (2026-09-12, see future-work/auth/README.md) -- the API
+# Gateway no longer validates JWTs, so there's no Entra External ID
+# (CIAM) tenant to configure here. See future-work/auth/terraform/ if
+# you're bringing this back.

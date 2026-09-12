@@ -10,8 +10,12 @@ Treat this page as "how to deploy it," not "confirmation that it's deployed."
 
 - An Azure subscription you control, and the Azure CLI (`az`) authenticated against it.
 - [Terraform](https://developer.hashicorp.com/terraform) 1.9.x (the CI/CD workflows pin `1.9.8`).
-- Your own Entra External ID (CIAM) tenant, if you want the API Gateway's auth path to work —
-  see [Security & Identity](security-identity.md).
+
+**No Entra External ID (CIAM) tenant is needed as of 2026-09-12** — the API Gateway's JWT auth
+path was deferred out of the active deployment (see Future Work / `future-work/auth/README.md`).
+Report Function still contains JWT-validation code, but it's unreachable regardless of tenant
+setup right now (its Entra config was removed along with the Gateway's) — see
+[Security & Identity](security-identity.md).
 
 ## Local, manual deploy
 
@@ -21,10 +25,8 @@ cp terraform.tfvars.example terraform.tfvars
 ```
 
 Edit `terraform.tfvars` and fill in real values for your own subscription: resource group name,
-region, and — most importantly — `external_tenant_id`, `entra_issuer`, and `entra_jwks_uri` for
-your own Entra External ID tenant (find the tenant ID via `az account show --query tenantId`, and
-confirm the CIAM subdomain against your tenant's own OIDC discovery document rather than guessing
-it). `terraform.tfvars` is gitignored — never commit it with real values in it.
+region, and the resource-naming variables. `terraform.tfvars` is gitignored — never commit it
+with real values in it.
 
 ```bash
 terraform init
@@ -59,10 +61,11 @@ is not automated by anything checked in here.
 
 ## What Terraform provisions
 
-Six independently-scalable components, one Terraform module each, under `terraform/modules/`:
+Independently-scalable components, one Terraform module each, under `terraform/modules/`:
 `resource_group`, `network`, `storage_account`, `service_bus`, `cosmos_db`, `functions_plan`,
 `function_app` (parameterized per Function App — worker/API/report), `frontend_swa`,
-`entra_external_id`, and `observability` (Application Insights + Log Analytics). See
+and `observability` (Application Insights + Log Analytics). (`entra_external_id` moved to
+`future-work/auth/terraform/` on 2026-09-12 — see Prerequisites above.) See
 [Infrastructure as Code](infrastructure.md) for the full resource inventory and
 [Architecture Overview](architecture-overview.md) for how they fit together.
 

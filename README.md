@@ -53,7 +53,7 @@ actually running versus what's code-complete-but-idle versus what's spec-only:
 |---|---|
 | **Worker** (the scanner itself) | Deployed. Implements the full pipeline: plugin discovery, concurrent scout execution, normalization, deduplication, scoring. |
 | **Ten scouts** | Implemented and wired into `discover_plugins()`. Currently **190 passing regression-test methods** across the ten `test_NN_*.py --test` suites, plus 33 in the Worker's own orchestration suite (`main_scanner.py --test`) — run them yourself, the numbers below are current as of this commit, not copied from anywhere. |
-| **API Gateway** | Code-complete (JWT validation, blocklist, quota, Cosmos write + Service Bus enqueue) and covered by a 44-assertion regression suite against mocked Azure clients. **Not yet deployed or exercised against a live Function App, real Entra tokens, or real Service Bus traffic.** |
+| **API Gateway** | Code-complete for its current (no-auth) scope: blocklist enforcement + Service Bus enqueue, covered by a regression suite against mocked Azure clients. **Not yet deployed or exercised against a live Function App or real Service Bus traffic.** JWT validation, per-user quota, and a Cosmos DB job record are implemented and tested but deferred out of the active path — see [Future Work](#future-work) and `future-work/auth/`. |
 | **Message Queue** (Service Bus) | Infrastructure-provisioned via Terraform, not yet exercised end-to-end from a deployed Gateway through to a deployed Worker. |
 | **Reports function** | Infrastructure-provisioned; read path implemented. |
 | **Frontend** | Designed and specified only. No implementation code exists yet. |
@@ -86,7 +86,7 @@ To stand up the full Azure infrastructure:
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars   # fill in your own tenant ID, resource names
+cp terraform.tfvars.example terraform.tfvars   # fill in your own resource names
 terraform init
 terraform plan
 terraform apply
@@ -99,7 +99,7 @@ it in, and should never be committed.
 
 ```mermaid
 flowchart LR
-    U[User / Browser] -->|submit URL, JWT| GW[API Gateway<br/>Function App]
+    U[User / Browser] -->|submit URL, no auth currently| GW[API Gateway<br/>Function App]
     GW -->|enqueue| SB[Service Bus<br/>Standard]
     SB -->|trigger| W[Orchestrator Worker<br/>Function App]
     W -->|passive GET/HEAD/DNS only| T[Target Website]
@@ -112,7 +112,20 @@ Six loosely-coupled components on Azure, communicating through Managed-Identity-
 channels rather than stored connection strings — designed to run near $0/month on consumption
 billing and free-tier allowances. Full detail, including the CQRS split between the write path
 (submission → queue → scan) and the read path (poll → report), the identity/RBAC matrix, and the
-Architecture Decision Records, is in the [docs site](#documentation) and in `main.pdf`.
+Architecture Decision Records, is in the [docs site](#documentation) and in `main.pdf`. **Note
+(2026-09-12):** the API Gateway currently has no authentication at all — see Future Work below;
+the docs site and `main.pdf` may still describe the JWT-protected design pending an update pass.
+
+## Future Work
+
+- **API Gateway authentication.** JWT validation (Microsoft Entra External ID), per-user quota
+  enforcement, and the Cosmos DB scan-job record are fully implemented and tested but deliberately
+  removed from the active deployment as of 2026-09-12 — the Gateway's job today is just
+  accept → blocklist → enqueue, with no auth check. The removed code (and the Terraform for the
+  Entra External ID tenant it needed) lives in `future-work/auth/`, ready to restore. Report
+  Function's own JWT validation was left untouched but is now unreachable as a direct consequence
+  (its Entra app-registration config was removed along with the Gateway's) — restoring this is also
+  what fixes that.
 
 ## Documentation
 

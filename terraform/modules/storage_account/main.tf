@@ -40,3 +40,19 @@ resource "azurerm_storage_container" "report_deploy" {
   storage_account_id    = azurerm_storage_account.functions_stg.id
   container_access_type = "private"
 }
+
+# ------------------------------------------------------------------------------
+# OSV CVE cache (Table Storage) -- populated on a schedule by the Worker's
+# sync_osv_cve_cache Timer Function (src/worker/function_app.py,
+# src/worker/osv_cve_sync.py), read per-scan by test_02_frontend_libs.py's
+# fetch_cve_dataset_from_table() instead of a live per-scan OSV.dev call.
+# Same storage account as the deployment containers above -- no new
+# storage account needed, just a different service (Table, not Blob) on
+# the existing one. Managed Identity access is a table-scoped "Storage
+# Table Data Contributor" role assignment in terraform/iam.tf, NOT
+# related to the AzureWebJobsStorage/Blob Storage Secret Repository
+# mechanism documented as still-broken in DEPLOYMENT_NOTES.md's Gap 2.
+resource "azurerm_storage_table" "cve_cache" {
+  name               = var.cve_cache_table_name
+  storage_account_id = azurerm_storage_account.functions_stg.id
+}

@@ -196,6 +196,14 @@ This is the single highest-cost component in the entire architecture, at roughly
 
 ## ADR-004: Network — Rejection of Private Endpoints for Functions
 
+**Status update (2026-09-12):** the "protected by JWT authentication" half of the chosen option
+below is currently not true in practice — the API Gateway's JWT validation was deferred out of
+the active deployment (see `future-work/auth/README.md`); the API and Report Functions are
+publicly reachable with no application-layer auth on the Gateway right now. This ADR's actual
+subject — rejecting Private Endpoints for these two Function Apps, for the stated cost and
+platform-bug reasons — is unaffected and still stands; only the "secured with JWT" consequence
+needs the caveat above until auth is restored.
+
 ### Context
 
 To further reduce the public exposure of the API and Report functions, Private Endpoints were considered as a way to remove their public network path entirely.

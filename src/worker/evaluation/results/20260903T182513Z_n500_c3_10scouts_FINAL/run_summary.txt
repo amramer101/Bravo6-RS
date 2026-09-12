@@ -1,8 +1,0 @@
-Batch: 20260903T182513Z_n500_c3_10scouts_FINAL
-Attempted: 500
-Succeeded: 500
-Failed: 0
-Total wall-clock time: 1400.67s
-Concurrency: 3
-
-Failures: none
