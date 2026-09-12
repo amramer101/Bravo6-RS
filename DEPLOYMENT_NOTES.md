@@ -10,15 +10,39 @@ reconstructed afterward — every claim below was directly observed (a command's
 **Terraform state**: `terraform-rg` / `terraformstateeprofile` storage account (pre-existing backend,
 not managed by this repo's Terraform)
 
-## Current live status (2026-09-11, latest): fully torn down, cost-safe
+## Current live status (2026-09-11, gap-closing pass): fully torn down, cost-safe
 
-The app stack was fully destroyed after Gap 2's identity-based `AzureWebJobsStorage` fix was
-confirmed to make things *worse* (see Gap 2 below: a crash-restart loop / `503`s on API Gateway and
-Report Function, not just Worker's queue trigger silently failing as before) — rather than leave a
-broken, partially-functional deployment running and accruing cost. Confirmed empty two ways, not
-one: `terraform state list` (empty) **and** `az group exists --name bravo6-rg` → **`false`**
-(`bravo6-rg` itself no longer exists at all). **Do not redeploy the app stack** (`terraform/` root)
-until Gap 2 has an actual, verified fix — redeploying as-is will reproduce the same crash loop.
+**Bottom line up front: this is NOT yet the first fully-verified end-to-end run.** Gap 1 (Cosmos DB
+Private Endpoint) and Gap 3 (scanId correlation) are implemented and hold up well against the live
+evidence gathered this pass. **Gap 2 is CONFIRMED STILL BROKEN** — a fresh, more precise diagnosis
+than any prior pass, superseding the "removing `AzureWebJobsStorage__*` is the fix" claim that had
+been committed to source (see Gap 2 below). The app stack was fully destroyed immediately after
+gathering this evidence, per this project's standing rule not to leave a broken deployment running.
+Confirmed empty two ways: `terraform state list` (empty) **and** `az group exists --name bravo6-rg`
+→ **`false`**. **Do not redeploy the app stack** until Gap 2 has an actual, verified fix (see the new
+lead at the end of the Gap 2 section below) — redeploying as-is will reproduce the same failure.
+
+### This pass's changes (summary)
+
+1. **Gap 1 fix implemented**: Cosmos DB now sits behind a Private Endpoint in a new, dedicated,
+   non-delegated `private-endpoints-subnet` (`10.0.2.0/24`), with its own private DNS zone
+   (`privatelink.documents.azure.com`) linked to the VNet. The `Microsoft.AzureCosmosDB` service
+   endpoint and Cosmos's `virtual_network_rule` are removed entirely (see
+   `terraform/modules/cosmos_db/main.tf` for the full sourced explanation, including why this does
+   NOT reverse ADR-004). **Live-deployed and largely confirmed working** — see Gap 1 below.
+2. **Gap 3 fix implemented**: `src/worker/function_app.py`'s `process_scan()` now reads the Service
+   Bus message's `job_id` and threads it through to `main_scanner.py`'s `run_scout(url, scan_id, ...)`
+   as the scanId, on both the `blocked_ssrf` and normal-completion paths; the internal `uuid.uuid4()`
+   calls are removed. New unit tests (`TestScanIdThreading` in `main_scanner.py`, plus a strengthened
+   assertion in `test_api_gateway.py`) cover both code paths. The evaluation harness
+   (`run_evaluation.py`) generates its own local id per attempt, unrelated to any API job. **Could
+   not be live-verified this pass** — blocked by Gap 2 still being broken (see below): a direct
+   Service Bus test message sat unconsumed for 20+ minutes.
+3. **Gap 2: NOT fixed, despite source claiming otherwise.** Live evidence (below) shows the exact
+   original `AuthenticationFailed`/"Blob Storage Secret Repository" symptom recurring, repeatedly,
+   across all three Function Apps, well after code deployment. A concrete, evidence-backed lead for
+   the *actual* fix was found this pass (see end of Gap 2 section) but NOT implemented or tested live
+   — that needs its own dedicated pass, not a bolt-on to this one.
 
 A **subscription-scoped** budget alert now exists independently of this app stack, in its own
 Terraform root (`terraform/budget/`, separate state) specifically so it survives future
@@ -195,6 +219,51 @@ in this pass — this finding is reported, not worked around.
 Cosmos before it ever reaches the Service Bus enqueue step, so Worker/Service Bus were never
 reached via the real API flow either.
 
+**Fix implemented and deployed this pass (2026-09-11, gap-closing pass): Cosmos DB Private
+Endpoint.** New dedicated `private-endpoints-subnet` (`10.0.2.0/24`, no delegation, no service
+endpoints, `private_endpoint_network_policies = "Disabled"`) in the existing VNet; an
+`azurerm_private_endpoint` targeting the Cosmos account's `Sql` subresource; a
+`privatelink.documents.azure.com` private DNS zone linked to the VNet. The `Microsoft.AzureCosmosDB`
+service endpoint and Cosmos's `virtual_network_rule` block are removed entirely — see
+`terraform/modules/cosmos_db/main.tf`'s sourced comment for the full explanation and why this is
+unrelated to ADR-004 (that decision was about Private Endpoints on the Function Apps' own *inbound*
+path; this is Cosmos's data-plane side, reached over the Function Apps' existing, unchanged outbound
+VNet integration). `Microsoft.Storage`'s service endpoint on `functions-subnet` was investigated per
+instruction and deliberately left alone — no live evidence gathered this pass showed anything
+depending on it, but nothing confirmed it was safe to remove either (see `modules/network/main.tf`'s
+comment); flagged for a dedicated follow-up, not touched further.
+
+**Live evidence, gathered directly (2026-09-11):**
+- `terraform apply` created the private endpoint successfully (`provisioningState: Succeeded`,
+  ~8 minutes — normal for Private Link). The private DNS zone got its A records auto-populated by the
+  zone group (`bravo6-cosmosdb-83088.privatelink.documents.azure.com` → `10.0.2.4`, plus a
+  region-specific record → `10.0.2.5`), and the VNet link shows `LinkState: Completed`,
+  `ProvisioningState: Succeeded`.
+- The API Gateway's *first* live request (a garbage-bearer-token `POST /api/scan`, sent minutes after
+  the private endpoint finished provisioning) hit a **500**, with Application Insights showing:
+  `ServiceRequestTimeoutError: (...HTTPSConnection(host='bravo6-cosmosdb-83088.documents.azure.com',
+  port=443)..., 'Connection to bravo6-cosmosdb-83088.documents.azure.com timed out. (connect
+  timeout=3)')`. This is a **materially different symptom than the original Gap 1 bug** — a connect
+  timeout, not an explicit "Forbidden... blocked by your Cosmos DB account firewall settings"
+  rejection — consistent with DNS not yet fully resolving to the private IP immediately after
+  private-endpoint/DNS-zone-group provisioning finished, not a structural failure of the fix.
+- **The identical request, retried ~15 minutes later, succeeded past the point of failure**: it
+  reached JWT validation and correctly returned `401 {"error": "unauthorized"}` for the garbage
+  token — meaning `CosmosClient` initialization (which this app appears to do eagerly, since the
+  earlier attempt failed before authentication ran) no longer times out. This is strong evidence the
+  Private Endpoint fix **works once fully propagated** — but it does not, by itself, prove the
+  post-auth Cosmos *write* succeeds (see "What could not be verified" below).
+- Could not obtain a real Entra External ID JWT this pass (see Entra section) to drive a full
+  `202`-returning request through `handle_scan_request()`'s actual Cosmos-write step. The closest
+  available proxy — a direct Service Bus message to test the Worker's identical-network-path Cosmos
+  write — was blocked by Gap 2 still being broken (message sat unconsumed; see Gap 2 below).
+
+**Verdict: Gap 1's core network fix (DNS + Private Endpoint reachability) is confirmed working after
+a propagation delay. The full authenticated write-then-202 path through the API Gateway itself is
+still NOT directly proven live** — blocked by two separate, unrelated obstacles (no real JWT
+available; Gap 2 blocking the Worker-side proxy test), not by any remaining defect found in the
+Private Endpoint fix itself.
+
 ## Gap 2: Worker's Service Bus trigger never registers — messages sit unconsumed
 
 Sent a real test message directly to `bravo6-queue` via the Service Bus SDK (bypassing the blocked
@@ -308,6 +377,75 @@ here is still unknown — this needs its own dedicated diagnostic pass (with, id
 Application Insights Live Metrics access from a human), not a fix bolted onto a cost-control pass.
 Do not attempt to redeploy the app stack until this has an actual, verified fix.
 
+**Update (2026-09-11, gap-closing pass) — CONFIRMED STILL BROKEN, against a fresh deploy, with the
+committed source's "removal is the fix" claim now directly contradicted by live evidence.**
+
+Between the above entry and this pass, `terraform/modules/function_app/main.tf` (and the matching
+`api_function`/`report_function` modules) were changed to the *opposite* of what's described above:
+instead of adding `AzureWebJobsStorage__*` identity-based app settings, they now DELIBERATELY set
+none at all, reasoning (in a sourced comment) that Flex Consumption derives the host's internal
+storage config entirely from `storage_container_endpoint`/`storage_authentication_type`, and that
+adding `AzureWebJobsStorage__*` on top was itself the bug. This pass deployed that version fresh and
+tested it directly — first time this specific variant has been live-tested.
+
+**Result: the identical failure recurs**, on all three Function Apps, well after code was deployed
+(not just during initial cold start). Pulled directly from Application Insights `exceptions`, with
+timestamps:
+
+```
+2026-09-11T18:55:34Z  worker-fun-app-4q3pjj  AuthenticationFailed (MAC signature mismatch),
+                       container "azure-webjobs-secrets", "SyncTriggers operation failed" /
+                       "There was an error performing a read operation on the Blob Storage Secret
+                       Repository."
+2026-09-11T18:56:35Z  worker-fun-app-4q3pjj  same error, recurs
+2026-09-11T18:58:28Z  api-fun-app-4q3pjj     same error
+2026-09-11T18:59:39Z  api-fun-app-4q3pjj     same error, recurs
+2026-09-11T19:01:18Z  report-fun-app-4q3pjj  same error
+2026-09-11T19:02:33Z  report-fun-app-4q3pjj  same error, recurs
+2026-09-11T19:17:21Z  worker-fun-app-4q3pjj  same error, recurs AGAIN (~22 min after the first)
+2026-09-11T19:17:29Z  api-fun-app-4q3pjj     same error, recurs AGAIN
+```
+
+Interspersed with repeated `python exited with code 143` entries for all three apps (worker, api,
+report) across the same window — consistent with the "crash-restart loop" pattern the prior pass
+found with the *other* variant of this fix, though some 143 exits may be ordinary Flex Consumption
+scale-to-zero rather than crashes; the recurring `AuthenticationFailed` on fresh cold starts is the
+unambiguous signal.
+
+**Live consequence, directly observed**: a real Service Bus test message, sent directly to
+`bravo6-queue` (bypassing the API, same isolation technique as the original Gap 2 diagnosis), showed
+`activeMessageCount: 1` unchanged for over 20 minutes — Worker never consumed it, exactly reproducing
+the original symptom. This also means Gap 3's live correlation could not be observed this pass (see
+Gap 3 below): with Worker's host in this state, there was no way to watch it write a result under a
+matching scanId.
+
+Despite this, `az functionapp function list` showed all three apps' triggers correctly registered
+(`process_scan`, `submit_scan`, `get_result`, `get_status`) — so `SyncTriggers` succeeds *some* of the
+time (apparently including whatever internal sync a `zip` deployment triggers), just not reliably on
+every cold start. This is a genuinely degraded, intermittent state, not a hard permanent failure —
+but it is not a working fix.
+
+**New lead for the actual fix (found this pass, NOT implemented or tested — flagged for a dedicated
+pass, not bolted onto this one).** The failing operation is specifically the Functions host's **Blob
+Storage Secret Repository** (function/host *key* storage — `azure-webjobs-secrets` container), which
+is a different mechanism from the deployment-storage config
+(`storage_container_endpoint`/`storage_authentication_type`) that the current source's comment
+assumes covers everything. Current Microsoft guidance indicates this mechanism needs its own
+explicit identity-based `AzureWebJobsStorage` connection to avoid falling back to (broken)
+account-key auth — specifically via `AzureWebJobsStorage__accountName` (the storage account name) +
+`AzureWebJobsStorage__credential = "managedidentity"`, which is a **different shape** than the
+`__blobServiceUri`/`__queueServiceUri`/`__tableServiceUri` triplet the *original* (also
+confirmed-broken) fix attempt used. RBAC guidance for this specific connection commonly cites
+**Storage Blob Data Owner** (already the level of a prior attempt) plus, in some sources, **Storage
+Queue Data Contributor** — deliberately not added previously per an earlier pass's explicit
+no-speculative-roles instruction, but worth reconsidering given this new, more specific lead. This is
+a *third* distinct variant from the two already tried and found broken; it needs its own
+implement-then-live-verify pass with close Application Insights monitoring, not a guess bundled into
+a cost-control or gap-closing pass.
+
+**Do not attempt to redeploy the app stack until Gap 2 has an actual, verified fix** — this is still
+the single blocking item, now with a better-scoped next step than before.
+
 ## Gap 3: the API's `scanId` and the Worker's `scanId` are never the same value
 
 Found while wiring the Report Function's read path (a later pass), confirmed by reading the code
@@ -334,6 +472,28 @@ behavior for a single evolving document and is unit-tested against that intended
 live Cosmos) — see `src/report/function_app.py`'s module docstring for the same finding written
 down at the point it matters most for future readers.
 
+**Fixed in code (2026-09-11, gap-closing pass).** `src/worker/function_app.py`'s `process_scan()`
+now reads `job_id` from the Service Bus message and passes it to `main_scanner.py`'s
+`run_scout(url, scan_id, config=None)` (now a required parameter) as the scanId, used identically on
+the `blocked_ssrf` early-exit path and the normal-completion path; `run_scout()`'s internal
+`uuid.uuid4()` calls are removed entirely. `run_evaluation.py` (the offline evaluation harness) now
+generates its own per-attempt id explicitly, since it never correlates with a real API job — a
+3-site smoke run (`--limit 3 --batch-id smoke-gap3-scanid-fix`) confirmed the harness still runs
+end-to-end with the new required parameter (3/3 succeeded). New tests: `TestScanIdThreading` in
+`main_scanner.py`'s own suite (asserts both code paths use the given scan_id, including what gets
+passed to `persist_scan_result`), plus a strengthened assertion + docstring in
+`test_api_gateway.py`'s `test_message_schema_matches_worker_expectations`. Full existing suites for
+both `src/worker` and `src/api` stay green (35 + 44 tests respectively) plus the new assertions.
+
+**Live verification: blocked, not attempted-and-failed.** A real Service Bus test message
+(`job_id="gap3-live-test-<uuid>"`) was sent directly to `bravo6-queue` this pass specifically to
+prove this fix live. It could not be observed being consumed — Worker's host was in the broken state
+described in Gap 2 above (repeated `AuthenticationFailed`/`SyncTriggers` failures), so no scanId
+correlation could be watched end-to-end. The code fix and its tests are believed correct on their own
+merits (the logic is a straightforward parameter thread-through, and the unit tests exercise exactly
+the mechanism in question), but **this specific pass adds no live proof** — that needs Gap 2 fixed
+first, then a repeat of this same Service Bus test.
+
 ---
 
 ## Entra External ID — partially verified
@@ -345,8 +505,23 @@ down at the point it matters most for future readers.
   document (both now match reality — see Fix 1 above).
 - **Full interactive login flow was NOT tested** — that needs a real browser-based OAuth redirect
   flow with a test user account in the CIAM tenant, which isn't something a CLI/API-only
-  verification pass can drive. Also moot right now regardless, since Gap 1 means even a
-  successfully-issued, valid token would still hit the same Cosmos 500 on the first real request.
+  verification pass can drive. No longer moot on Gap 1 (that's now largely fixed, see above) — this
+  is the actual remaining blocker to a real end-to-end `202` proof.
+- **New finding (2026-09-11, gap-closing pass): ROPC is not officially supported on Entra External
+  ID (CIAM) tenants**, confirmed against current guidance — a documented product limitation, not a
+  config issue on this project's side. A "native authentication API" alternative exists but needs
+  the app registration configured for it and a multi-step API flow implemented; out of scope for
+  this pass. Practical effect: there is currently no non-interactive way to mint a real, validly-
+  signed test JWT for this tenant from a CLI/automation context — any future live verification of
+  the full authenticated write path needs either a human completing a real browser OAuth flow, or a
+  dedicated native-auth implementation.
+- **New finding, same pass: the CIAM tenant's Security Defaults blocked Azure CLI's own first-party
+  app entirely** (`AADSTS530035`), for both a plain interactive sign-in attempt AND Terraform's
+  `azuread` provider (needed for the `entra_external_id` module — blocking `terraform plan` itself,
+  unrelated to Gap 1/2/3). Resolved by disabling Security Defaults on the tenant via the Entra Admin
+  Center (a tenant-owner action, not something scriptable from here) — worth deciding deliberately
+  whether to re-enable Security Defaults now that this pass is done, versus leaving it off for future
+  CLI-driven passes, since it's a real security-posture trade-off, not just a deployment nuisance.
 
 ## Report Function — code now exists, live verification blocked (Gap 1 + Gap 3)
 
@@ -370,35 +545,52 @@ Requested explicitly by the user, plus items that surfaced directly from this se
 
 1. **Private endpoint from the Functions subnet to the storage account**, so
    `public_network_access_enabled` can stay `false` permanently, including during deploys. The
-   temporary-open/revert pattern used in this pass is a stopgap, not the real fix.
+   temporary-open/revert pattern used in this pass is a stopgap, not the real fix. Still open — the
+   Gap 1 pass added a Cosmos DB Private Endpoint but deliberately did not build a second one for
+   Storage speculatively (see Gap 1's `Microsoft.Storage` investigation above).
 2. **`shared_access_key_enabled` on the storage account** (currently the `azurerm` default, `true`)
    — close it if nothing in the architecture actually depends on storage-account-key auth,
    consistent with the zero-secrets design used everywhere else. Already flagged separately in
-   CLAUDE.md's Checkov notes as a real, non-tier-locked finding.
-3. **Fix Gap 1** (Cosmos DB VNet ACL rejecting Flex-Consumption-integrated traffic) — confirmed
-   (see Gap 1 above) to require Cosmos DB Private Endpoint; service-endpoint-based access is
-   incompatible with Flex Consumption by design, not something a Terraform tweak can fix.
-4. **Confirm Gap 2's fix actually works.** The identity-based `AzureWebJobsStorage` settings and
-   RBAC are applied and match Microsoft's current documented contract exactly, but this pass could
-   not confirm `SyncTriggers` now succeeds — Worker produced zero Application Insights telemetry
-   even under forced restarts, and there's no CLI-accessible raw-log path for Flex Consumption (see
-   Gap 2 above). Needs a human with Portal access to check Application Insights Live Metrics during
-   a forced restart, or a Microsoft support case if that doesn't reveal it either.
-5. **A real code-deployment pipeline.** This pass deployed code manually, from a laptop, using a
-   locally-installed `azure-functions-core-tools` — there is still no CI/CD path that deploys
-   application code (only `terraform_cd.yml` for infra). A VNet-integrated deploy path (e.g. a
-   self-hosted GitHub Actions runner inside the Functions subnet) would also make items 1 and the
-   temporary-open pattern in this pass unnecessary going forward.
-6. **Report Function's actual Azure Functions app** (route, auth, Cosmos read) — done in a later
-   pass (see the Report Function section above); code deployment to the live app and live
-   verification remain.
-7. **Fix Gap 3** (API's `scanId` and Worker's `scanId` never correlate) — needs
-   `src/worker/function_app.py`'s `process_scan()` to actually read and use the `job_id` the
-   message already carries, and `main_scanner.py`'s `run_scout()` to accept that id instead of
-   minting its own. Blocks live verification of the Report Function work.
+   CLAUDE.md's Checkov notes as a real, non-tier-locked finding. Still open, and now more clearly
+   relevant given Gap 2's failure is itself an account-key-auth problem on this same storage account.
+3. ~~Fix Gap 1~~ **DONE this pass** — Cosmos DB Private Endpoint implemented, deployed, and largely
+   confirmed live (see Gap 1 above); the authenticated write path specifically still needs a real
+   JWT to fully prove (see Entra section).
+4. **Fix Gap 2 for real, using the new lead found this pass.** Two variants have now been tried and
+   both confirmed broken live: adding `AzureWebJobsStorage__blobServiceUri`/`__queueServiceUri`/
+   `__tableServiceUri` (original pass), and removing `AzureWebJobsStorage__*` entirely (this pass's
+   starting point). The new lead — explicit `AzureWebJobsStorage__accountName` +
+   `__credential=managedidentity`, specifically for the Blob Storage Secret Repository mechanism,
+   possibly with Storage Queue Data Contributor added to the existing Storage Blob Data Owner grant
+   — has NOT been tried. This is now the single most important next step; needs its own
+   implement-then-live-verify pass.
+5. **A real code-deployment pipeline.** This pass deployed code manually (via
+   `az functionapp deployment source config-zip --build-remote true`, since
+   `azure-functions-core-tools`' own binary download stalled in this environment — noted as an
+   environment-specific tooling snag, not a project finding) — there is still no CI/CD path that
+   deploys application code (only `terraform_cd.yml` for infra). A VNet-integrated deploy path (e.g.
+   a self-hosted GitHub Actions runner inside the Functions subnet) would also make item 1 and the
+   temporary-open pattern unnecessary going forward.
+6. **Report Function's actual Azure Functions app** (route, auth, Cosmos read) — code exists and
+   deployed live this pass (all three routes returned correct `401`s for unauthenticated requests,
+   confirming the code is running); full authenticated read-path verification still needs Gap 2
+   fixed and a real JWT.
+7. ~~Fix Gap 3~~ **DONE in code this pass** — see Gap 3 above. Live verification still blocked by
+   Gap 2.
 8. Cosmetic: the recurring subnet-delegation drift and the `entra_external_id` module's implicit
    `azuread` provider warning (`main.tf:154`, `azuread = azuread.external_tenant` with no
    `required_providers` entry in that child module) — harmless, but worth a real fix at some point.
+   Both still recur (confirmed this pass).
+9. **New this pass: implement CIAM native authentication, or otherwise establish a real
+   non-interactive way to get a test JWT.** ROPC is confirmed unsupported on Entra External ID (see
+   Entra section) — without this, no future automation-driven pass can fully verify the API
+   Gateway's authenticated write path; it will always need a human's browser.
+10. **New this pass: `terraform/docs/architecture-decisions.md` (ADR-003) says Service Bus Premium
+    was chosen specifically because it's "the only SKU supporting VNet isolation," but the live,
+    deployed namespace (`terraform/modules/service_bus/main.tf`) is actually `Standard`.** Not
+    investigated further this pass (unrelated to Gap 1/2/3) — worth reconciling: either the doc is
+    stale, or Service Bus's VNet-isolation story here relies on something other than SKU-gated
+    VNet integration and the ADR's stated rationale needs revisiting.
 
 ---
 

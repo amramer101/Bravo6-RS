@@ -47,7 +47,8 @@ module "cosmos_db" {
   location                   = module.resource_group.location
   cosmosdb_name              = "bravo6-cosmosdb-${random_integer.ri.result}"
   db_name                    = var.db_name
-  service_endpoint_subnet_id = module.network.functions_subnet_id
+  private_endpoint_subnet_id = module.network.private_endpoints_subnet_id
+  vnet_id                    = module.network.vnet_id
 }
 
 module "observability" {

@@ -58,28 +58,23 @@ intentional rather than implicit:
   genuinely doesn't exist at all).
 
 ---------------------------------------------------------------------
-KNOWN UPSTREAM GAP (found while wiring this, NOT fixed here -- Worker
-and API Gateway are explicitly out of scope for this pass; see
-DEPLOYMENT_NOTES.md): src/api/scan_job.py writes the queued job record
-under id = the scanId the API generates and returns to the caller in its
-202 response. src/worker/main_scanner.py's run_scout() never receives
-that scanId at all -- src/api/servicebus_queue.py's build_scan_message()
-sends it as "job_id" in the Service Bus message, but
-src/worker/function_app.py's process_scan() only ever reads "url" and
-"config" from that message body, and run_scout() mints its OWN fresh
-uuid.uuid4() for "scanId" internally (main_scanner.py, both the
-blocked_ssrf early-exit and the normal-completion path). The practical
-effect: today, the job-record document a user's scanId points at is
-NEVER updated past status="queued", and the Worker's actual completed
-result lands under a completely different, uncorrelated id nothing ever
-surfaces back to the caller. This means /report/status and /report/result
-will only ever observe Pending for a real scanId until that correlation
-is fixed -- a Worker/API-side bug, not a Report-side one. Everything in
-this file implements the CORRECT, intended behavior for a single
-evolving document (same id, status transitioning as the job progresses)
-so that once the upstream fix lands, no change is needed here -- see
-_derive_status() below for exactly what shape each state is inferred
-from.
+FORMERLY-KNOWN UPSTREAM GAP, FIXED (DEPLOYMENT_NOTES.md's Gap 3):
+src/api/scan_job.py writes the queued job record under id = the scanId
+the API generates and returns to the caller in its 202 response.
+src/api/servicebus_queue.py's build_scan_message() sends that same id
+as "job_id" in the Service Bus message; src/worker/function_app.py's
+process_scan() now reads it and threads it through to
+main_scanner.py's run_scout(url, scan_id=job_id, ...), which uses it
+as "scanId" on both the blocked_ssrf early-exit path and the
+normal-completion path -- no more internally-minted uuid.uuid4(). The
+queued job document and the Worker's finished result document now
+share an id, so /report/status and /report/result can observe a real
+Pending -> Complete transition. Everything in this file implements the
+CORRECT, intended behavior for a single evolving document (same id,
+status transitioning as the job progresses) -- see _derive_status()
+below for exactly what shape each state is inferred from. Live
+end-to-end verification against a real deployment is tracked in
+DEPLOYMENT_NOTES.md, not this file.
 """
 import json
 import logging

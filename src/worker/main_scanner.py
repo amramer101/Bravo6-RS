@@ -23,7 +23,6 @@ import socket
 import sys
 import time
 import traceback
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -745,7 +744,7 @@ def persist_scan_result(
 # ------------------------------------------------------------------------------
 # Main Orchestrator Execution
 # ------------------------------------------------------------------------------
-async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def run_scout(url: str, scan_id: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     start_time = time.time()
     start_time_iso = datetime.now().isoformat()
     
@@ -774,7 +773,7 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
         if ctx.ssrf_blocked:
             logger.warning(f"Blocked unsafe target {url}: {ctx.ssrf_block_reason}")
             return {
-                "scanId": str(uuid.uuid4()),
+                "scanId": scan_id,
                 "url": url,
                 "status": "blocked_ssrf",
                 "ssrf_block_reason": ctx.ssrf_block_reason,
@@ -916,7 +915,7 @@ async def run_scout(url: str, config: Optional[Dict[str, Any]] = None) -> Dict[s
             }
 
         final_result = {
-            "scanId": str(uuid.uuid4()),
+            "scanId": scan_id,
             "url": url,
             "start_time": start_time_iso,
             "end_time": datetime.now().isoformat(),
@@ -1516,8 +1515,74 @@ if __name__ == "__main__":
                 self.assertEqual(captured["id"], "scan-abc-123")
                 self.assertEqual(captured["scanId"], captured["id"])
 
+        class TestScanIdThreading(unittest.IsolatedAsyncioTestCase):
+            """Gap 3 fix (DEPLOYMENT_NOTES.md): run_scout() must use the
+            caller-supplied scan_id -- the API's own job_id, threaded
+            through by src/worker/function_app.py's process_scan() -- as
+            the result's scanId on BOTH the blocked_ssrf early-exit path
+            and the normal-completion path, and never mint its own
+            uuid4(). Without this, the queued job document the API writes
+            and the finished result document the Worker writes never
+            share an id, and no Report Function read can ever observe a
+            real Pending -> Complete transition for a given scanId."""
+
+            def setUp(self):
+                import unittest.mock as mock
+                self.mock = mock
+                self.module = sys.modules[__name__]
+                self.persisted = []
+                patch_persist = self.mock.patch.object(
+                    self.module,
+                    "persist_scan_result",
+                    lambda final_result, results_dir: (self.persisted.append(final_result), "local")[1],
+                )
+                patch_persist.start()
+                self.addCleanup(patch_persist.stop)
+
+            async def test_blocked_ssrf_path_uses_given_scan_id(self):
+                job_id = "job-9f2c-blocked"
+
+                async def fake_fetch(ctx):
+                    ctx.ssrf_blocked = True
+                    ctx.ssrf_block_reason = "target resolves to a private IP"
+
+                with self.mock.patch.object(self.module, "fetch_main_page_and_analyze", fake_fetch):
+                    result = await run_scout("http://169.254.169.254", scan_id=job_id)
+
+                self.assertEqual(result["status"], "blocked_ssrf")
+                self.assertEqual(
+                    result["scanId"], job_id,
+                    "blocked_ssrf early-exit must use the caller's scan_id, not a fresh uuid4()."
+                )
+
+            async def test_normal_completion_path_uses_given_scan_id(self):
+                import types
+                job_id = "job-9f2c-complete"
+
+                async def fake_fetch(ctx):
+                    ctx.ssrf_blocked = False
+
+                async def fake_scout_run(ctx):
+                    return {"findings": []}
+
+                fake_plugin = types.SimpleNamespace(__name__="fake_scout", run=fake_scout_run)
+
+                with self.mock.patch.object(self.module, "fetch_main_page_and_analyze", fake_fetch), \
+                     self.mock.patch.object(self.module, "discover_plugins", lambda: [fake_plugin]):
+                    result = await run_scout("https://example.com", scan_id=job_id)
+
+                self.assertEqual(
+                    result["scanId"], job_id,
+                    "normal-completion path must use the caller's scan_id, not a fresh uuid4()."
+                )
+                self.assertEqual(
+                    self.persisted[-1]["scanId"], job_id,
+                    "persist_scan_result must receive the exact same scanId returned to the caller."
+                )
+
         sys.argv = [sys.argv[0]]
         unittest.main()
     else:
+        import uuid  # CLI-only scan id -- doesn't correlate with any API job_id.
         config = build_run_config(args)
-        result = asyncio.run(run_scout(args.url, config=config))
+        result = asyncio.run(run_scout(args.url, scan_id=str(uuid.uuid4()), config=config))

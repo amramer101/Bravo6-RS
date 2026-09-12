@@ -18,7 +18,12 @@ variable "resource_group_name" {
   description = "The name of the Resource Group"
 }
 
-variable "service_endpoint_subnet_id" {
+variable "private_endpoint_subnet_id" {
   type        = string
-  description = "The ID of the Subnet"
+  description = "The ID of the dedicated, non-delegated subnet the Cosmos DB Private Endpoint's NIC is created in"
+}
+
+variable "vnet_id" {
+  type        = string
+  description = "The ID of the VNet the private DNS zone (privatelink.documents.azure.com) is linked to, so Function App VNet-routed egress resolves Cosmos's hostname to the private IP"
 }

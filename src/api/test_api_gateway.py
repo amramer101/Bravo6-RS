@@ -311,8 +311,19 @@ class TestServiceBusEnqueue(unittest.TestCase):
     def test_message_schema_matches_worker_expectations(self):
         """src/worker/function_app.py's process_scan() does:
         data = json.loads(body); target_url = data.get("url");
+        job_id = data.get("job_id");
         config = data.get("config") if isinstance(data.get("config"), dict) else None.
-        The enqueued message must satisfy that exactly."""
+        The enqueued message must satisfy that exactly.
+
+        job_id is the Gap 3 correlation fix (DEPLOYMENT_NOTES.md):
+        process_scan() now reads it and threads it through to
+        run_scout(url, scan_id=job_id, ...) as the scanId used on BOTH the
+        blocked_ssrf and normal-completion paths -- see
+        src/worker/main_scanner.py's TestScanIdThreading for the Worker
+        side of this same contract. This assertion is what pins the
+        value the API sends to be the exact job.id the queued Cosmos
+        document was written under (scan_job.py), so the two documents
+        end up sharing an id."""
         job = new_scan_job("user-1", "https://example.com")
         message = build_scan_message(job)
         body = json.loads(b"".join(message.body).decode("utf-8"))

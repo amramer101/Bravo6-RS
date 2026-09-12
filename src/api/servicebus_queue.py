@@ -12,14 +12,13 @@ process_scan() expects -- read directly from that file for this pass:
     config = data.get("config") if isinstance(data.get("config"), dict) else None
     result = await run_scout(target_url, config=config)
 
-So the message body MUST be a JSON object with a required "url" string
-and an optional "config" dict -- nothing else is read by the Worker
-today. build_scan_message() below also includes a "job_id" field; the
-Worker's process_scan() ignores any key it doesn't explicitly read, so
-this is a harmless, forward-compatible addition for future traceability
-(so a later Worker change could correlate its result back to this job),
-NOT a change to what the Worker currently requires -- the two fields it
-actually reads are populated exactly as it expects.
+So the message body MUST be a JSON object with a required "url" string,
+a required "job_id" string, and an optional "config" dict.
+build_scan_message() below sets "job_id" to this job's own id
+(job.id) -- process_scan() reads it and threads it through to
+run_scout() as the scanId used for the finished result, so the queued
+job document this API writes and the finished result document the
+Worker writes end up sharing an id (DEPLOYMENT_NOTES.md's Gap 3 fix).
 """
 import json
 import logging

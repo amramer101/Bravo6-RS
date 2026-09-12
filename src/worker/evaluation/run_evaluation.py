@@ -51,6 +51,7 @@ import csv
 import json
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -131,8 +132,13 @@ async def _scan_one(site: Dict[str, Any], semaphore: asyncio.Semaphore) -> Dict[
         for attempt in range(1, MAX_ATTEMPTS + 1):
             t0 = time.time()
             try:
+                # scan_id is now a required run_scout() parameter (Gap 3 fix,
+                # DEPLOYMENT_NOTES.md) -- production callers pass the API's
+                # job_id so the queued and finished Cosmos documents share an
+                # id, but this harness never correlates with an API job, so a
+                # fresh id per attempt is fine.
                 result = await asyncio.wait_for(
-                    main_scanner.run_scout(site["url"], config=config),
+                    main_scanner.run_scout(site["url"], scan_id=str(uuid.uuid4()), config=config),
                     timeout=OUTER_TIMEOUT_SECONDS,
                 )
                 return {

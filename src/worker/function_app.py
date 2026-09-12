@@ -25,18 +25,28 @@ async def process_scan(msg: func.ServiceBusMessage):
         logging.info(f"Message body: {body}")
         data = json.loads(body)
         target_url = data.get("url")
-        
+        job_id = data.get("job_id")
+
         if not target_url:
             logging.error("❌ Message does not contain a 'url' field")
             return  # Do not raise an exception for malformed messages
 
+        if not job_id:
+            logging.error("❌ Message does not contain a 'job_id' field")
+            return  # Do not raise an exception for malformed messages
+
         # 2. Execute the security scanner.
-        # run_scout(url, config=None) is the sole public entry point in
-        # main_scanner.py -- it takes no verbose/min_confidence kwargs.
-        logging.info(f"🚀 Starting scan for: {target_url}")
+        # run_scout(url, scan_id, config=None) is the sole public entry
+        # point in main_scanner.py -- it takes no verbose/min_confidence
+        # kwargs. scan_id is the API's own job_id (src/api/scan_job.py),
+        # passed through as-is: this is what makes the queued job document
+        # the API wrote and the finished result document the Worker writes
+        # share the same id (Cosmos "scans" container, partition key
+        # /scanId) -- see DEPLOYMENT_NOTES.md's Gap 3.
+        logging.info(f"🚀 Starting scan for: {target_url} (job_id={job_id})")
 
         config = data.get("config") if isinstance(data.get("config"), dict) else None
-        result = await run_scout(target_url, config=config)
+        result = await run_scout(target_url, scan_id=job_id, config=config)
 
         # 3. Log the scan summary
         logging.info(f"✅ Scan completed for {target_url}")
