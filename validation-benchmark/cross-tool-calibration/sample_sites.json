@@ -1,0 +1,29 @@
+{
+  "sites": [
+    {"domain": "amazon.com", "source": "known-major"},
+    {"domain": "github.com", "source": "known-major"},
+    {"domain": "google.com", "source": "known-major"},
+    {"domain": "microsoft.com", "source": "known-major"},
+    {"domain": "cloudflare.com", "source": "known-major"},
+    {"domain": "paypal.com", "source": "known-major"},
+    {"domain": "dropbox.com", "source": "known-major"},
+    {"domain": "reddit.com", "source": "known-major"},
+    {"domain": "linkedin.com", "source": "known-major"},
+    {"domain": "mozilla.org", "source": "known-major"},
+    {"domain": "netflix.com", "source": "known-major"},
+    {"domain": "wikipedia.org", "source": "known-major"},
+    {"domain": "openweathermap.org", "source": "candidate-pool-sample"},
+    {"domain": "example.com", "source": "candidate-pool-sample"},
+    {"domain": "olx.pl", "source": "candidate-pool-sample"},
+    {"domain": "marketwatch.com", "source": "candidate-pool-sample"},
+    {"domain": "nextdns.io", "source": "candidate-pool-sample"},
+    {"domain": "buzzoola.com", "source": "candidate-pool-sample"},
+    {"domain": "fastpanel.direct", "source": "candidate-pool-sample"},
+    {"domain": "telenet.be", "source": "candidate-pool-sample"},
+    {"domain": "webthing.com", "source": "candidate-pool-sample"},
+    {"domain": "peacocktv.com", "source": "candidate-pool-sample"},
+    {"domain": "business.site", "source": "candidate-pool-sample"},
+    {"domain": "nsw.gov.au", "source": "candidate-pool-sample"},
+    {"domain": "sky.it", "source": "candidate-pool-sample"}
+  ]
+}

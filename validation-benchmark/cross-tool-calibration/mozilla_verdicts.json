@@ -1,0 +1,1577 @@
+[
+  {
+    "domain": "amazon.com",
+    "status": "ok",
+    "grade": "C",
+    "score": 50,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-no-scripts-loaded"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "github.com",
+    "status": "ok",
+    "grade": "A+",
+    "score": 115,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": true,
+        "result": "csp-implemented-with-unsafe-inline-in-style-src-only"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-preloaded"
+      },
+      "cookies": {
+        "present": true,
+        "pass": true,
+        "result": "cookies-secure-with-httponly-sessions-and-samesite"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "google.com",
+    "status": "ok",
+    "grade": "C-",
+    "score": 45,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented-but-reporting-enabled"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-without-secure-flag-but-protected-by-hsts"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": false,
+        "result": "referrer-policy-unsafe"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-implemented-with-same-origin-allow-popups"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "microsoft.com",
+    "status": "ok",
+    "grade": "D-",
+    "score": 25,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "cloudflare.com",
+    "status": "ok",
+    "grade": "B",
+    "score": 75,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-inline"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-preloaded"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-without-secure-flag-but-protected-by-hsts"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": true,
+        "result": "sri-implemented-and-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-implemented-with-unsafe-none"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": true,
+        "result": "corp-implemented-with-cross-origin"
+      }
+    }
+  },
+  {
+    "domain": "paypal.com",
+    "status": "ok",
+    "grade": "A+",
+    "score": 105,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": true,
+        "result": "csp-implemented-with-unsafe-inline-in-style-src-only"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-preloaded"
+      },
+      "cookies": {
+        "present": true,
+        "pass": true,
+        "result": "cookies-secure-with-httponly-sessions"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "dropbox.com",
+    "status": "ok",
+    "grade": "B+",
+    "score": 80,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-eval"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-preloaded"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-without-secure-flag-but-protected-by-hsts"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-implemented-with-same-origin-allow-popups"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "reddit.com",
+    "status": "ok",
+    "grade": "B",
+    "score": 75,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-preloaded"
+      },
+      "cookies": {
+        "present": true,
+        "pass": true,
+        "result": "cookies-secure-with-httponly-sessions"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-no-scripts-loaded"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "linkedin.com",
+    "status": "ok",
+    "grade": "C+",
+    "score": 60,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": true,
+        "result": "csp-implemented-with-unsafe-inline-in-style-src-only"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-session-without-httponly-flag"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "mozilla.org",
+    "status": "ok",
+    "grade": "B",
+    "score": 75,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-inline"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-implemented-with-same-origin"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "netflix.com",
+    "status": "ok",
+    "grade": "B-",
+    "score": 65,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented-but-reporting-enabled"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-without-secure-flag-but-protected-by-hsts"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-implemented-with-public-access"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "wikipedia.org",
+    "status": "ok",
+    "grade": "C",
+    "score": 50,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-preloaded"
+      },
+      "cookies": {
+        "present": true,
+        "pass": true,
+        "result": "cookies-secure-with-httponly-sessions"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "openweathermap.org",
+    "status": "ok",
+    "grade": "D",
+    "score": 30,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "example.com",
+    "status": "ok",
+    "grade": "F",
+    "score": 10,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-no-scripts-loaded"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "olx.pl",
+    "status": "ok",
+    "grade": "B+",
+    "score": 80,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-inline"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-implemented-with-public-access"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-no-scripts-loaded"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-implemented-via-csp"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "marketwatch.com",
+    "status": "ok",
+    "grade": "F",
+    "score": 0,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-without-secure-flag"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "nextdns.io",
+    "status": "ok",
+    "grade": "C",
+    "score": 55,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "buzzoola.com",
+    "status": "ok",
+    "grade": "D",
+    "score": 30,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-implemented-with-restricted-access"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "fastpanel.direct",
+    "status": "ok",
+    "grade": "F",
+    "score": 0,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-and-external-scripts-not-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "telenet.be",
+    "status": "ok",
+    "grade": "F",
+    "score": 0,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-inline"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": false,
+        "result": "cookies-without-secure-flag-but-protected-by-hsts"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-and-external-scripts-not-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-header-invalid"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "webthing.com",
+    "status": "ok",
+    "grade": "F",
+    "score": 10,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": false,
+        "result": "hsts-not-implemented-no-https"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-frame-options-not-implemented"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": false,
+        "result": "x-content-type-options-not-implemented"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "peacocktv.com",
+    "status": "ok",
+    "grade": "B",
+    "score": 75,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-inline"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": null,
+        "result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "business.site",
+    "status": "ok",
+    "grade": "B",
+    "score": 70,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-implemented-with-unsafe-inline"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": true,
+        "result": "cookies-secure-with-httponly-sessions-and-samesite"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": null,
+        "result": "referrer-policy-not-implemented"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-implemented-with-same-origin"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": true,
+        "result": "corp-implemented-with-same-site"
+      }
+    }
+  },
+  {
+    "domain": "nsw.gov.au",
+    "status": "ok",
+    "grade": "B",
+    "score": 70,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  },
+  {
+    "domain": "sky.it",
+    "status": "ok",
+    "grade": "B-",
+    "score": 65,
+    "verdicts": {
+      "content-security-policy": {
+        "present": true,
+        "pass": false,
+        "result": "csp-not-implemented"
+      },
+      "strict-transport-security": {
+        "present": true,
+        "pass": true,
+        "result": "hsts-implemented-max-age-at-least-six-months"
+      },
+      "cookies": {
+        "present": true,
+        "pass": null,
+        "result": "cookies-not-found"
+      },
+      "cross-origin-resource-sharing": {
+        "present": true,
+        "pass": true,
+        "result": "cross-origin-resource-sharing-not-implemented"
+      },
+      "subresource-integrity": {
+        "present": true,
+        "pass": false,
+        "result": "sri-not-implemented-but-external-scripts-loaded-securely"
+      },
+      "x-frame-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-frame-options-sameorigin-or-deny"
+      },
+      "x-content-type-options": {
+        "present": true,
+        "pass": true,
+        "result": "x-content-type-options-nosniff"
+      },
+      "referrer-policy": {
+        "present": true,
+        "pass": true,
+        "result": "referrer-policy-private"
+      },
+      "cross-origin-opener-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coop-not-implemented"
+      },
+      "cross-origin-embedder-policy": {
+        "present": true,
+        "pass": true,
+        "result": "coep-not-implemented"
+      },
+      "cross-origin-resource-policy": {
+        "present": true,
+        "pass": null,
+        "result": "corp-not-implemented"
+      }
+    }
+  }
+]

@@ -56,6 +56,21 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2
 
+# Retry policy for the pre-flight fetch (fetch_main_page_and_analyze) only.
+# Live-confirmed (cross-tool-calibration diagnosis, 2026-09-16): running many
+# scans concurrently (asyncio.gather over a site batch) causes a fraction of
+# pre-flight fetches to hit REQUEST_TIMEOUT purely from local contention
+# (event loop / DNS resolver thread pool / TLS handshake queueing) even
+# against targets that are completely healthy and respond in well under a
+# second in isolation -- reproduced directly: 1 of 10 concurrent requests to
+# a healthy site timed out at the full 15s ceiling with no other cause.
+# Deliberately separate from MAX_RETRIES/RETRY_BACKOFF above (unused
+# elsewhere, and tuned differently) since this retry is specifically for
+# transient network failures on the one request every scout's
+# representativeness gate depends on -- not a general-purpose retry knob.
+PREFLIGHT_MAX_RETRIES = 2
+PREFLIGHT_RETRY_BACKOFF_SECONDS = (0.5, 1.5)
+
 # Default timeouts per module (seconds)
 DEFAULT_TIMEOUTS = {
     "test_01_secrets": 60,
@@ -347,44 +362,87 @@ def detect_waf_and_representativeness(status: int, headers: Dict[str, Any], html
     return waf, rep
 
 
+def _format_fetch_error(e: BaseException) -> str:
+    """type(e).__name__ is always included, never just str(e) alone --
+    asyncio.TimeoutError (and aiohttp.ServerTimeoutError, which subclasses
+    it) stringify to '' with no message, which previously left
+    ctx.main_page_cache["error"] indistinguishable from an unset/empty
+    value. "TimeoutError: " (trailing, no message) is expected and fine --
+    the type name alone is the signal that matters here."""
+    return f"{type(e).__name__}: {e}"
+
+
 async def fetch_main_page_and_analyze(ctx: ScannerContext):
-    """Fetch main page once, store it, and analyze for WAF/Challenge Pages."""
+    """Fetch main page once, store it, and analyze for WAF/Challenge Pages.
+
+    Retries up to PREFLIGHT_MAX_RETRIES times, with a short fixed backoff
+    (PREFLIGHT_RETRY_BACKOFF_SECONDS), but ONLY for transient failures --
+    a timeout or connection error where no response was ever received.
+    A clean HTTP response is never retried even when it's a WAF/anti-bot
+    block (e.g. a 401): aiohttp does not raise on a non-2xx status, so that
+    case never enters the except branch below at all -- it's a real,
+    deterministic result that detect_waf_and_representativeness() below is
+    responsible for classifying, not a fetch failure to retry.
+    """
     url = ctx.url
     ctx.main_page_cache = {"status": 0, "html": "", "headers": {}, "set_cookie_headers": [], "soup": None, "error": None}
+    ctx.metrics["base_url_gets"] = ctx.metrics.get("base_url_gets", 0) + 1
 
-    try:
-        ctx.metrics["http_requests"] += 1
-        ctx.metrics["base_url_gets"] = ctx.metrics.get("base_url_gets", 0) + 1
-        async with ctx.session.get(url) as resp:
-            status = resp.status
-            headers = dict(resp.headers)
-            # dict(resp.headers) keeps only ONE value per header name, so a response
-            # setting multiple cookies (the common case) silently loses all but one
-            # Set-Cookie header here. Cookie-auditing scouts need every cookie, not
-            # just the last one, so also capture the raw multi-value list separately
-            # -- additive only, "headers" above is untouched for existing consumers.
-            set_cookie_headers = resp.headers.getall("Set-Cookie", [])
-            html = await resp.text()
+    attempt = 0
+    while True:
+        try:
+            ctx.metrics["http_requests"] += 1
+            async with ctx.session.get(url) as resp:
+                status = resp.status
+                headers = dict(resp.headers)
+                # dict(resp.headers) keeps only ONE value per header name, so a response
+                # setting multiple cookies (the common case) silently loses all but one
+                # Set-Cookie header here. Cookie-auditing scouts need every cookie, not
+                # just the last one, so also capture the raw multi-value list separately
+                # -- additive only, "headers" above is untouched for existing consumers.
+                set_cookie_headers = resp.headers.getall("Set-Cookie", [])
+                html = await resp.text()
 
-            ctx.main_page_cache["status"] = status
-            ctx.main_page_cache["headers"] = headers
-            ctx.main_page_cache["set_cookie_headers"] = set_cookie_headers
-            ctx.main_page_cache["html"] = html
-            ctx.main_page_cache["soup"] = BeautifulSoup(html, "html.parser")
-            
-            # WAF and Representative Page Gate
-            waf, rep = detect_waf_and_representativeness(status, headers, html)
-            ctx.waf_challenge_detected = waf
-            ctx.page_is_representative = rep
+                ctx.main_page_cache["status"] = status
+                ctx.main_page_cache["headers"] = headers
+                ctx.main_page_cache["set_cookie_headers"] = set_cookie_headers
+                ctx.main_page_cache["html"] = html
+                ctx.main_page_cache["soup"] = BeautifulSoup(html, "html.parser")
 
-    except SSRFBlockedError as e:
-        ctx.main_page_cache["error"] = str(e)
-        ctx.page_is_representative = False
-        ctx.ssrf_blocked = True
-        ctx.ssrf_block_reason = str(e)
-    except Exception as e:
-        ctx.main_page_cache["error"] = str(e)
-        ctx.page_is_representative = False
+                # WAF and Representative Page Gate
+                waf, rep = detect_waf_and_representativeness(status, headers, html)
+                ctx.waf_challenge_detected = waf
+                ctx.page_is_representative = rep
+            return
+
+        except SSRFBlockedError as e:
+            # Not transient -- retrying changes nothing about where the
+            # target resolves -- and retrying would also mean re-running
+            # the SSRF check redundantly for no benefit.
+            ctx.main_page_cache["error"] = _format_fetch_error(e)
+            ctx.page_is_representative = False
+            ctx.ssrf_blocked = True
+            ctx.ssrf_block_reason = str(e)
+            return
+
+        except (asyncio.TimeoutError, aiohttp.ClientConnectionError) as e:
+            if attempt < PREFLIGHT_MAX_RETRIES:
+                backoff = PREFLIGHT_RETRY_BACKOFF_SECONDS[min(attempt, len(PREFLIGHT_RETRY_BACKOFF_SECONDS) - 1)]
+                logger.warning(
+                    f"Pre-flight fetch attempt {attempt + 1}/{PREFLIGHT_MAX_RETRIES + 1} for {url} "
+                    f"failed ({_format_fetch_error(e)}); retrying in {backoff}s"
+                )
+                attempt += 1
+                await asyncio.sleep(backoff)
+                continue
+            ctx.main_page_cache["error"] = _format_fetch_error(e)
+            ctx.page_is_representative = False
+            return
+
+        except Exception as e:
+            ctx.main_page_cache["error"] = _format_fetch_error(e)
+            ctx.page_is_representative = False
+            return
 
 def discover_plugins() -> List[Any]:
     plugins = []
@@ -761,15 +819,28 @@ async def run_scout(url: str, scan_id: str, config: Optional[Dict[str, Any]] = N
         
     config = config or {}
     logger.info(f"Starting Bravo6 Enterprise Scan for {url}")
-    
+
     # SSRFSafeResolver is shared by every request this session makes --
     # the pre-flight fetch below, every scout's ctx.session.get/head/
     # options() call, and (critically) any redirect hop any of those
     # requests follows -- since it's installed on the one connector the
     # whole session uses, not called ad hoc per request.
+    #
+    # request_timeout_seconds is config-overridable (default: the 15s in
+    # REQUEST_TIMEOUT, unchanged) rather than hand-raised here. Raising the
+    # per-request ceiling doesn't fix the contention a large concurrent batch
+    # causes -- it just gives each stuck request more slack while holding
+    # its event-loop task/DNS-resolver-thread slot longer, which can make
+    # contention worse under sustained high concurrency, not better. The
+    # lever that actually matters at 500-800-site scale is bounding how many
+    # scans run at once (e.g. a semaphore in the batch harness), which is
+    # out of this module's scope. This override exists so a batch harness
+    # that DOES cap concurrency can still raise the ceiling for a slower
+    # target population without a code change here.
+    session_timeout = aiohttp.ClientTimeout(total=config.get("request_timeout_seconds", REQUEST_TIMEOUT.total))
     connector = SSRFSafeConnector(ssl=True, limit=20, limit_per_host=10, resolver=SSRFSafeResolver())
     async with aiohttp.ClientSession(
-        timeout=REQUEST_TIMEOUT,
+        timeout=session_timeout,
         headers={"User-Agent": USER_AGENT},
         connector=connector
     ) as session:
@@ -1132,6 +1203,121 @@ if __name__ == "__main__":
                 waf, rep = detect_waf_and_representativeness(200, {"Server": "nginx"}, "<html>ok</html>")
                 self.assertIsNone(waf)
                 self.assertTrue(rep)
+
+            async def test_preflight_fetch_retries_on_timeout_then_succeeds(self):
+                """Live-confirmed failure mode (cross-tool-calibration diagnosis,
+                2026-09-16): a healthy site's pre-flight fetch can still hit
+                asyncio.TimeoutError purely from local contention under
+                concurrent batch scanning. First attempt times out, second
+                attempt succeeds -- page_is_representative must end up True,
+                not get stuck False from the first attempt's failure."""
+                import unittest.mock as mock
+
+                class FakeHeaders(dict):
+                    def getall(self, name, default=None):
+                        return default if default is not None else []
+
+                class FakeResponse:
+                    status = 200
+                    headers = FakeHeaders({"Content-Type": "text/html"})
+                    async def text(self):
+                        return "<html>ok, no CSP header here</html>"
+
+                class FlakyRequestCM:
+                    def __init__(self, state):
+                        self.state = state
+                    async def __aenter__(self):
+                        self.state["calls"] += 1
+                        if self.state["calls"] == 1:
+                            raise asyncio.TimeoutError()
+                        return FakeResponse()
+                    async def __aexit__(self, *a):
+                        return False
+
+                class FlakySession:
+                    def __init__(self):
+                        self.state = {"calls": 0}
+                    def get(self, url, *a, **kw):
+                        return FlakyRequestCM(self.state)
+
+                session = FlakySession()
+                ctx = ScannerContext(url="https://example.com", session=session)
+
+                with mock.patch("asyncio.sleep", new=mock.AsyncMock()) as mock_sleep:
+                    await fetch_main_page_and_analyze(ctx)
+
+                self.assertEqual(session.state["calls"], 2, "Expected exactly one retry (2 total attempts) before success.")
+                self.assertTrue(ctx.page_is_representative, "A recovered retry must leave the page representative, not stuck False from attempt 1.")
+                self.assertIsNone(ctx.main_page_cache["error"], "A successful retry must not leave a stale error recorded.")
+                self.assertEqual(ctx.main_page_cache["status"], 200)
+                mock_sleep.assert_awaited_once()
+
+            async def test_preflight_fetch_error_names_exception_type_when_retries_exhausted(self):
+                """Fix for the silent-empty-error bug: str(asyncio.TimeoutError())
+                is '', so the error must always be prefixed with
+                type(e).__name__ or a timeout is recorded as nothing at all."""
+                import unittest.mock as mock
+
+                class AlwaysTimesOutCM:
+                    async def __aenter__(self):
+                        raise asyncio.TimeoutError()
+                    async def __aexit__(self, *a):
+                        return False
+
+                class AlwaysTimesOutSession:
+                    def get(self, url, *a, **kw):
+                        return AlwaysTimesOutCM()
+
+                ctx = ScannerContext(url="https://example.com", session=AlwaysTimesOutSession())
+
+                with mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+                    await fetch_main_page_and_analyze(ctx)
+
+                self.assertFalse(ctx.page_is_representative)
+                self.assertIn("TimeoutError", ctx.main_page_cache["error"], "Error must name the exception type, never blank.")
+                self.assertNotEqual(ctx.main_page_cache["error"], "", "Error must never be recorded as an empty string.")
+
+            async def test_preflight_fetch_does_not_retry_clean_waf_block_response(self):
+                """A real, deterministic non-2xx response (e.g. a WAF's 401) must
+                never be retried -- aiohttp doesn't raise on status codes, so
+                this only ever needs one attempt, and detect_waf_and_representativeness
+                (not the retry loop) is what correctly marks it non-representative."""
+                import unittest.mock as mock
+
+                class FakeHeaders(dict):
+                    def getall(self, name, default=None):
+                        return default if default is not None else []
+
+                class WafBlockResponse:
+                    status = 401
+                    headers = FakeHeaders({"x-datadome": "protected"})
+                    async def text(self):
+                        return "<p>Please enable JS and disable any ad blocker</p>"
+
+                class SingleAttemptCM:
+                    def __init__(self, state):
+                        self.state = state
+                    async def __aenter__(self):
+                        self.state["calls"] += 1
+                        return WafBlockResponse()
+                    async def __aexit__(self, *a):
+                        return False
+
+                class WafBlockSession:
+                    def __init__(self):
+                        self.state = {"calls": 0}
+                    def get(self, url, *a, **kw):
+                        return SingleAttemptCM(self.state)
+
+                session = WafBlockSession()
+                ctx = ScannerContext(url="https://example.com", session=session)
+
+                with mock.patch("asyncio.sleep", new=mock.AsyncMock()) as mock_sleep:
+                    await fetch_main_page_and_analyze(ctx)
+
+                self.assertEqual(session.state["calls"], 1, "A clean (non-exception) 401 response must not be retried.")
+                self.assertFalse(ctx.page_is_representative)
+                mock_sleep.assert_not_awaited()
 
             async def test_bug4_cache_hits(self):
                 """Bug 4: Integration test running 3 simulated concurrent checks. Assert cache_hits >= 1."""

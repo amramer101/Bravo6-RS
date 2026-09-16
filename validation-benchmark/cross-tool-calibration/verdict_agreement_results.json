@@ -1,0 +1,1740 @@
+{
+  "summary": {
+    "total_comparable_checks": 130,
+    "total_agreeing_checks": 82,
+    "aggregate_agreement_rate": 0.6307692307692307,
+    "aggregate_agreement_rate_percent": 63.07692307692307,
+    "total_not_comparable_checks": 35,
+    "sites": 25,
+    "excluded_incomplete_scan_sites": 10,
+    "sites_included_in_comparison": 15,
+    "signals_evaluated": 11,
+    "max_possible_checks": 165
+  },
+  "per_signal": {
+    "content-security-policy": {
+      "agree": 15,
+      "disagree": 0,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 1.0
+    },
+    "strict-transport-security": {
+      "agree": 3,
+      "disagree": 12,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 0.2
+    },
+    "cookies": {
+      "agree": 6,
+      "disagree": 2,
+      "compared": 8,
+      "not_comparable": 7,
+      "agreement_rate": 0.75
+    },
+    "cross-origin-resource-sharing": {
+      "agree": 13,
+      "disagree": 2,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 0.8666666666666667
+    },
+    "subresource-integrity": {
+      "agree": 7,
+      "disagree": 2,
+      "compared": 9,
+      "not_comparable": 6,
+      "agreement_rate": 0.7777777777777778
+    },
+    "x-frame-options": {
+      "agree": 15,
+      "disagree": 0,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 1.0
+    },
+    "x-content-type-options": {
+      "agree": 14,
+      "disagree": 1,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 0.9333333333333333
+    },
+    "referrer-policy": {
+      "agree": 5,
+      "disagree": 1,
+      "compared": 6,
+      "not_comparable": 9,
+      "agreement_rate": 0.8333333333333334
+    },
+    "cross-origin-opener-policy": {
+      "agree": 3,
+      "disagree": 12,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 0.2
+    },
+    "cross-origin-embedder-policy": {
+      "agree": 0,
+      "disagree": 15,
+      "compared": 15,
+      "not_comparable": 0,
+      "agreement_rate": 0.0
+    },
+    "cross-origin-resource-policy": {
+      "agree": 1,
+      "disagree": 1,
+      "compared": 2,
+      "not_comparable": 13,
+      "agreement_rate": 0.5
+    }
+  },
+  "disagreements": [
+    {
+      "domain": "google.com",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "google.com",
+      "signal": "subresource-integrity",
+      "mozilla_verdict": "fail",
+      "bravo6_verdict": "pass",
+      "mozilla_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+      "direction": "mozilla=fail, bravo6=pass (bravo6 missed something mozilla flagged)"
+    },
+    {
+      "domain": "google.com",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-implemented-with-same-origin-allow-popups",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "google.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "cloudflare.com",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-preloaded",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "cloudflare.com",
+      "signal": "subresource-integrity",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "sri-implemented-and-external-scripts-loaded-securely",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "cloudflare.com",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-implemented-with-unsafe-none",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "cloudflare.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "cloudflare.com",
+      "signal": "cross-origin-resource-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "corp-implemented-with-cross-origin",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "dropbox.com",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-preloaded",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "dropbox.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "reddit.com",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-preloaded",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "reddit.com",
+      "signal": "cookies",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "cookies-secure-with-httponly-sessions",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "reddit.com",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "reddit.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "mozilla.org",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "mozilla.org",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "netflix.com",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "netflix.com",
+      "signal": "cross-origin-resource-sharing",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "cross-origin-resource-sharing-implemented-with-public-access",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "netflix.com",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "netflix.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "wikipedia.org",
+      "signal": "cookies",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "cookies-secure-with-httponly-sessions",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "wikipedia.org",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "wikipedia.org",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "example.com",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "example.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "olx.pl",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "olx.pl",
+      "signal": "cross-origin-resource-sharing",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "cross-origin-resource-sharing-implemented-with-public-access",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "olx.pl",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "olx.pl",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nextdns.io",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nextdns.io",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nextdns.io",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "fastpanel.direct",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "fastpanel.direct",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "telenet.be",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "telenet.be",
+      "signal": "x-content-type-options",
+      "mozilla_verdict": "fail",
+      "bravo6_verdict": "pass",
+      "mozilla_result": "x-content-type-options-header-invalid",
+      "direction": "mozilla=fail, bravo6=pass (bravo6 missed something mozilla flagged)"
+    },
+    {
+      "domain": "telenet.be",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "telenet.be",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "peacocktv.com",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "peacocktv.com",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "peacocktv.com",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "business.site",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "business.site",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nsw.gov.au",
+      "signal": "strict-transport-security",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "hsts-implemented-max-age-at-least-six-months",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nsw.gov.au",
+      "signal": "referrer-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "referrer-policy-private",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nsw.gov.au",
+      "signal": "cross-origin-opener-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coop-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    },
+    {
+      "domain": "nsw.gov.au",
+      "signal": "cross-origin-embedder-policy",
+      "mozilla_verdict": "pass",
+      "bravo6_verdict": "fail",
+      "mozilla_result": "coep-not-implemented",
+      "direction": "mozilla=pass, bravo6=fail (bravo6 flagged something mozilla did not)"
+    }
+  ],
+  "excluded_incomplete_scans": [
+    {
+      "domain": "amazon.com",
+      "bravo6_tests_run": 9,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 9/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_04_ssl_tls: Timed out after 30s"
+      ]
+    },
+    {
+      "domain": "github.com",
+      "bravo6_tests_run": 9,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 9/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_04_ssl_tls: Timed out after 30s"
+      ]
+    },
+    {
+      "domain": "microsoft.com",
+      "bravo6_tests_run": 7,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 7/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_04_ssl_tls: Timed out after 30s",
+        "test_08_cors: Timed out after 15s",
+        "test_10_hallucinated_deps: Timed out after 45s"
+      ]
+    },
+    {
+      "domain": "paypal.com",
+      "bravo6_tests_run": 9,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 9/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_04_ssl_tls: Timed out after 30s"
+      ]
+    },
+    {
+      "domain": "linkedin.com",
+      "bravo6_tests_run": 9,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 9/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_08_cors: Timed out after 15s"
+      ]
+    },
+    {
+      "domain": "openweathermap.org",
+      "bravo6_tests_run": 0,
+      "bravo6_page_is_representative": false,
+      "bravo6_coverage_note": "Scan aborted before any scout ran: target blocked by SSRF safety check.",
+      "bravo6_errors": [
+        "Refusing to connect to 'openweathermap.org' -- resolves to non-public address 127.0.0.1"
+      ]
+    },
+    {
+      "domain": "marketwatch.com",
+      "bravo6_tests_run": 2,
+      "bravo6_page_is_representative": false,
+      "bravo6_coverage_note": "Grade may be unreliable: page was not representative (WAF/challenge/error response detected); only 2/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_01_secrets: Page is not representative (e.g., 4xx/5xx or WAF). Blocked from reading page content.",
+        "test_02_frontend_libs: Page is not representative (e.g. WAF block/error). Skipping SCA.",
+        "test_03_cookies: Page is not representative (e.g., WAF block or hard error); skipping cookie analysis.",
+        "test_05_security_headers: Non-representative response (HTTP 401); header analysis skipped.",
+        "test_06_info_disclosure: Page is not representative (e.g., WAF block or hard error); skipping info disclosure scan.",
+        "test_08_cors: Page is not representative (e.g., WAF block or hard error); skipping CORS analysis.",
+        "test_09_sri: Page is not representative (e.g., WAF block or hard error); skipping SRI analysis.",
+        "test_10_hallucinated_deps: Page is not representative (e.g., WAF block or hard error); skipping hallucinated-dependency scan."
+      ]
+    },
+    {
+      "domain": "buzzoola.com",
+      "bravo6_tests_run": 9,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 9/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_04_ssl_tls: Timed out after 30s"
+      ]
+    },
+    {
+      "domain": "webthing.com",
+      "bravo6_tests_run": 1,
+      "bravo6_page_is_representative": false,
+      "bravo6_coverage_note": "Grade may be unreliable: page was not representative (WAF/challenge/error response detected); only 1/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_01_secrets: Page is not representative (e.g., 4xx/5xx or WAF). Blocked from reading page content.",
+        "test_02_frontend_libs: Page is not representative (e.g. WAF block/error). Skipping SCA.",
+        "test_03_cookies: Page is not representative (e.g., WAF block or hard error); skipping cookie analysis.",
+        "test_04_ssl_tls: TLS Connection failed entirely: ConnectionRefusedError: [Errno 111] Connection refused",
+        "test_05_security_headers: Non-representative response (HTTP 0); header analysis skipped.",
+        "test_06_info_disclosure: Page is not representative (e.g., WAF block or hard error); skipping info disclosure scan.",
+        "test_08_cors: Page is not representative (e.g., WAF block or hard error); skipping CORS analysis.",
+        "test_09_sri: Page is not representative (e.g., WAF block or hard error); skipping SRI analysis.",
+        "test_10_hallucinated_deps: Page is not representative (e.g., WAF block or hard error); skipping hallucinated-dependency scan."
+      ]
+    },
+    {
+      "domain": "sky.it",
+      "bravo6_tests_run": 9,
+      "bravo6_page_is_representative": true,
+      "bravo6_coverage_note": "Grade may be unreliable: only 9/10 scan modules completed.",
+      "bravo6_errors": [
+        "test_02_frontend_libs: Timed out after 45s"
+      ]
+    }
+  ],
+  "per_site_detail": {
+    "google.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented-but-reporting-enabled",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "cookies-without-secure-flag-but-protected-by-hsts",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "pass",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": false
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-sameorigin-or-deny",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-content-type-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "referrer-policy-unsafe",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-implemented-with-same-origin-allow-popups",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "cloudflare.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-inline",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-preloaded",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "cookies-without-secure-flag-but-protected-by-hsts",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "sri-implemented-and-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": false
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-implemented-via-csp",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "referrer-policy-private",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-implemented-with-unsafe-none",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "corp-implemented-with-cross-origin",
+        "comparable": true,
+        "agree": false
+      }
+    },
+    "dropbox.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-eval",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-preloaded",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "cookies-without-secure-flag-but-protected-by-hsts",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-implemented-via-csp",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "referrer-policy-private",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-implemented-with-same-origin-allow-popups",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "reddit.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-preloaded",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cookies-secure-with-httponly-sessions",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "sri-not-implemented-but-no-scripts-loaded",
+        "comparable": false
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-sameorigin-or-deny",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "mozilla.org": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-inline",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-implemented-via-csp",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "referrer-policy-private",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-implemented-with-same-origin",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "netflix.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented-but-reporting-enabled",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "cookies-without-secure-flag-but-protected-by-hsts",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-implemented-with-public-access",
+        "comparable": true,
+        "agree": false
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-sameorigin-or-deny",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "wikipedia.org": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-preloaded",
+        "comparable": true,
+        "agree": true
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cookies-secure-with-httponly-sessions",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin",
+        "comparable": false
+      },
+      "x-frame-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-frame-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-content-type-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "example.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "hsts-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "sri-not-implemented-but-no-scripts-loaded",
+        "comparable": false
+      },
+      "x-frame-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-frame-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-content-type-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "olx.pl": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-inline",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-implemented-with-public-access",
+        "comparable": true,
+        "agree": false
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "sri-not-implemented-but-no-scripts-loaded",
+        "comparable": false
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-implemented-via-csp",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "referrer-policy-private",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "nextdns.io": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin",
+        "comparable": false
+      },
+      "x-frame-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-frame-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "fastpanel.direct": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "hsts-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-and-external-scripts-not-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-frame-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-content-type-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "telenet.be": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-inline",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "cookies-without-secure-flag-but-protected-by-hsts",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-and-external-scripts-not-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-frame-options-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "fail",
+        "mozilla_raw_result": "x-content-type-options-header-invalid",
+        "comparable": true,
+        "agree": false
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "peacocktv.com": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-inline",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "sri-not-implemented-but-all-scripts-loaded-from-secure-origin",
+        "comparable": false
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-sameorigin-or-deny",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    },
+    "business.site": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-implemented-with-unsafe-inline",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cookies-secure-with-httponly-sessions-and-samesite",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-sameorigin-or-deny",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "referrer-policy-not-implemented",
+        "comparable": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-implemented-with-same-origin",
+        "comparable": true,
+        "agree": true
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "corp-implemented-with-same-site",
+        "comparable": true,
+        "agree": true
+      }
+    },
+    "nsw.gov.au": {
+      "content-security-policy": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "csp-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "strict-transport-security": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "hsts-implemented-max-age-at-least-six-months",
+        "comparable": true,
+        "agree": false
+      },
+      "cookies": {
+        "bravo6": "pass",
+        "mozilla": null,
+        "mozilla_raw_result": "cookies-not-found",
+        "comparable": false
+      },
+      "cross-origin-resource-sharing": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "cross-origin-resource-sharing-not-implemented",
+        "comparable": true,
+        "agree": true
+      },
+      "subresource-integrity": {
+        "bravo6": "fail",
+        "mozilla": "fail",
+        "mozilla_raw_result": "sri-not-implemented-but-external-scripts-loaded-securely",
+        "comparable": true,
+        "agree": true
+      },
+      "x-frame-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-frame-options-sameorigin-or-deny",
+        "comparable": true,
+        "agree": true
+      },
+      "x-content-type-options": {
+        "bravo6": "pass",
+        "mozilla": "pass",
+        "mozilla_raw_result": "x-content-type-options-nosniff",
+        "comparable": true,
+        "agree": true
+      },
+      "referrer-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "referrer-policy-private",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-opener-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coop-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-embedder-policy": {
+        "bravo6": "fail",
+        "mozilla": "pass",
+        "mozilla_raw_result": "coep-not-implemented",
+        "comparable": true,
+        "agree": false
+      },
+      "cross-origin-resource-policy": {
+        "bravo6": "fail",
+        "mozilla": null,
+        "mozilla_raw_result": "corp-not-implemented",
+        "comparable": false
+      }
+    }
+  }
+}

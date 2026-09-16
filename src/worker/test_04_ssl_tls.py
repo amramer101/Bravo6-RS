@@ -12,6 +12,7 @@ Evolution highlights:
 
 import asyncio
 import hashlib
+import logging
 import re
 import socket
 import ssl
@@ -29,6 +30,27 @@ try:
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
+
+logger = logging.getLogger(__name__)
+
+# Retry policy for the fatal TLS-handshake connection in run() (_get_cert_der)
+# only -- NOT for anything in the certificate-analysis/cipher/protocol-probe
+# logic below it. Same live-confirmed failure mode as main_scanner.py's
+# pre-flight fetch (cross-tool-calibration diagnosis, 2026-09-16/17): under
+# concurrent-batch scanning, socket.create_connection()'s TLS handshake can
+# hit its own timeout purely from local contention, even against a healthy
+# target -- e.g. "TimeoutError: _ssl.c:1064: The handshake operation timed
+# out" observed on 6 sites in a single 25-site batch that all succeeded on
+# isolated retry. Deliberately NOT imported from main_scanner.py's
+# PREFLIGHT_MAX_RETRIES/PREFLIGHT_RETRY_BACKOFF_SECONDS: every test_NN
+# module here is a standalone plugin (its own ScannerContext stub above,
+# runnable/testable independently of main_scanner.py, loaded by
+# discover_plugins() via importlib rather than a normal import) -- importing
+# from the orchestrator that loads it would be a backwards, circular-flavored
+# coupling for a one-line constant. Values matched to main_scanner.py's by
+# hand instead, for the same reasoning (2 retries, 0.5s/1.5s backoff).
+TLS_HANDSHAKE_MAX_RETRIES = 2
+TLS_HANDSHAKE_RETRY_BACKOFF_SECONDS = (0.5, 1.5)
 
 # ── Orchestrator Context Mock (For Standalone Type-Hinting) ────────────────
 @dataclass
@@ -486,12 +508,42 @@ async def run(ctx: ScannerContext) -> dict:
         ))
 
     # Step 2: Fatal TLS Verification (If this fails, no HTTP checks would work anyway)
+    #
+    # Retries up to TLS_HANDSHAKE_MAX_RETRIES times, short fixed backoff, but
+    # ONLY for TimeoutError/ConnectionError -- the connection itself never
+    # completed, which is exactly the contention-under-concurrency failure
+    # mode this exists for. A clean handshake-level rejection (ssl.SSLError:
+    # unsupported protocol/cipher/version, socket.gaierror: hostname doesn't
+    # resolve, etc.) is a real, deterministic result -- not transient noise --
+    # so it falls to the generic except below and is never retried, same
+    # principle as main_scanner.py's pre-flight fetch not retrying a clean
+    # WAF 401. _get_cert_der itself is untouched: this only wraps how many
+    # times it's called, not what it does.
     der = None
-    try:
-        der = await asyncio.get_running_loop().run_in_executor(None, _get_cert_der, hostname, port)
-    except Exception as e:
-        # Cannot connect via TLS at all - fatal error for this module.
-        return {"fatal_error": f"TLS Connection failed entirely: {type(e).__name__} - {str(e)}"}
+    attempt = 0
+    while True:
+        try:
+            der = await asyncio.get_running_loop().run_in_executor(None, _get_cert_der, hostname, port)
+            break
+        except (TimeoutError, ConnectionError) as e:
+            if attempt < TLS_HANDSHAKE_MAX_RETRIES:
+                backoff = TLS_HANDSHAKE_RETRY_BACKOFF_SECONDS[min(attempt, len(TLS_HANDSHAKE_RETRY_BACKOFF_SECONDS) - 1)]
+                logger.warning(
+                    f"TLS handshake attempt {attempt + 1}/{TLS_HANDSHAKE_MAX_RETRIES + 1} for "
+                    f"{hostname}:{port} failed ({type(e).__name__}: {e}); retrying in {backoff}s"
+                )
+                attempt += 1
+                await asyncio.sleep(backoff)
+                continue
+            # type(e).__name__ is always included -- TimeoutError's str() can
+            # be empty ("_ssl.c:1064: The handshake operation timed out" is
+            # actually populated, but this must never rely on that; a bare
+            # TimeoutError() with no message must still show "TimeoutError").
+            return {"fatal_error": f"TLS Connection failed entirely: {type(e).__name__}: {e}"}
+        except Exception as e:
+            # Cannot connect via TLS at all, and it's not a transient
+            # timeout/connection failure -- fatal error for this module.
+            return {"fatal_error": f"TLS Connection failed entirely: {type(e).__name__}: {e}"}
 
     # Step 3: Parse and analyze the certificate
     cert_info = {}
@@ -1308,6 +1360,115 @@ if __name__ == "__main__":
                 self.assertEqual(len(inconclusive), 1, titles)
                 self.assertEqual(inconclusive[0]["severity"], "info")
                 self.assertEqual(inconclusive[0]["confidence"], "informational")
+
+        class TestTlsHandshakeRetry(unittest.IsolatedAsyncioTestCase):
+            """Task: retry-with-backoff fix for the fatal TLS-handshake
+            connection (_get_cert_der, called from run()). Live-confirmed
+            failure mode (cross-tool-calibration diagnosis): under
+            concurrent-batch scanning, the raw-socket handshake can hit its
+            own timeout purely from local contention, even against a
+            perfectly healthy target -- 6 sites in one 25-site batch all
+            failed this way and all succeeded on isolated retry. Mirrors
+            main_scanner.py's test_preflight_fetch_retries_on_timeout_then_succeeds."""
+
+            def _install(self, mapping):
+                self._saved = {k: globals()[k] for k in mapping}
+                globals().update(mapping)
+                self.addCleanup(lambda: globals().update(self._saved))
+
+            def _ctx(self):
+                return ScannerContext(
+                    url="https://retry-test.example",
+                    session=None,
+                    config={},
+                    page_is_representative=True,
+                    waf_challenge_detected=None,
+                    sensitive_paths=[],
+                    main_page_cache={},
+                )
+
+            def _install_non_handshake_stubs(self):
+                """Everything downstream of the handshake that would otherwise
+                do real subprocess/network work -- irrelevant to what these
+                tests check, same stub set TestModernProbeCompletedRequiresBothProbes
+                above uses."""
+                async def fake_check_binary(cmd, arg):
+                    return True
+
+                async def fake_run_openssl(args, timeout=5):
+                    return b"", b"", True  # everything inconclusive; not under test here
+
+                _cert = {
+                    "days_until_expiry": 200, "not_after": "2030-01-01T00:00:00+00:00",
+                    "hostname_match": True, "self_signed": False, "weak_signature": False,
+                    "key_size": 2048, "key_type": "rsa", "cert_scts": 2,
+                }
+                self._install({
+                    "_check_internal": lambda hostname: False,
+                    "_check_binary": fake_check_binary,
+                    "_run_openssl": fake_run_openssl,
+                    "_analyze_cert": lambda der, hostname: dict(_cert),
+                    "_verify_chain_via_ssl_connect": lambda hostname, port: (None, None),
+                })
+
+            async def test_handshake_retries_on_timeout_then_succeeds(self):
+                import unittest.mock as mock
+
+                call_count = {"n": 0}
+
+                def flaky_get_cert_der(hostname, port):
+                    call_count["n"] += 1
+                    if call_count["n"] == 1:
+                        raise TimeoutError("_ssl.c:1064: The handshake operation timed out")
+                    return b"dummy-der"
+
+                self._install_non_handshake_stubs()
+                self._install({"_get_cert_der": flaky_get_cert_der})
+
+                with mock.patch("asyncio.sleep", new=mock.AsyncMock()) as mock_sleep:
+                    result = await run(self._ctx())
+
+                self.assertEqual(call_count["n"], 2, "Expected exactly one retry (2 total attempts) before success.")
+                self.assertNotIn("fatal_error", result, "A recovered retry must not surface as a fatal_error.")
+                mock_sleep.assert_awaited_once()
+
+            async def test_handshake_error_names_exception_type_when_retries_exhausted(self):
+                import unittest.mock as mock
+
+                def always_times_out(hostname, port):
+                    raise TimeoutError()  # str() is '' -- the exact bug being fixed
+
+                self._install_non_handshake_stubs()
+                self._install({"_get_cert_der": always_times_out})
+
+                with mock.patch("asyncio.sleep", new=mock.AsyncMock()):
+                    result = await run(self._ctx())
+
+                self.assertIn("fatal_error", result)
+                self.assertIn("TimeoutError", result["fatal_error"], "Error must name the exception type, never blank.")
+
+            async def test_handshake_does_not_retry_clean_ssl_protocol_error(self):
+                """A real ssl.SSLError (e.g. unsupported protocol/cipher) is a
+                deterministic finding-worthy result, not transient noise --
+                must never be retried, same principle as main_scanner.py not
+                retrying a clean WAF 401."""
+                import unittest.mock as mock
+
+                call_count = {"n": 0}
+
+                def clean_ssl_rejection(hostname, port):
+                    call_count["n"] += 1
+                    raise ssl.SSLError("unsupported protocol")
+
+                self._install_non_handshake_stubs()
+                self._install({"_get_cert_der": clean_ssl_rejection})
+
+                with mock.patch("asyncio.sleep", new=mock.AsyncMock()) as mock_sleep:
+                    result = await run(self._ctx())
+
+                self.assertEqual(call_count["n"], 1, "A clean ssl.SSLError (real protocol rejection) must not be retried.")
+                self.assertIn("fatal_error", result)
+                mock_sleep.assert_not_awaited()
 
         class TestDefenseInDepthFindingsAreHardeningTier(unittest.IsolatedAsyncioTestCase):
             """Regression test for the tier fix: 'OCSP Stapling Not Enabled' and

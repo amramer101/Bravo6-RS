@@ -139,6 +139,14 @@ def create_app() -> Flask:
             return make_response(file_map[subpath], 200, {"Content-Type": content_type})
         return make_response("Not found", 404)
 
+    @app.get("/benchmark-secrets-fixture")
+    def benchmark_secrets_fixture() -> Response:
+        return make_response(
+            "<html><body><script>const benchmarkValue = 'BENCHMARK_PLACEHOLDER_VALUE_001234567890abcdef';</script></body></html>",
+            200,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
+
     @app.route("/cors-open", methods=["GET", "OPTIONS"])
     def cors_open() -> Response:
         headers = {
