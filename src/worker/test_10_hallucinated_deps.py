@@ -209,6 +209,64 @@ def _parse_pipfile_lock(text: str) -> Optional[List[Tuple[str, str]]]:
     return _dedup(pairs)
 
 
+# A requirements.txt candidate-name regex ALONE is not enough validation: it
+# only anchors at the start of the line, so *any* trailing content past the
+# matched prefix was previously discarded silently rather than checked -- a
+# line like "WELCOME TO OUR HOSTING PANEL" would happily yield candidate
+# "WELCOME" even though the rest of the line makes clear this isn't a
+# requirement specifier at all. And the permitted character class
+# ([A-Za-z0-9._-]) accepts a bare dotted-quad IP address as a "name" just as
+# readily as a real package name, because PEP 503 normalisation alone doesn't
+# distinguish "this is syntactically name-shaped" from "this is a real
+# package name" -- both '57.153.113.226' and 'requests' pass a bare
+# PEP-503-shape check.
+#
+# _extract_requirement_name() tightens this in two independent ways, so a
+# candidate must survive BOTH before it's ever looked up on a registry:
+#   1. Line-structure validation: after stripping the name prefix, whatever
+#      remains of the line must be empty or a genuine PEP 440 version
+#      specifier clause (e.g. "==2.31.0", ">=1.0,<2.0") -- not silently
+#      discarded arbitrary trailing content.
+#   2. Name-plausibility validation: reject IP-address-shaped tokens
+#      (dotted-quad) and tokens with no letters at all (pure version-number-
+#      looking numeric strings), and reject multi-character ALL-CAPS
+#      alphabetic tokens ("WELCOME", "MAINTENANCE", "FORBIDDEN", ...) -- a
+#      structural signal for banner/placeholder/error-page text, not a
+#      hand-rolled word blocklist. Real PyPI distribution names are
+#      PEP-503-normalised to lowercase and are, in practice, essentially
+#      never published as a literal all-caps word.
+_PEP503_NAME_PREFIX_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?")
+_IPV4_SHAPED_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+_PEP440_VERSION_SPEC_RE = re.compile(
+    r"^\s*(==|~=|!=|===|<=|>=|<|>)\s*[A-Za-z0-9][A-Za-z0-9.+!*_-]*"
+    r"(\s*,\s*(==|~=|!=|===|<=|>=|<|>)\s*[A-Za-z0-9][A-Za-z0-9.+!*_-]*)*\s*$"
+)
+
+
+def _extract_requirement_name(line: str) -> Optional[str]:
+    """Extract a plausible PyPI candidate name from one already-cleaned
+    requirements.txt line (comments/markers/extras/URLs already stripped by
+    the caller), or return None if the line doesn't genuinely look like a
+    pip requirement. See the block comment above for what "genuinely" checks."""
+    m = _PEP503_NAME_PREFIX_RE.match(line)
+    if not m:
+        return None
+    name = m.group(0)
+
+    rest = line[len(name):].strip()
+    if rest and not _PEP440_VERSION_SPEC_RE.match(rest):
+        return None  # trailing content isn't a real version specifier -> not a genuine requirement line
+
+    if _IPV4_SHAPED_RE.match(name):
+        return None  # dotted-quad IP address, not a package name
+    if not re.search(r"[A-Za-z]", name):
+        return None  # no letters at all (pure digits/dots/dashes) -> not a plausible package name
+    if name.isupper() and len(name) > 1 and name.isalpha():
+        return None  # multi-letter ALL-CAPS word -> banner/placeholder signal, not a real dist name
+
+    return name
+
+
 def _parse_requirements_txt(text: str) -> Optional[List[Tuple[str, str]]]:
     if text is None:
         return None
@@ -236,10 +294,10 @@ def _parse_requirements_txt(text: str) -> Optional[List[Tuple[str, str]]]:
             continue
         line = line.split(";", 1)[0].strip()                            # environment marker
         line = re.sub(r"\[[^\]]*\]", "", line)                          # extras: pkg[extra]
-        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", line)
-        if not m:
+        name = _extract_requirement_name(line)
+        if not name:
             continue
-        pairs.append((m.group(1), _normalize_pypi(m.group(1))))
+        pairs.append((name, _normalize_pypi(name)))
 
     # A requirements.txt that yielded zero installable names (only -r/-e/URLs/
     # comments, or genuinely empty) is not a usable manifest for our purpose.
@@ -705,6 +763,48 @@ if __name__ == "__main__":
             def test_requirements_txt_only_directives_is_none(self):
                 self.assertIsNone(_parse_requirements_txt("# nothing\n-r base.txt\n"))
 
+            # ---- Regression fixtures: the two gateway-batch false positives -----
+            # (ahlportal.com and ident.me, 864-URL stratified run,
+            # gateway_batch_20260919T141854Z, Stage 7 case studies). Both
+            # /requirements.txt bodies were a single-line, non-manifest banner
+            # response that happened to pass the earlier JSON/HTML sniff, and
+            # the old bare-prefix regex accepted the whole line as a "package
+            # name" with no further validation.
+            def test_false_positive_all_caps_banner_word_is_rejected(self):
+                # ahlportal.com: the exposed "/requirements.txt" body was just
+                # the single word "WELCOME" -- a banner/placeholder, not a
+                # real requirements file.
+                self.assertIsNone(_parse_requirements_txt("WELCOME\n"))
+
+            def test_false_positive_ip_address_shaped_token_is_rejected(self):
+                # ident.me: the exposed "/requirements.txt" body was just a
+                # literal dotted-quad IP address (ident.me is an
+                # what's-my-IP service; its default/error response echoes the
+                # caller's IP), not a real requirements file.
+                self.assertIsNone(_parse_requirements_txt("57.153.113.226\n"))
+
+            def test_false_positive_banner_word_mixed_with_real_dependency_is_still_rejected_alone(self):
+                # An all-caps banner line must not contaminate an otherwise
+                # real manifest -- only the banner line itself is dropped.
+                names = [n for _d, n in _parse_requirements_txt("WELCOME\nrequests==2.31.0\n")]
+                self.assertEqual(names, ["requests"])
+
+            def test_requirements_txt_trailing_garbage_after_name_is_rejected(self):
+                # A line whose remainder isn't a genuine version specifier
+                # (prose trailing the first name-shaped token) is not a real
+                # requirement line -- the old code silently discarded
+                # everything after the matched prefix instead of validating it.
+                self.assertIsNone(_parse_requirements_txt("WELCOME TO OUR HOSTING PANEL\n"))
+
+            def test_requirements_txt_valid_multi_clause_version_specifier_is_kept(self):
+                names = [n for _d, n in _parse_requirements_txt("requests>=2.0,<3.0\n")]
+                self.assertEqual(names, ["requests"])
+
+            def test_requirements_txt_bare_numeric_version_like_token_is_rejected(self):
+                # No letters at all -- looks like a stray version number or
+                # numeric ID, not a package name.
+                self.assertIsNone(_parse_requirements_txt("2.31.0\n"))
+
             def test_package_lock_v3_packages_map(self):
                 text = json.dumps({
                     "lockfileVersion": 3,
@@ -847,6 +947,34 @@ if __name__ == "__main__":
                     any("acme" in c or "%40acme" in c for c in sess.calls),
                     "Scoped package must never be looked up on the public registry.",
                 )
+
+            # ---- Regression fixtures: the two gateway-batch false positives, ----
+            # end-to-end. Both must resolve to "no exposed manifest" (the
+            # single-line banner body never qualifies as a usable manifest in
+            # the first place) and, critically, must never reach a registry
+            # lookup at all -- confirming the fix acts before _lookup_package,
+            # not by filtering its output afterward.
+            def test_gateway_batch_false_positive_welcome_banner_produces_no_finding(self):
+                sess = _FakeSession(routes=[("/requirements.txt", _FakeResp(200, "WELCOME\n"))],
+                                     default_status=404)
+                result = _run(sess)
+                self.assertEqual(len(result["findings"]), 1)
+                self.assertEqual(result["findings"][0]["title"], "No exposed dependency manifest found")
+                self.assertNotIn("critical", self._severities(result))
+                self.assertEqual(result["details"]["registry_lookups_made"], 0)
+                self.assertFalse(any("pypi.org" in c for c in sess.calls),
+                                  "A banner-word body must never reach a registry lookup.")
+
+            def test_gateway_batch_false_positive_ip_address_body_produces_no_finding(self):
+                sess = _FakeSession(routes=[("/requirements.txt", _FakeResp(200, "57.153.113.226\n"))],
+                                     default_status=404)
+                result = _run(sess)
+                self.assertEqual(len(result["findings"]), 1)
+                self.assertEqual(result["findings"][0]["title"], "No exposed dependency manifest found")
+                self.assertNotIn("critical", self._severities(result))
+                self.assertEqual(result["details"]["registry_lookups_made"], 0)
+                self.assertFalse(any("pypi.org" in c for c in sess.calls),
+                                  "An IP-address body must never reach a registry lookup.")
 
             def test_registry_timeout_is_inconclusive_not_false_critical(self):
                 sess = _FakeSession(routes=[
