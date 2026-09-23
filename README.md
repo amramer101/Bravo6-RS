@@ -1,5 +1,8 @@
 # BRAVO6
 
+> **Documentation reconciliation in progress.** Older implementation, deployment, cost, and validation claims below are historical and are being reconciled with the saved evidence. [Start with the repository map](REPOSITORY_MAP.md) and [audit](maintenance/REPOSITORY_AUDIT.md).
+
+
 **Passive, external security scanning for sites that can't safely take an active scan.**
 
 If you (or an AI coding assistant) shipped a site fast and it's now sitting on a public URL with

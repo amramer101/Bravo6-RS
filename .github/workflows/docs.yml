@@ -1,21 +1,24 @@
-name: Deploy Docs to GitHub Pages
+name: Documentation
 
 on:
+  pull_request:
+    paths: ['docs/**', 'mkdocs.yml', 'requirements-docs.txt', '.github/workflows/docs.yml']
   push:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - '.github/workflows/docs.yml'
+    paths: ['docs/**', 'mkdocs.yml', 'requirements-docs.txt', '.github/workflows/docs.yml']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the reviewed documentation to public GitHub Pages'
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
+  group: docs-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -23,34 +26,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: Install MkDocs and plugins
-        run: |
-          pip install \
-            mkdocs \
-            mkdocs-material \
-            mkdocs-mermaid2-plugin \
-            pymdown-extensions
-
-      - name: Build site
+          python-version: '3.11'
+      - name: Install documentation dependencies
+        run: pip install -r requirements-docs.txt
+      - name: Build documentation
         run: mkdocs build --strict
-
-      - uses: actions/configure-pages@v5
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4

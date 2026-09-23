@@ -7,10 +7,10 @@ This document provides a comprehensive overview of the security architecture and
 ## Table of Contents
 
 1. [Security Principles](#security-principles)
-2. [Authentication — Managed Identities](#authentication--managed-identities)
-3. [Authorisation — Role-Based Access Control](#authorisation--role-based-access-control)
+2. [Authentication — Managed Identities](#authentication-managed-identities)
+3. [Authorisation — Role-Based Access Control](#authorisation-role-based-access-control)
 4. [Network Isolation](#network-isolation)
-5. [Application Security — JWT Authentication](#application-security--jwt-authentication)
+5. [Application Security — JWT Authentication](#application-security-jwt-authentication)
 6. [Compliance and Auditing](#compliance-and-auditing)
 7. [Security Checklist](#security-checklist)
 8. [Ownership and Responsibility](#ownership-and-responsibility)

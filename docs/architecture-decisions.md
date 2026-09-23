@@ -7,11 +7,11 @@ This document records the key architectural decisions made during the developmen
 ## Table of Contents
 
 1. [Visual Overview](#visual-overview)
-2. [ADR-001: Frontend Hosting — Storage Account vs. App Service](#adr-001-frontend-hosting--storage-account-vs-app-service)
-3. [ADR-002: Compute — Serverless Functions vs. Virtual Machines](#adr-002-compute--serverless-functions-vs-virtual-machines)
-4. [ADR-003: Messaging — Service Bus Premium vs. Standard](#adr-003-messaging--service-bus-premium-vs-standard)
-5. [ADR-004: Network — Rejection of Private Endpoints for Functions](#adr-004-network--rejection-of-private-endpoints-for-functions)
-6. [ADR-005: Reporting — Polling vs. Push](#adr-005-reporting--polling-vs-push)
+2. [ADR-001: Frontend Hosting — Storage Account vs. App Service](#adr-001-frontend-hosting-storage-account-vs-app-service)
+3. [ADR-002: Compute — Serverless Functions vs. Virtual Machines](#adr-002-compute-serverless-functions-vs-virtual-machines)
+4. [ADR-003: Messaging — Service Bus Premium vs. Standard](#adr-003-messaging-service-bus-premium-vs-standard)
+5. [ADR-004: Network — Rejection of Private Endpoints for Functions](#adr-004-network-rejection-of-private-endpoints-for-functions)
+6. [ADR-005: Reporting — Polling vs. Push](#adr-005-reporting-polling-vs-push)
 7. [Summary of Decisions](#summary-of-decisions)
 8. [Visual Overview](#visual-overview)
 9. [Navigation and Further Reading](#navigation-and-further-reading)

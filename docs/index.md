@@ -1,5 +1,8 @@
 # BRAVO6
 
+> **Documentation reconciliation in progress.** Older implementation, deployment, cost, and validation claims below are historical and are being reconciled with the saved evidence. The current source has no implemented frontend and no application-layer caller authentication in the active Gateway/Report paths. Public access is not permission to scan. The revised evaluation distinguishes 848 saved results, 508 representative pages, and 497 module-complete representative results.
+
+
 **Passive, external security scanning for sites that can't safely take an active scan.**
 
 AI coding assistants have collapsed the time it takes to ship a working application from weeks to

@@ -6,7 +6,7 @@ This document provides a detailed cost analysis for the Bravo6 platform on Micro
 
 ## Table of Contents
 
-1. [Azure for Students — The Foundation](#azure-for-students--the-foundation)
+1. [Azure for Students — The Foundation](#azure-for-students-the-foundation)
 2. [Frontend Hosting: App Service vs Storage Static Website](#frontend-hosting-app-service-vs-storage-static-website)
 3. [Compute: Virtual Machines vs Serverless Functions](#compute-virtual-machines-vs-serverless-functions)
 4. [Total Cost Breakdown](#total-cost-breakdown)

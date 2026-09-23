@@ -7,7 +7,7 @@ This document is the single, authoritative reference for the Bravo6 platform's c
 ## Table of Contents
 
 1. [Executive Summary](#1-executive-summary)
-2. [High-Level Topology — The Three-Zone Model](#2-high-level-topology--the-three-zone-model)
+2. [High-Level Topology — The Three-Zone Model](#2-high-level-topology-the-three-zone-model)
 3. [Complete Resource Inventory](#3-complete-resource-inventory)
 4. [Network Design in Depth](#4-network-design-in-depth)
 5. [Master Component Reference Table](#5-master-component-reference-table)
@@ -15,7 +15,7 @@ This document is the single, authoritative reference for the Bravo6 platform's c
 7. [Scalability and Resilience](#7-scalability-and-resilience)
 8. [Observability and Monitoring](#8-observability-and-monitoring)
 9. [Deployment Model](#9-deployment-model)
-10. [Architecture Decision Records — Snapshot](#10-architecture-decision-records--snapshot)
+10. [Architecture Decision Records — Snapshot](#10-architecture-decision-records-snapshot)
 11. [Glossary](#11-glossary)
 12. [Navigation and Further Reading](#12-navigation-and-further-reading)
 13. [Summary](#13-summary)

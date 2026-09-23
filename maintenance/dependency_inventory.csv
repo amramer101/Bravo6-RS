@@ -1,0 +1,24 @@
+manifest,requirement,rights_boundary,verification_status
+src/api/requirements.txt,azure-functions>=1.18.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/api/requirements.txt,azure-servicebus>=7.12.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/api/requirements.txt,azure-identity>=1.17.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/report/requirements.txt,azure-functions>=1.18.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/report/requirements.txt,azure-cosmos>=4.5.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/report/requirements.txt,azure-identity>=1.17.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,azure-functions>=1.18.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,aiohttp>=3.10.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,beautifulsoup4>=4.12.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,cryptography>=42.0.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,certifi>=2024.0.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,packaging>=24.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,lxml>=5.0.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,azure-cosmos>=4.5.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,azure-identity>=1.17.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,dnspython>=2.6.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,tldextract>=5.3.2,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,azure-data-tables>=12.5.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+src/worker/requirements.txt,requests>=2.31.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+requirements-docs.txt,mkdocs==1.6.1,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+requirements-docs.txt,mkdocs-material==9.7.6,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+requirements-docs.txt,mkdocs-mermaid2-plugin==1.2.3,external dependency; rights remain with its owner,exact resolved distribution/license not audited
+requirements-docs.txt,pymdown-extensions==11.0.1,external dependency; rights remain with its owner,exact resolved distribution/license not audited

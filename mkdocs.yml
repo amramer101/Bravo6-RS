@@ -70,9 +70,7 @@ plugins:
   - mermaid2:
       version: "10.6.1"
 
-# Only pages that exist today. Add software-architecture.md, cicd.md,
-# and deployment.md back here once they're written — an entry pointing
-# at a missing file breaks the build (or 404s on GitHub Pages).
+# Detailed content reconciliation is tracked in maintenance/REPOSITORY_AUDIT.md.
 
 nav:
   - Home: index.md

@@ -1,9 +1,7 @@
 name: Terraform CI
 
 on:
-  push:
-    branches: [main]
-    paths: ['terraform/**']
+  # Historical cloud planning is manual: documentation maintenance must not access Azure.
   workflow_dispatch:
 
 permissions:
