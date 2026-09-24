@@ -12,7 +12,7 @@ BRAVO6 is a research prototype. Public visibility does not make this repository 
 | `terraform/` | Infrastructure definitions and modules | Source configuration, not proof of historical deployment |
 | `validation-benchmark/` | Synthetic fixtures and historical cross-tool comparison | Existence of fixtures does not establish executed validation |
 | `future-work/` | Deferred authentication, HTML reports, scout prototypes | Outside the active runtime |
-| `docs/` | MkDocs website source | Existing content requires the documented task-3 reconciliation |
+| `docs/` | MkDocs website source | Rewritten technical and research reference; publication remains manual |
 | `maintenance/` | Audit, publication boundaries, and cleanup decisions | No raw results or credential values |
 | `.github/workflows/` | Documentation, Python suites, cloud planning/deployment | Documentation publication and Terraform execution are manual |
 | `output/` | Local paper, evidence audit, and reanalysis artifacts | Ignored; preserve locally, review a selected release separately |

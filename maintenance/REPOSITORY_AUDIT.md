@@ -38,3 +38,9 @@ Keep `src/`, `terraform/`, `validation-benchmark/`, and `future-work/` stable. A
 Local validation covers Git diff whitespace, workflow/config syntax and publication guards, ignore-rule behavior, documentation build and new local links, and SHA-256 preservation of the 1,725 pre-existing protected source/evidence files. Detailed results are retained in the local audit report. Scanner tests and infrastructure checks are intentionally outside this task.
 
 Task 3 must rewrite the existing README and website claims against the revised paper; task 4 handles complete visual/site review; task 5 selects release artifacts and publishes. Existing site-level data, third-party provenance, and obsolete deployment examples remain explicit release-review items. These tasks are not silently treated as complete by repository cleanup.
+
+## Documentation follow-up — tasks 3 and 4
+
+The root README, active/deferred component READMEs, and twenty-one MkDocs pages have been rewritten against source and reviewed research results. Older deployment notes remain an explicitly labeled historical record. New local SVG assets, responsive styling, search, light/dark themes, and manual-publication boundaries replace the former presentation. Local build, link, content, and browser verification are recorded in ignored `output/docs-review/`.
+
+The author subsequently confirmed no historical permissions, institutional approval, notifications, or manual review; the website now states that explicitly. The already-built paper PDF still requires the corresponding final ethics wording update before submission. No original paper artifacts are silently regenerated in this documentation task. Task 5 (selected release artifacts, final paper links and publication) remains outstanding.

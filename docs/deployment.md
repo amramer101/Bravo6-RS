@@ -1,78 +1,56 @@
-# Deployment Guide
+# Configuration and deployment boundary
 
-**Status: infrastructure-provisioned via Terraform, but not currently applied to a live Azure
-environment.** The state file this project's backend points at is empty. Everything below is
-accurate against the current Terraform source and produces a valid, internally-consistent plan —
-it has not been independently verified by watching real resources come up in the Azure portal.
-Treat this page as "how to deploy it," not "confirmation that it's deployed."
+This is a source-oriented guide for the owner or an authorized operator. It does not assert that the current checkout was live-deployed, and documentation access does not grant a license to operate the software.
 
-## Prerequisites
+## Package boundaries
 
-- An Azure subscription you control, and the Azure CLI (`az`) authenticated against it.
-- [Terraform](https://developer.hashicorp.com/terraform) 1.9.x (the CI/CD workflows pin `1.9.8`).
+The API, Worker, and Report directories each contain their Function entry point, `host.json`, and runtime requirements. The Worker expects its scout modules alongside the orchestrator. Deferred code is not part of these packages.
 
-**No Entra External ID (CIAM) tenant is needed as of 2026-09-12** — both the API Gateway's and
-Report Function's JWT auth were deferred out of the active deployment (see Future Work /
-`future-work/auth/README.md`). Both are currently fully unauthenticated — see
-[Security & Identity](security-identity.md).
+## Application settings
 
-## Local, manual deploy
+| Setting | Consumer | Meaning |
+| --- | --- | --- |
+| `ServiceBusConnection__fullyQualifiedNamespace` | Gateway, Worker trigger | Namespace FQDN for identity-based Service Bus access |
+| `SERVICE_BUS_QUEUE_NAME` | Gateway | Queue name; defaults to `bravo6-queue` |
+| `COSMOS_URL` | Worker, Report | Cosmos endpoint |
+| `COSMOS_DATABASE` | Worker, Report | Database; default `bravo6-db` |
+| `COSMOS_CONTAINER` | Worker, Report | Container; default `scans` |
+| `CVE_TABLE_ENDPOINT` | Advisory synchronization/cache | Table service endpoint |
+| `CVE_TABLE_NAME` | Advisory synchronization/cache | Table selection; default `cveCache` |
+
+The Worker trigger literally names `bravo6-queue`. Changing only the Gateway/Terraform queue setting can therefore break alignment. The Gateway also receives Cosmos settings in Terraform even though the active intake handler does not use that database path.
+
+Use placeholders when documenting settings. Do not commit account credentials, real local settings, state, or plans. Function host storage and deployment-container identity must be reviewed for the selected hosting configuration; earlier deployment notes contain troubleshooting history, not universal setup instructions.
+
+## Before an authorized deployment
+
+1. Select the intended source revision and record its digest.
+2. Review caller authentication, report access, network boundaries, traffic scope, and rights.
+3. Review backend state ownership and environment-specific Terraform inputs.
+4. Align queue naming, identities, resource endpoints, and advisory selection.
+5. Inspect a plan in the authorized environment and review its side effects.
+6. Deploy and validate in a controlled environment, preserving actual logs and versions.
+
+These steps are guidance, not a record of actions performed here. The repository's manual Terraform workflows contact Azure; applying a saved plan changes resources. No deployment commands are part of the documentation quickstart.
+
+## Documentation-only local setup
 
 ```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
+python3 -m venv .venv-docs
+.venv-docs/bin/python -m pip install -r requirements-docs.txt
+.venv-docs/bin/mkdocs build --strict
+.venv-docs/bin/mkdocs serve --dev-addr 127.0.0.1:8000
 ```
 
-Edit `terraform.tfvars` and fill in real values for your own subscription: resource group name,
-region, and the resource-naming variables. `terraform.tfvars` is gitignored — never commit it
-with real values in it.
+Dependency installation requires package access. The site build uses local assets and does not need scanner dependencies, Azure credentials, or target traffic. Preview is a local documentation server, not a scanner endpoint.
 
-```bash
-terraform init
-terraform validate
-terraform plan -out=tfplan.binary
-terraform apply tfplan.binary
-```
 
-The remote state backend (`terraform/backend.tf`) points at an Azure Storage-backed backend
-(`resource_group_name = "terraform-rg"`, container `tfstate`, key `bravo_terraform.tfstate`) — that
-resource group and storage account need to exist and be reachable with your credentials before
-`terraform init` will succeed, or you'll need to change `backend.tf` to point at your own state
-storage.
+## Implementation and evidence
 
-## CI/CD-driven deploy
+- [src/api/function_app.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/api/function_app.py)
+- [src/worker/function_app.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/function_app.py)
+- [src/report/function_app.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/report/function_app.py)
+- [terraform/modules/api_function/main.tf](https://github.com/amramer101/Bravo6-RS/blob/main/terraform/modules/api_function/main.tf)
+- [terraform/modules/function_app/main.tf](https://github.com/amramer101/Bravo6-RS/blob/main/terraform/modules/function_app/main.tf)
 
-Two workflows exist for this already:
-
-- **`terraform_ci.yml`** — runs on pushes/PRs touching `terraform/`: `terraform fmt -check`,
-  `terraform validate`, and `terraform plan`, uploading the plan as a build artifact.
-- **`terraform_cd.yml`** — manually triggered (`workflow_dispatch`) with a commit SHA input;
-  downloads that commit's plan artifact from `terraform_ci.yml` and runs
-  `terraform apply -auto-approve tfplan.binary` against it.
-
-Both authenticate to Azure via `azure/login@v2` using OIDC federated credentials
-(`ARM_USE_OIDC: "true"`), not a stored client secret — the three GitHub Actions secrets they need
-are `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`, which must be configured as
-repository secrets by whoever runs this project's CD, and must correspond to an app registration
-with a federated credential trusting this repository's GitHub Actions OIDC issuer. Setting that up
-is an Azure Portal / `az ad app federated-credential` step outside this repository's own files, and
-is not automated by anything checked in here.
-
-## What Terraform provisions
-
-Independently-scalable components, one Terraform module each, under `terraform/modules/`:
-`resource_group`, `network`, `storage_account`, `service_bus`, `cosmos_db`, `functions_plan`,
-`function_app` (parameterized per Function App — worker/API/report), `frontend_swa`,
-and `observability` (Application Insights + Log Analytics). (`entra_external_id` moved to
-`future-work/auth/terraform/` on 2026-09-12 — see Prerequisites above.) See
-[Infrastructure as Code](infrastructure.md) for the full resource inventory and
-[Architecture Overview](architecture-overview.md) for how they fit together.
-
-## Verifying a deploy
-
-There's no automated post-deploy smoke test in this repository yet. After `terraform apply`
-succeeds, the practical check is: hit the Worker's HTTP trigger directly (or run
-`python3 src/worker/main_scanner.py --url <target>` against a target you're authorized to scan) and
-confirm a result lands in Cosmos DB, then check Application Insights for a matching trace. Building
-an actual automated smoke test is a reasonable next step — see
-[Contributing & Testing](contributing.md).
+Source links follow `main`. They describe the inspectable implementation, not a verified digest of the historical deployment.

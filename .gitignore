@@ -15,6 +15,7 @@ build/
 venv/
 env/
 .venv/
+.venv-docs/
 .env/
 
 # Azure Functions local settings

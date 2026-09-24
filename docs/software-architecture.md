@@ -1,113 +1,69 @@
-# Software Architecture & Scouts
+# Worker and scout reference
 
-This page covers the scanning engine itself — the part of BRAVO6 that actually runs — as opposed to
-the Azure infrastructure it runs on (see [Architecture Overview](architecture-overview.md)).
+## Orchestration
 
-## The pipeline
+`discover_plugins()` loads `test_*.py` modules from the Worker directory. The ten active scouts share an initial HTTP context and execute concurrently with module-level limits. Renaming these files is a runtime change, not cosmetic organization.
 
-Every scan reduces to the same four stages regardless of which scouts are installed:
-
-1. **Plugin discovery** — the Worker globs `test_*.py` in `src/worker/` at startup
-   (`discover_plugins()`), so a future scout joins the pipeline just by matching that filename
-   pattern; nothing else needs to change.
-2. **Concurrent execution** — every discovered scout runs against the same target via
-   `asyncio.gather(..., return_exceptions=True)`. No scout depends on another's output, which is
-   what makes per-scout fault isolation possible: an exception inside one scout's coroutine doesn't
-   crash the scan, it fills that scout's result slot with an error and the rest complete normally.
-3. **Normalize + deduplicate** — every finding, from any scout, is normalized into the same
-   twelve-field schema (`title`, `severity`, `confidence`, `cwe`, `owasp`, `location`, `evidence`,
-   `poc`, `remediation`, `detection_method`, plus a `raw_data` block carrying at minimum a `tier`).
-4. **Score + grade** — findings are scored against one consistent rubric regardless of which scout
-   produced them.
-
-## The scan-time cache
-
-Every scan issues exactly one pre-flight `GET` to the target's base URL
-(`fetch_main_page_and_analyze()`), caching the response — HTML, parsed soup, and headers — on the
-shared `ScannerContext` object passed to every scout. Six of the ten scouts (Secrets Hunter,
-Frontend Library Detection, Cookie Security, Security Headers, Information Disclosure's initial
-page read, and Subresource Integrity) read from that cache instead of re-fetching. The other four
-have I/O the cache can't satisfy: SSL/TLS Health opens its own TLS socket; Email Security is
-DNS-only; CORS Misconfiguration needs a synthetic `Origin` header a passive page load could never
-produce; Hallucinated Dependency Detection fetches manifest/registry endpoints that aren't the page
-itself.
-
-## Finding tiers
-
-Every finding carries a `tier`:
-
-- **`baseline`** — a directly exploitable condition, scored uncapped.
-- **`hardening`** — a defense-in-depth absence that only matters if something else is separately
-  compromised (e.g. missing OCSP stapling, missing DNS CAA record). Hardening-tier penalties are
-  pooled across the whole scan and capped at a combined 10 points, so a site missing five unrelated
-  hardening controls isn't scored as if it had five separate baseline vulnerabilities.
-
-## Cross-cutting false-positive mitigation
-
-A few techniques recur across scouts rather than being reinvented per check:
-
-- **Entropy-based filtering** (Secrets Hunter) — separates real secrets from high-entropy-looking
-  noise before flagging anything.
-- **CVE signature verification against a version string** (Frontend Library Detection) — a bare
-  library-name match isn't enough to flag a CVE; the version has to actually be in the affected
-  range.
-- **Baseline-response comparison** (Information Disclosure) — probes a random, definitely-nonexistent
-  path first and compares a candidate path's response against that baseline, to tell a true hit from
-  a soft-404 (a server that returns HTTP 200 for everything).
-- **Three-way result modeling instead of a boolean** (SSL/TLS Health, Hallucinated Dependency
-  Detection) — a failed network probe is classified `inconclusive`, never silently treated as a
-  confirmed-negative or confirmed-positive result. This exists because it was a real bug once: a
-  failed TLS-tooling subprocess was, on an earlier pass, misread as a confirmed-negative finding.
+The shared context holds response content, parsed HTML, cache state, and counters. A shared initial page can avoid duplicate retrieval, but TLS, DNS, CORS origins, additional paths, registry requests, and other observations still require separate operations. The experiment does not isolate speedup against an uncached control.
 
 ## The ten scouts
 
-| # | Scout | Focus | Tier | Network behavior |
-|---|---|---|---|---|
-| 01 | Secrets Hunter | Exposed credentials/keys in served content | mixed | cached page + shared JS fetches |
-| 02 | Frontend Library Detection | Known-vulnerable JS libraries (CVE matching against a local dataset, not a live feed) | mixed | cached page + shared JS fetches |
-| 03 | Cookie Security | Missing `HttpOnly`/`Secure`/`SameSite` | hardening | zero — cached headers only |
-| 04 | SSL/TLS Health | Certificate, protocol, TLS configuration, OCSP stapling | mixed | TLS socket to `:443` + `openssl`/`dig` |
-| 05 | Security Headers | Missing CSP, HSTS, Referrer-Policy, etc. | mixed | zero — cached headers only |
-| 06 | Information Disclosure | Exposed sensitive paths, soft-404-aware | mixed | ~23 GETs (baseline probe + well-known paths + `robots.txt`) |
-| 07 | Email Security | SPF, DKIM, DMARC, MTA-STS, BIMI | baseline | zero HTTP — DNS lookups only |
-| 08 | CORS Misconfiguration | Wildcard-plus-credentials, origin reflection | baseline | 1 cross-origin OPTIONS/GET with a synthetic `Origin` header |
-| 09 | Subresource Integrity | Missing/unenforced SRI on cross-origin tags | hardening | zero — second pass over the already-cached page |
-| 10 | Hallucinated Dependency Detection | Declared package absent from its public registry | baseline | 0–5 GETs (manifest paths) + one registry lookup per package |
+| Scout | Observation | Prerequisite / interpretation limit |
+| --- | --- | --- |
+| 01 · Secrets | Credential-like patterns in served content | A matched string is not a verified live credential; optional live verification is a separate setting |
+| 02 · Frontend libraries | Fingerprints and advisory matching | Version identification and advisory semantics must both be correct |
+| 03 · Cookies | Attributes of observed cookies | No cookies observed is not proof of secure cookies |
+| 04 · TLS | Certificate and protocol/cipher observations | Negotiation must establish the actual protocol/cipher asserted; see known weak-cipher issue |
+| 05 · Headers | CSP, HSTS, and other response headers | Saved CDN classification can cause HSTS to be skipped |
+| 06 · Information disclosure | Additional paths and response checks | Soft errors and response classification affect specificity |
+| 07 · Email DNS | Mail-related DNS/configuration signals | No independent email calibration is preserved |
+| 08 · CORS | Synthetic-origin response behavior | An inconclusive request differs from a safe CORS policy |
+| 09 · SRI | Eligible cross-origin resource integrity attributes | No eligible resource is not a successful SRI assessment |
+| 10 · Dependencies | Manifest parsing and registry presence | Requires actual package checks; absence does not prove AI origin or exploitation |
 
-**Scout 09 (Subresource Integrity)** is a pure second pass over HTML the orchestrator already
-fetched for Scout 02 — no network request of its own. Beyond the baseline missing-integrity check,
-it distinguishes a same-registrable-domain cross-origin resource (a sibling subdomain, almost
-certainly the same operator — low severity) from a genuine third party (a CDN or analytics host —
-medium for a script, low for a stylesheet), and separately flags an `integrity` attribute present
-without a valid `crossorigin` attribute — under which browsers silently skip the integrity check
-entirely, which is worse than not having `integrity` at all because it looks protected and isn't.
+## 01 — Secret patterns
 
-**Scout 10 (Hallucinated Dependency Detection)** is the check most directly tied to the project's
-motivating problem: an AI coding assistant emits an import or manifest entry for a package name
-that was never published, and an attacker who registers that exact name on the real public registry
-gets it pulled into any environment that installs from the manifest verbatim. Because BRAVO6 has no
-source access, this is scoped to the one path where it can act with real evidence: a manifest
-(`package.json`, `requirements.txt`, related lock files) that's itself exposed on the public web
-server. Each declared package name is checked against its registry (npm or PyPI) and classified into
-exactly three states — `present`, `confirmed-absent`, or `lookup-inconclusive` — specifically so a
-failed registry request is never misread as a confirmed-hallucinated finding.
+Findings are detector assertions based on patterns and context. The inspected source defaults optional live verification off; this is not proof of the historical cloud setting. Saved counts must not be called counts of working keys. Do not copy evidence values into issues or the public documentation.
 
-## Current test coverage
+## 02 — Library advisories
 
-Run any scout's own suite directly — the numbers below are what this repository's tests report
-right now, reproduce them yourself rather than trusting this table indefinitely:
+Fingerprinting and advisory matching are separate evidence steps. The Worker has a Table Storage path and a static dataset path. An enumerated affected-version list must not be treated as a continuous range. The reanalysis removes one exact unsupported Axios/advisory match; it does not clear that version of all other vulnerabilities.
 
-```bash
-cd src/worker
-for f in test_*.py; do python3 "$f" --test; done   # each prints its own "Ran N tests"
-python3 main_scanner.py --test                      # orchestration-level suite
-cd ../api
-python3 test_api_gateway.py                          # API Gateway suite (mocked Azure clients)
-```
+## 03–05 — Cookies, TLS, and headers
 
-As of this page's last update: 190 scout-level test methods across the ten scouts, 33 in the
-Worker's orchestration suite, and 19 in the API Gateway's suite covering its current (no-auth)
-status-code paths (403/202/503) — the API Gateway suite runs against mocked Azure clients only;
-it has not been exercised against a deployed Function App. (JWT auth's 22 tests, covering
-401/429 among others, moved to `future-work/auth/test_auth_deferred.py` on 2026-09-12 along with
-the code they test -- see that directory's README.)
+Record whether an observable resource exists before turning “no finding” into a pass. For TLS, a connection negotiated with `TLS_AES_128_GCM_SHA256` does not support an assertion that a NULL or anonymous cipher was negotiated. For HSTS, saved skipped observations remain not evaluated; they must not enter the denominator as successful checks.
+
+## 06–09 — Paths, DNS, CORS, and integrity
+
+These checks have distinct traffic and eligibility rules. Path requests can resemble a successful response even when a file is absent. DNS records describe mail configuration rather than web-page source. CORS probes require contextual interpretation of origin and credentials. SRI is meaningful only for applicable external resources. A single shared “completed” flag does not resolve those differences.
+
+## 10 — Manifest and registry coverage
+
+A module can finish without finding a manifest. Even a fetched manifest can produce no usable package checks. The saved representative cohort has 508 completed dependency modules, 17 selected manifests, and six sites with package-check events. In the extended sensitivity scenario, four sites remain after excluding two disputed parser cases. No AI-builder page in the saved subgroup had a package check.
+
+The uppercase token and IP-shaped name in the disputed cases are not proven invalid Python names merely by their appearance. A later parser heuristic is not independent ground truth.
+
+## Error and coverage states
+
+Per-module records can include completion state, fatal errors, and durations. These are execution observations. Module timeouts, absent resources, inapplicability, and a clean evaluated result should not be merged into one “safe” outcome. The [coverage guide](coverage.md) defines the analysis denominators.
+
+## Deferred scouts
+
+Mixed-content and AI-exposure prototypes under `future-work/code-scan/` are not part of the active ten-scout runtime. Their existence is not experimental validation.
+
+
+## Implementation and evidence
+
+- [src/worker/main_scanner.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/main_scanner.py)
+- [src/worker/test_01_secrets.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_01_secrets.py)
+- [src/worker/test_02_frontend_libs.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_02_frontend_libs.py)
+- [src/worker/test_03_cookies.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_03_cookies.py)
+- [src/worker/test_04_ssl_tls.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_04_ssl_tls.py)
+- [src/worker/test_05_security_headers.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_05_security_headers.py)
+- [src/worker/test_06_info_disclosure.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_06_info_disclosure.py)
+- [src/worker/test_07_email_security.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_07_email_security.py)
+- [src/worker/test_08_cors.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_08_cors.py)
+- [src/worker/test_09_sri.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_09_sri.py)
+- [src/worker/test_10_hallucinated_deps.py](https://github.com/amramer101/Bravo6-RS/blob/main/src/worker/test_10_hallucinated_deps.py)
+
+Source links follow `main`. They describe the inspectable implementation, not a verified digest of the historical deployment.

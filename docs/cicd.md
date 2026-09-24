@@ -1,50 +1,37 @@
-# CI/CD Pipeline
+# Automation and documentation builds
 
-Four GitHub Actions workflows live in `.github/workflows/`.
+## Workflow contract
 
-## `python-tests.yml` — scanner regression suites
+| Workflow | Trigger | Side effects |
+| --- | --- | --- |
+| Documentation | Docs/config PR or push; manual dispatch | Build static site; publish only on manual `publish=true` from `main` |
+| Python Tests | Worker Python/dependency/host changes; manual dispatch | Runs existing suites; README-only changes do not trigger them |
+| Terraform CI | Manual dispatch | Azure login, initialization, planning, policy checks |
+| Terraform CD | Manual dispatch | Apply an existing saved plan to Azure |
 
-Triggers on push/PR to `main` touching `src/worker/**`, plus manual dispatch. Runs every scout's
-own `test_NN_*.py --test` suite individually (not through a shared runner), so a failure names
-exactly which scout broke — matching how these suites are already run locally and cited in the
-accompanying paper. Then runs the Worker's own orchestration-level suite
-(`main_scanner.py --test`).
+Documentation build permissions are read-only. Pages and identity-token permissions are granted to the deployment job. The upload contains the generated `site/` directory, not the repository root or ignored research output.
 
-This workflow does **not** currently run the API Gateway's suite (`src/api/test_api_gateway.py`) —
-worth adding, since that's 44 assertions covering a component that's code-complete but not yet
-deployed and therefore has no other verification running against it in CI.
+## Build versus publish
 
-## `terraform_ci.yml` — infrastructure plan on every push
+A successful build checks that MkDocs can construct the site. It does not certify factual claims, scanner correctness, accessibility, or research validity. Publication is a separate explicit action. Local previews and this documentation task do not publish or change GitHub visibility.
 
-Triggers on push to `main` touching `terraform/**`, plus manual dispatch. Authenticates to Azure via
-OIDC (`azure/login@v2` + `ARM_USE_OIDC: "true"`, no stored client secret), then runs
-`terraform fmt -check`, `terraform validate`, a soft-fail Checkov security scan (see the workflow's
-own comments for exactly which findings are accepted as tier-locked cost trade-offs versus real
-follow-up items), and `terraform plan`, uploading the plan binary as a build artifact keyed to the
-commit SHA.
+The documentation requirements pin direct dependency versions. They are not a complete transitive lockfile. The current build removes external font and Mermaid CDN dependencies by using local SVG assets and system fonts.
 
-## `terraform_cd.yml` — manual apply
+## Interpreting CI badges
 
-`workflow_dispatch`-only, takes a commit SHA as input, downloads that commit's plan artifact from
-`terraform_ci.yml`, and runs `terraform apply -auto-approve` against it. Deliberately not automatic
-on every push — applying infrastructure changes is a human-triggered action here, not a merge-to-main
-side effect.
+Historical Python and Terraform workflows retain soft-failing steps. A green workflow can coexist with a failed internal check. This site therefore uses static scope/rights badges and does not advertise “all tests passing.” A future CI hardening change must make the relevant checks blocking before such a badge is meaningful.
 
-## `docs.yml` — documentation site
+## Review-only work
 
-Builds this MkDocs site and deploys it to GitHub Pages on push to `main` (paths touching
-`docs/**`, `mkdocs.yml`, or the workflow itself), plus manual dispatch. Uses the official
-`actions/deploy-pages` flow (build → `actions/upload-pages-artifact` → `actions/deploy-pages`),
-which requires the repository's **Settings → Pages → Build and deployment → Source** set to
-"GitHub Actions."
+For documentation changes, run the strict build, verify generated links, inspect desktop/mobile rendering, and preserve protected source/data hashes. Scanner tests and cloud plans are separate activities and were not run for this rewrite.
 
-## Required repository secrets
 
-| Secret | Used by | Purpose |
-|---|---|---|
-| `AZURE_CLIENT_ID` | `terraform_ci.yml`, `terraform_cd.yml` | OIDC federated identity client ID |
-| `AZURE_TENANT_ID` | same | Azure AD tenant for the federated credential |
-| `AZURE_SUBSCRIPTION_ID` | same | Target subscription for `terraform plan`/`apply` |
+## Implementation and evidence
 
-None of the four workflows require a stored Azure credential secret beyond the OIDC identity above
-— consistent with the rest of this platform's Managed-Identity-first design.
+- [.github/workflows/docs.yml](https://github.com/amramer101/Bravo6-RS/blob/main/.github/workflows/docs.yml)
+- [.github/workflows/python-tests.yml](https://github.com/amramer101/Bravo6-RS/blob/main/.github/workflows/python-tests.yml)
+- [.github/workflows/terraform_ci.yml](https://github.com/amramer101/Bravo6-RS/blob/main/.github/workflows/terraform_ci.yml)
+- [.github/workflows/terraform_cd.yml](https://github.com/amramer101/Bravo6-RS/blob/main/.github/workflows/terraform_cd.yml)
+- [requirements-docs.txt](https://github.com/amramer101/Bravo6-RS/blob/main/requirements-docs.txt)
+
+Source links follow `main`. They describe the inspectable implementation, not a verified digest of the historical deployment.

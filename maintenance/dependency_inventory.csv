@@ -20,5 +20,4 @@ src/worker/requirements.txt,azure-data-tables>=12.5.0,external dependency; right
 src/worker/requirements.txt,requests>=2.31.0,external dependency; rights remain with its owner,exact resolved distribution/license not audited
 requirements-docs.txt,mkdocs==1.6.1,external dependency; rights remain with its owner,exact resolved distribution/license not audited
 requirements-docs.txt,mkdocs-material==9.7.6,external dependency; rights remain with its owner,exact resolved distribution/license not audited
-requirements-docs.txt,mkdocs-mermaid2-plugin==1.2.3,external dependency; rights remain with its owner,exact resolved distribution/license not audited
 requirements-docs.txt,pymdown-extensions==11.0.1,external dependency; rights remain with its owner,exact resolved distribution/license not audited

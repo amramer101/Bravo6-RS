@@ -1,86 +1,89 @@
-site_name: Bravo6 Platform
-site_description: Passive, external security scanning for AI-generated web applications
+site_name: BRAVO6
+site_description: Serverless web-security research, implementation reference, and coverage-aware evaluation.
 site_url: https://amramer101.github.io/Bravo6-RS/
 repo_url: https://github.com/amramer101/Bravo6-RS
 repo_name: Bravo6-RS
-
-extra_css:
-  - stylesheets/extra.css
+copyright: Copyright © 2026 Amr Medhat Amer · All Rights Reserved
 
 theme:
   name: material
   language: en
-
-  # Dark-only palette. No light/dark toggle: the site has exactly one
-  # visual identity (pure black + cyan accent), so there is nothing to
-  # switch to. If a light scheme is added later, extra.css must define
-  # a matching [data-md-color-scheme="default"] block before the toggle
-  # is re-enabled — otherwise light mode falls back to unstyled Material
-  # defaults that clash with the rest of the site.
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font: false
   palette:
-    scheme: slate
-    primary: black
-    accent: cyan
-
-  font:
-    text: Inter
-    code: JetBrains Mono
-
-  # Uncomment once the assets exist:
-  # logo: assets/logo.png
-  # favicon: assets/favicon.png
-
+    - scheme: slate
+      primary: custom
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light theme
+    - scheme: default
+      primary: custom
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark theme
   features:
-    - navigation.instant
-    - navigation.tracking
+    - navigation.tabs
     - navigation.sections
-    - navigation.expand
     - navigation.top
     - navigation.footer
     - search.highlight
     - search.suggest
     - content.code.copy
-    - content.tooltips
+
+extra_css:
+  - stylesheets/extra.css
 
 markdown_extensions:
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
-  - pymdownx.tabbed:
-      alternate_style: true
-  - pymdownx.emoji:
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - admonition
   - attr_list
   - md_in_html
-  - admonition
-  - pymdownx.details
   - tables
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
   - toc:
       permalink: true
 
 plugins:
   - search
-  - mermaid2:
-      version: "10.6.1"
 
-# Detailed content reconciliation is tracked in maintenance/REPOSITORY_AUDIT.md.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn
 
 nav:
-  - Home: index.md
-  - Infrastructure as Code: infrastructure.md
-  - Architecture Overview: architecture-overview.md
-  - Architecture Decisions: architecture-decisions.md
-  - Software Architecture & Scouts: software-architecture.md
-  - Security & Identity: security-identity.md
-  - Data Flow: data-flow.md
-  - Cost & FinOps: cost-finops.md
-  - CI/CD Pipeline: cicd.md
-  - Deployment Guide: deployment.md
-  - Contributing & Testing: contributing.md
+  - Overview:
+      - Start here: index.md
+      - Known limitations: limitations.md
+  - System:
+      - Architecture: architecture-overview.md
+      - Request lifecycle: data-flow.md
+      - Design decisions: architecture-decisions.md
+      - Security boundaries: security-identity.md
+  - Reference:
+      - HTTP API: api-reference.md
+      - Worker & ten scouts: software-architecture.md
+      - Findings & scoring: scoring.md
+      - Advisory data: advisory-data.md
+      - Infrastructure: infrastructure.md
+  - Research:
+      - Experiment & results: research.md
+      - Coverage & missingness: coverage.md
+      - Validation & agreement: validation.md
+      - Ethics & data handling: ethics.md
+      - Evidence & references: references.md
+  - Maintain:
+      - Setup & deployment: deployment.md
+      - Automation: cicd.md
+      - Cost accounting: cost-finops.md
+      - Maintainer guide: contributing.md
+      - Rights & citation: rights.md

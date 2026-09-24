@@ -1,29 +1,17 @@
-# Cross-tool calibration
+# Saved cross-tool verdict comparison
 
-This folder compares the existing Bravo6 scanner against Mozilla Observatory on a small sample of live public sites.
+The directory name is historical. The available outputs support agreement under a saved verdict mapping, not independent calibration of every detector.
 
-## Purpose
+## Files and boundaries
 
-- Keep the local synthetic benchmark as the canonical correctness check for the scanner itself.
-- Use a separate, independent external reference to spot broad signal-level agreement and disagreements.
-- Treat comparison results as calibration evidence, not as a replacement for the synthetic benchmark.
+- `run_calibration.py`: executes scanner/external comparison activity; networked.
+- `fetch_mozilla_verdicts.py`: obtains external verdicts; networked.
+- `compute_verdict_agreement.py`: computes agreement under the saved mapping.
+- `results.json`, `mozilla_verdicts.json`, `verdict_agreement_results.json`: historical outputs.
+- `sample_sites.json`: identifiable sample, not an anonymized dataset.
 
-## Files
+The saved sample starts with 25 sites. Ten incomplete scans are excluded, leaving fifteen paired sites with signal-specific denominators. The mapping can treat selected informational or not-applicable findings as pass. Thus agreement and κ describe the mapping, not independently verified successful subchecks.
 
-- `sample_sites.json` — the fixed sample list used for this run.
-- `run_calibration.py` — fetches each site with the real scanner and the Mozilla Observatory API, then records the overlap/disagreement by security signal.
-- `results.json` — generated output from a single calibration run.
+There is no independent TLS/testssl.sh or email-security comparison in these artifacts. CSP agreement of 15/15 has undefined κ because all pairs share one outcome; it is not κ=1.
 
-## Run
-
-From the repository root:
-
-```bash
-python validation-benchmark/cross-tool-calibration/run_calibration.py
-```
-
-## Notes
-
-- The harness uses the real scanner as shipped (`src/worker/main_scanner.py`).
-- The Observatory comparison is limited to the signal names it exposes in `tests`.
-- The script reports only genuine overlap/disagreement on mapped header-related checks; it does not claim a full equivalence between the two products.
+Original data and mapping code are preserved. No new collection, verdict refresh, or scanner execution is needed for reading the [revised interpretation](../../docs/validation.md).

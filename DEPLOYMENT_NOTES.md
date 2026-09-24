@@ -1,5 +1,7 @@
 # BRAVO6 Deployment Notes — 2026-09-11
 
+> **Historical record — not current deployment guidance.** The text below records troubleshooting at its stated dates and is preserved rather than rewritten. It does not establish today's infrastructure status or teardown after the September 19 experiment. Use the [current configuration guide](docs/deployment.md) and [research provenance](docs/research.md) for present documentation. Operational identifiers in this historical file are not reusable example settings.
+
 Record of the first real deployment of BRAVO6's core infrastructure to Azure, via Terraform,
 plus a first attempt at pushing application code onto it. Written as the work happened, not
 reconstructed afterward — every claim below was directly observed (a command's output, a live
